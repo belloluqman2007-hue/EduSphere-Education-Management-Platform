@@ -27,6 +27,9 @@
    an empty state — never to invented values.
    ========================================================================== */
 const db = require("../db");
+const fs = require("fs");
+const path = require("path");
+const config = require("../config");
 const grading = require("./grading");
 
 /* --------------------------- template defaults --------------------------- */
@@ -208,9 +211,38 @@ function asset(value) {
   return /^\/uploads\/[A-Za-z0-9_./-]+$/.test(s) ? s : "";
 }
 
+/**
+ * An upload URL is only emitted when the file it names is actually present
+ * in this deployment's upload directory. The #1 cause of "broken logo /
+ * broken student photo" on report sheets is a database row whose photo or
+ * logo path survived (a backup restore, a host with an ephemeral disk)
+ * without the file itself: express.static then falls through to the SPA
+ * fallback, the <img> receives a 200 text/html answer, and the browser
+ * paints a broken-image icon with the student's name as alt text. Checking
+ * existence here means the browser is only ever handed a URL we can serve;
+ * anything else degrades to a clean placeholder instead.
+ */
+function assetServed(value) {
+  const url = asset(value);
+  if (!url || url.includes("..")) return "";
+  try {
+    return fs.statSync(path.join(config.UPLOAD_DIR, url.replace(/^\/uploads\//, ""))).isFile() ? url : "";
+  } catch (e) {
+    return "";
+  }
+}
+
 function fmtDate(value) {
   const s = String(value || "").slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
+}
+
+/** Human display date (dd/mm/yyyy) for dates already validated by fmtDate. */
+function fmtDateHuman(value) {
+  const s = fmtDate(value);
+  if (!s) return String(value || "");
+  const [y, m, d] = s.split("-");
+  return `${d}/${m}/${y}`;
 }
 
 function ordinal(n) {
@@ -572,6 +604,7 @@ async function preloadClassTerm(madrasaId, classId, termId) {
       phone: madrasa.phone,
       email: madrasa.email,
       website: madrasa.website,
+      brandColor: madrasa.brand_color || "",
     },
     config,
     template,
@@ -600,6 +633,13 @@ async function buildReportSheet(madrasaId, studentId, termId) {
     [madrasaId, studentId, termId]
   );
   const data = assembleReport(preload, student, preload.summariesByStudent.get(Number(studentId)) || null, resultRows);
+  // The batched attendance map only covers students that already have a
+  // term summary. For a preview generated before the class term is computed,
+  // fall back to the single-student breakdown (same table, same arithmetic)
+  // so an existing attendance record is never silently shown as absent.
+  if (!preload.attendance.has(Number(studentId))) {
+    data.attendance = await attendanceBreakdown(madrasaId, studentId, termId);
+  }
   await backfillReference(madrasaId, studentId, termId, data.reference);
   return data;
 }
@@ -687,6 +727,33 @@ function shade(hex, amount) {
   return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
+/** Mixes a colour toward white (ratio 0 = original, 1 = white). */
+function tint(hex, ratio) {
+  const m = /^#([0-9a-fA-F]{6})$/.test(hex) ? hex : "#14532d";
+  const num = parseInt(m.slice(1), 16);
+  const r = Math.max(0, Math.min(1, Number(ratio) || 0));
+  const mix = (v) => Math.round(v + (255 - v) * r);
+  return "#" + [mix(num >> 16), mix((num >> 8) & 0xff), mix(num & 0xff)]
+    .map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+/** Neutral person silhouette used when a student has no photograph. */
+const PHOTO_PLACEHOLDER_SVG = '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>';
+
+/** Human labels for the review-workflow statuses shown in the toolbar. */
+const STATUS_LABELS = {
+  draft: "Draft",
+  returned: "Returned",
+  submitted: "Submitted",
+  under_review: "Awaiting review",
+  approved: "Approved",
+  published: "Published",
+  locked: "Locked",
+};
+
+/** Fixed mm widths of the numeric result columns (subject takes the rest). */
+const RESULT_COL_WIDTHS = { ca: "15mm", exam: "16mm", total: "13mm", pct: "12mm", grade: "12mm", gradePoint: "11mm", remark: "30mm" };
+
 /**
  * Fills any field the assembler normally provides so the renderer also
  * accepts a plain grading.reportCardData payload (back-compat callers) and
@@ -697,7 +764,7 @@ function normalizeRenderInput(data) {
   const summary = data.summary || {};
   const d = Object.assign({}, data);
   d.template = template;
-  d.madrasa = Object.assign({ nameEn: "", nameAr: "", logoPath: "", mottoEn: "", mottoAr: "", address: "", city: "", stateName: "", phone: "", email: "", website: "" }, data.madrasa || {});
+  d.madrasa = Object.assign({ nameEn: "", nameAr: "", logoPath: "", mottoEn: "", mottoAr: "", address: "", city: "", stateName: "", phone: "", email: "", website: "", brandColor: "" }, data.madrasa || {});
   d.student = Object.assign({ photoPath: "", nameAr: "", gender: "", dateOfBirth: "", section: "", program: "", studentCode: "", classEn: "", classAr: "", admissionNo: "", name: "" }, data.student || {});
   d.term = Object.assign({ nameEn: "", nameAr: "" }, data.term || {});
   d.subjects = Array.isArray(data.subjects) ? data.subjects : [];
@@ -734,10 +801,26 @@ const PROMOTION_TEXT = {
 };
 
 /**
- * Renders the professional A4 report sheet. The document is print/PDF ready:
- * the browser's print dialog (or "Save as PDF") produces the final file with
- * branding, tables, page breaks and Arabic text preserved — the same pipeline
- * the platform's ID cards and certificates already use.
+ * Renders the professional A4 report sheet — an official academic document
+ * rather than a dashboard page. The document is print/PDF ready: the
+ * browser's print dialog (or "Save as PDF") produces the final file with
+ * branding, tables, page breaks and Arabic text preserved — the same
+ * pipeline the platform's ID cards and certificates already use.
+ *
+ * Design contract:
+ *   • @page A4 with margin 0; the sheet itself carries the printable
+ *     margins, so nothing is ever clipped and the screen preview matches
+ *     the printed PDF,
+ *   • school branding, session, term, subjects, scores, grades, summary,
+ *     attendance, conduct, comments, promotion and signatures all come
+ *     from the assembled tenant data — nothing is hard-coded,
+ *   • logo and photograph <img> tags are only emitted for files that
+ *     actually exist in this deployment's upload directory (assetServed),
+ *     so a dangling path degrades to a clean placeholder instead of a
+ *     browser broken-image icon,
+ *   • the print button and image fallbacks are wired by the same-origin
+ *     /js/report-sheet-viewer.js because the platform CSP blocks inline
+ *     event handlers (the inline onclick stays as a CSP-less fallback).
  *
  * opts.portal        render inside the student/parent portal (published only)
  * opts.publicCopy    render for the public result checker (adds verified line)
@@ -751,45 +834,60 @@ function renderReportSheetHTML(data, opts = {}) {
   const L = (en, arabic) => (rtl && arabic ? arabic : en);
   const orientation = resolveOrientation(t, data.subjects.length);
   const brand = brandColorOf(data);
-  const brandDark = shade(brand, -24);
-  const brandSoft = shade(brand, 116);
+  const brandDark = shade(brand, -26);
   const compact = t.layout === "compact";
   const modern = t.layout === "modern";
+  // Density adapts to content volume so a full class report still fits the
+  // A4 page: many subjects (or the compact layout, or the extra height of an
+  // incomplete-status notice) tighten row padding and font sizes instead of
+  // spilling onto a second page by a few millimetres.
+  const incomplete = !data.completeness.complete;
+  const dense = compact || incomplete || data.subjects.length >= 8;
 
   const cols = t.columns;
   const colCount = visibleColumnCount(t);
 
-  const subjectRows = data.subjects.map((s) => {
-    const name = rtl ? (s.nameAr || s.nameEn) : (s.nameEn || s.nameAr);
-    const remark = rtl ? (s.remarkAr || s.remark) : (s.remark || s.remarkAr);
-    const cells = [];
-    if (cols.ca) cells.push(`<td class="num">${esc(s.ca)}</td>`);
-    if (cols.exam) cells.push(`<td class="num">${esc(s.exam)}</td>`);
-    if (cols.total) cells.push(`<td class="num"><b>${esc(s.total)}</b></td>`);
-    if (cols.pct) cells.push(`<td class="num">${esc(s.pct)}%</td>`);
-    if (cols.grade) cells.push(`<td class="grade">${esc(s.grade)}</td>`);
-    if (cols.gradePoint) cells.push(`<td class="num">${esc(s.gradePoint)}</td>`);
-    if (cols.remark) cells.push(`<td class="remark">${esc(remark || "—")}</td>`);
-    return `<tr><td class="subj">${esc(name)}</td>${cells.join("")}</tr>`;
-  }).join("");
+  /* ---------------- page geometry (screen mirrors the printed page) ------- */
+  const padX = dense ? "10mm" : "12mm";
+  const padY = dense ? "8.5mm" : "10mm";
+  const sheetW = orientation === "landscape" ? "297mm" : "210mm";
+  const sheetH = orientation === "landscape" ? "207mm" : "297mm";
+  const logoSize = compact ? "16mm" : "19mm";
+  // The content box fills exactly one printable page so the footer can sit at
+  // the foot of the A4 sheet; the reserved padding keeps in-flow content out
+  // of the footer's zone, and on a multi-page report the footer lands at the
+  // bottom of the LAST page (never duplicated, never orphaned).
+  const innerH = orientation === "landscape" ? "191mm" : dense ? "278mm" : "276mm";
 
-  const subjectHeader = (() => {
-    const heads = [];
-    if (cols.ca) heads.push(`<th>${esc(L(`${t.caLabel} (${data.config.caMax})`, `${t.caLabel}`))}</th>`);
-    if (cols.exam) heads.push(`<th>${esc(L(`${t.examLabel} (${data.config.examMax})`, `${t.examLabel}`))}</th>`);
-    if (cols.total) heads.push(`<th>${esc(L("Total", "المجموع"))}</th>`);
-    if (cols.pct) heads.push(`<th>%</th>`);
-    if (cols.grade) heads.push(`<th>${esc(L("Grade", "الدرجة"))}</th>`);
-    if (cols.gradePoint) heads.push(`<th>${esc(L("Point", "النقاط"))}</th>`);
-    if (cols.remark) heads.push(`<th>${esc(L("Remark", "ملاحظة"))}</th>`);
-    return `<tr><th class="subj">${esc(L("Subject", "المادة"))}</th>${heads.join("")}</tr>`;
-  })();
+  /* ---------------- school identity --------------------------------------- */
+  const nameLen = String(data.madrasa.nameEn || "").length;
+  const nameSize = nameLen <= 30 ? 20 : nameLen <= 46 ? 17 : nameLen <= 64 ? 15 : 13.5;
 
-  /* ---------------- student information grid ---------------- */
+  const logoUrl = assetServed(data.madrasa.logoPath);
+  const logoInitial = String((data.madrasa.nameEn || "?").trim().charAt(0) || "?").toUpperCase();
+  const logo = logoUrl
+    ? `<img class="logo" src="${esc(logoUrl)}" alt="${esc(data.madrasa.nameEn)}" data-fallback="logo" data-initial="${esc(logoInitial)}">`
+    : `<div class="logo logo-fallback" aria-hidden="true">${esc(logoInitial)}</div>`;
+
+  const motto = rtl && data.madrasa.mottoAr ? data.madrasa.mottoAr : (data.madrasa.mottoEn || data.madrasa.mottoAr);
+  const addressLine = [data.madrasa.address, data.madrasa.city, data.madrasa.stateName].filter((x) => x && String(x).trim()).join(", ");
+  const contactLine = [
+    data.madrasa.phone ? `${L("Tel", "هاتف")}: ${data.madrasa.phone}` : "",
+    data.madrasa.email,
+    data.madrasa.website,
+  ].filter((x) => x && String(x).trim()).join("  ·  ");
+
+  /* ---------------- student photograph ------------------------------------ */
+  const photoUrl = t.showPhoto ? assetServed(data.student.photoPath) : "";
+  const photoSlot = !t.showPhoto ? "" : (photoUrl
+    ? `<div class="photo-slot"><img class="photo" src="${esc(photoUrl)}" alt="${esc(data.student.name)}" data-fallback="photo"></div>`
+    : `<div class="photo-slot photo-empty" aria-hidden="true">${PHOTO_PLACEHOLDER_SVG}</div>`);
+
+  /* ---------------- student information grid ------------------------------ */
   const infoCells = [];
   const addInfo = (label, value) => {
     if (value === null || value === undefined || String(value).trim() === "") return;
-    infoCells.push(`<div class="cell"><span class="k">${esc(label)}</span><span class="v">${esc(value)}</span></div>`);
+    infoCells.push(`<div class="cell"><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`);
   };
   addInfo(L("Student name", "اسم الطالب"), rtl ? (data.student.nameAr || data.student.name) : data.student.name);
   addInfo(L("Admission no.", "رقم التسجيل"), data.student.admissionNo);
@@ -799,17 +897,62 @@ function renderReportSheetHTML(data, opts = {}) {
     if (data.student.section) addInfo(L("Section", "القسم"), data.student.section);
     if (data.student.program) addInfo(L("Program", "البرنامج"), data.student.program);
     if (data.student.gender) addInfo(L("Gender", "الجنس"), data.student.gender === "M" ? L("Male", "ذكر") : data.student.gender === "F" ? L("Female", "أنثى") : data.student.gender);
-    if (data.student.dateOfBirth) addInfo(L("Date of birth", "تاريخ الميلاد"), data.student.dateOfBirth);
+    if (data.student.dateOfBirth) addInfo(L("Date of birth", "تاريخ الميلاد"), fmtDateHuman(data.student.dateOfBirth));
   }
   addInfo(L("Academic session", "العام الدراسي"), data.session);
   addInfo(L("Term", "الفترة"), rtl ? (data.term.nameAr || data.term.nameEn) : (data.term.nameEn || data.term.nameAr));
   if (t.showReference) addInfo(L("Report no.", "رقم التقرير"), data.reference);
 
-  const photo = t.showPhoto && asset(data.student.photoPath)
-    ? `<img class="photo" src="${esc(asset(data.student.photoPath))}" alt="${esc(data.student.name)}">`
-    : "";
+  /* ---------------- academic performance table ---------------------------- */
+  const colTags = RESULT_COLUMNS.filter((key) => cols[key]).map((key) => `<col style="width:${RESULT_COL_WIDTHS[key]}">`).join("");
+  const colgroup = `<colgroup><col>${colTags}</colgroup>`;
 
-  /* ---------------- overall performance ---------------- */
+  const subjectRows = data.subjects.map((s) => {
+    const name = rtl ? (s.nameAr || s.nameEn) : (s.nameEn || s.nameAr);
+    const remark = rtl ? (s.remarkAr || s.remark) : (s.remark || s.remarkAr);
+    const cells = [];
+    if (cols.ca) cells.push(`<td class="num">${esc(s.ca)}</td>`);
+    if (cols.exam) cells.push(`<td class="num">${esc(s.exam)}</td>`);
+    if (cols.total) cells.push(`<td class="num total">${esc(s.total)}</td>`);
+    if (cols.pct) cells.push(`<td class="num">${esc(s.pct)}%</td>`);
+    if (cols.grade) cells.push(`<td class="grade">${esc(s.grade)}</td>`);
+    if (cols.gradePoint) cells.push(`<td class="num">${esc(s.gradePoint)}</td>`);
+    if (cols.remark) cells.push(`<td class="remark">${esc(remark || "—")}</td>`);
+    return `<tr><td class="subj">${esc(name)}</td>${cells.join("")}</tr>`;
+  }).join("");
+
+  const subjectHeader = (() => {
+    const heads = [];
+    if (cols.ca) heads.push(`<th scope="col">${esc(L(`${t.caLabel} (${data.config.caMax})`, `${t.caLabel}`))}</th>`);
+    if (cols.exam) heads.push(`<th scope="col">${esc(L(`${t.examLabel} (${data.config.examMax})`, `${t.examLabel}`))}</th>`);
+    if (cols.total) heads.push(`<th scope="col">${esc(L("Total", "المجموع"))}</th>`);
+    if (cols.pct) heads.push(`<th scope="col">%</th>`);
+    if (cols.grade) heads.push(`<th scope="col">${esc(L("Grade", "الدرجة"))}</th>`);
+    if (cols.gradePoint) heads.push(`<th scope="col">${esc(L("Point", "النقاط"))}</th>`);
+    if (cols.remark) heads.push(`<th scope="col">${esc(L("Remark", "ملاحظة"))}</th>`);
+    return `<tr><th class="subj" scope="col">${esc(L("Subject", "المادة"))}</th>${heads.join("")}</tr>`;
+  })();
+
+  /* ---------------- result status / completeness --------------------------- */
+  const missing = data.completeness.missingSubjects || [];
+  const pending = data.completeness.pendingSubjects || [];
+  const nonFinal = ["draft", "returned", "submitted", "under_review"].includes(data.status);
+  const subjList = (list) => list.map((s) => rtl && s.nameAr ? s.nameAr : s.nameEn).join(", ");
+  const statusNotice = incomplete
+    ? `<aside class="status-notice" role="note">
+        <p class="notice-title">${esc(L("Result status — incomplete", "حالة النتيجة — غير مكتملة"))}</p>
+        <p class="notice-body">${esc(L("This report is incomplete — some required results are missing or not yet approved.", "هذا التقرير غير مكتمل — بعض النتائج مفقودة أو لم تُعتمد بعد."))}</p>
+        ${missing.length ? `<p class="notice-body"><b>${esc(L("Missing", "مفقود"))}:</b> ${esc(subjList(missing))}</p>` : ""}
+        ${pending.length ? `<p class="notice-body"><b>${esc(L("Awaiting approval", "بانتظار الاعتماد"))}:</b> ${esc(subjList(pending))}</p>` : ""}
+      </aside>`
+    : (!opts.portal && !opts.publicCopy && nonFinal
+      ? `<aside class="status-notice" role="note">
+          <p class="notice-title">${esc(L("Result status — working copy", "حالة النتيجة — نسخة عمل"))}</p>
+          <p class="notice-body">${esc(L("These results have not completed the approval workflow; this sheet is not a final report.", "لم تكتمل دورة الاعتماد لهذه النتائج؛ هذه النسخة ليست تقريرًا نهائيًا."))}</p>
+        </aside>`
+      : "");
+
+  /* ---------------- performance summary ------------------------------------ */
   const perf = [];
   if (data.summary.subjectCount) {
     perf.push([L("Subjects offered", "عدد المواد"), data.summary.subjectCount]);
@@ -824,25 +967,40 @@ function renderReportSheetHTML(data, opts = {}) {
     perf.push([L("Class size", "عدد الطلاب"), data.classPerformance.size]);
     perf.push([L("Class average", "معدل الفصل"), `${data.classPerformance.average}%`]);
   }
-  const perfRows = perf.map(([k, v]) => `<div class="stat"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("");
+  /* ---------------- grading scale ------------------------------------------ */
+  const legend = t.showGradeLegend && data.config.bands.length
+    ? `<table class="legend-table"><tbody><tr><th class="legend-head">${esc(L("Grading scale", "سلم الدرجات"))}</th>${data.config.bands
+      .slice().sort((a, b) => Number(b.min) - Number(a.min))
+      .map((b) => `<td><b>${esc(b.grade)}</b>${Number(b.min)}+${b.remark ? ` · ${esc(rtl && b.remark_ar ? b.remark_ar : b.remark)}` : ""}</td>`)
+      .join("")}</tr></tbody></table>`
+    : "";
 
-  /* ---------------- attendance ---------------- */
+  let summarySection = "";
+  if (perf.length) {
+    const cells = perf.map(([k, v]) => `<td class="sum-cell"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></td>`);
+    while (cells.length % 4) cells.push(`<td class="sum-cell sum-blank" aria-hidden="true"></td>`);
+    const rows = [];
+    for (let i = 0; i < cells.length; i += 4) rows.push(`<tr>${cells.slice(i, i + 4).join("")}</tr>`);
+    summarySection = `<section class="block">
+        <h2>${esc(L("Performance summary", "ملخص الأداء"))}</h2>
+        <table class="summary"><tbody>${rows.join("")}</tbody></table>
+        ${legend ? `<div class="legend-wrap">${legend}</div>` : ""}
+      </section>`;
+  }
+
+  /* ---------------- attendance --------------------------------------------- */
   const att = data.attendance;
   const attendanceSection = t.showAttendance
     ? `<section class="block">
         <h2>${esc(L("Attendance", "الحضور"))}</h2>
-        ${att.total ? `<div class="att">${[
-      [L("Days recorded", "أيام مسجلة"), att.total],
-      [L("Present", "حاضر"), att.present],
-      [L("Absent", "غائب"), att.absent],
-      [L("Late", "متأخر"), att.late],
-      [L("Attendance %", "نسبة الحضور"), att.percentage === null ? "—" : `${att.percentage}%`],
-    ].map(([k, v]) => `<div class="cell"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>`
+        ${att.total ? `<table class="mini att"><thead><tr>${[
+      ["Days recorded", "أيام مسجلة"], ["Present", "حاضر"], ["Absent", "غائب"], ["Late", "متأخر"], ["Attendance", "نسبة الحضور"],
+    ].map(([en, ar2]) => `<th scope="col">${esc(L(en, ar2))}</th>`).join("")}</tr></thead><tbody><tr><td>${esc(att.total)}</td><td>${esc(att.present)}</td><td>${esc(att.absent)}</td><td>${esc(att.late)}</td><td>${att.percentage === null ? "—" : `${esc(att.percentage)}%`}</td></tr></tbody></table>`
       : `<p class="empty">${esc(L("No attendance records for this term.", "لا توجد سجلات حضور لهذه الفترة."))}</p>`}
       </section>`
     : "";
 
-  /* ---------------- behaviour / conduct ---------------- */
+  /* ---------------- behaviour / conduct ------------------------------------ */
   const ratedCategories = t.showBehaviour
     ? data.behaviour.categories.filter((c) => data.behaviour.ratings[c.key] !== null)
     : [];
@@ -850,93 +1008,91 @@ function renderReportSheetHTML(data, opts = {}) {
     ? `<section class="block">
         <h2>${esc(L("Behaviour / Conduct", "السلوك والمواظبة"))}</h2>
         ${ratedCategories.length ? `<div class="behaviour">${ratedCategories.map((c) => {
-          const rating = data.behaviour.ratings[c.key];
-          return `<div class="cell"><span class="k">${esc(rtl && c.labelAr ? c.labelAr : c.label)}</span><span class="v">${esc(`${rating}/5 — ${RATING_LABELS[rating] || ""}`)}</span></div>`;
-        }).join("")}</div>`
-          : `<p class="empty">${esc(L("No conduct ratings recorded for this term.", "لا توجد تقييمات سلوك لهذه الفترة."))}</p>`}
+      const rating = data.behaviour.ratings[c.key];
+      return `<div class="beh-cell"><span class="k">${esc(rtl && c.labelAr ? c.labelAr : c.label)}</span><span class="v">${esc(`${rating}/5 — ${RATING_LABELS[rating] || ""}`)}</span></div>`;
+    }).join("")}</div>`
+      : `<p class="empty">${esc(L("No conduct ratings recorded for this term.", "لا توجد تقييمات سلوك لهذه الفترة."))}</p>`}
       </section>`
     : "";
 
-  /* ---------------- comments ---------------- */
+  /* ---------------- comments ----------------------------------------------- */
   const commentsSection = t.showComments
     ? `<section class="block">
         <h2>${esc(L("Comments", "الملاحظات"))}</h2>
-        <div class="comment"><span class="k">${esc(L("Class teacher's comment", "تعليق معلم الفصل"))}</span><p>${esc(data.summary.teacherComment || "—")}</p></div>
-        <div class="comment"><span class="k">${esc(L("Head of institution's comment", "تعليق رئيس المؤسسة"))}</span><p>${esc(data.summary.headComment || "—")}</p></div>
+        <div class="comments-grid">
+          <div class="comment-box"><p class="comment-label">${esc(L("Class teacher's comment", "تعليق معلم الفصل"))}</p><p class="comment-text">${esc(data.summary.teacherComment || "—")}</p></div>
+          <div class="comment-box"><p class="comment-label">${esc(L("Head of institution's comment", "تعليق رئيس المؤسسة"))}</p><p class="comment-text">${esc(data.summary.headComment || "—")}</p></div>
+        </div>
       </section>`
     : "";
 
-  /* ---------------- promotion + next term ---------------- */
+  /* ---------------- promotion + next term ---------------------------------- */
   const promo = PROMOTION_TEXT[data.summary.promotionStatus] || { en: data.summary.promotionStatus, ar: "" };
+  const nextTermLine = t.showNextTerm && data.nextTerm && data.nextTerm.begins
+    ? `<p class="next-term">${esc(L("Next term begins", "تبدأ الفترة القادمة"))}: <b>${esc(fmtDateHuman(data.nextTerm.begins))}</b>${data.nextTerm.ends ? ` — ${esc(L("ends", "تنتهي"))} <b>${esc(fmtDateHuman(data.nextTerm.ends))}</b>` : ""}</p>`
+    : "";
   const promoSection = t.showPromotion
-    ? `<section class="block promotion"><h2>${esc(L("Promotion status", "قرار الترقية"))}</h2>
-        <div class="promo-badge">${esc(L(promo.en, promo.ar || promo.en))}</div>
-        ${t.showNextTerm && data.nextTerm && data.nextTerm.begins
-        ? `<p class="next-term">${esc(L("Next term begins", "تبدأ الفترة القادمة"))}: <b>${esc(data.nextTerm.begins)}</b>${data.nextTerm.ends ? ` — ${esc(L("ends", "تنتهي"))} <b>${esc(data.nextTerm.ends)}</b>` : ""}</p>`
-        : ""}
+    ? `<section class="block">
+        <h2>${esc(L("Promotion status", "قرار الترقية"))}</h2>
+        <div class="promo-line">
+          <span class="promo-badge">${esc(L(promo.en, promo.ar || promo.en))}</span>
+          ${nextTermLine}
+        </div>
       </section>`
     : "";
 
-  /* ---------------- signatures ---------------- */
+  /* ---------------- signatures --------------------------------------------- */
   const signatures = t.signatures.map((sig) => {
     const title = rtl && sig.titleAr ? sig.titleAr : sig.title;
-    return `<div class="sig"><div class="line"></div><div class="who">${esc(title)}</div>${sig.name ? `<div class="name">${esc(sig.name)}</div>` : ""}</div>`;
+    return `<div class="sig">
+        <div class="sig-space"></div>
+        <div class="sig-rule"></div>
+        <p class="sig-who">${esc(title)}</p>
+        ${sig.name ? `<p class="sig-name">${esc(sig.name)}</p>` : ""}
+        <p class="sig-date">${esc(L("Date", "التاريخ"))}: ____________________</p>
+      </div>`;
   }).join("");
 
-  /* ---------------- grading legend ---------------- */
-  const legend = t.showGradeLegend && data.config.bands.length
-    ? `<p class="legend">${esc(L("Grading scale", "سلم الدرجات"))}: ${data.config.bands
-      .slice().sort((a, b) => Number(b.min) - Number(a.min))
-      .map((b) => `${esc(b.grade)} ${Number(b.min)}+${b.remark ? ` (${esc(rtl && b.remark_ar ? b.remark_ar : b.remark)})` : ""}`)
-      .join(" · ")}</p>`
-    : "";
-
-  /* ---------------- completeness notice ---------------- */
-  const incomplete = !data.completeness.complete;
-  const incompleteNotice = incomplete
-    ? `<div class="notice">${esc(L("This report is incomplete — some required results are missing or not yet approved.", "هذا التقرير غير مكتمل — بعض النتائج مفقودة أو لم تُعتمد بعد."))}
-        ${data.completeness.missingSubjects.length ? `<br>${esc(L("Missing", "مفقود"))}: ${esc(data.completeness.missingSubjects.map((s) => rtl && s.nameAr ? s.nameAr : s.nameEn).join(", "))}` : ""}
-        ${data.completeness.pendingSubjects.length ? `<br>${esc(L("Awaiting approval", "بانتظار الاعتماد"))}: ${esc(data.completeness.pendingSubjects.map((s) => rtl && s.nameAr ? s.nameAr : s.nameEn).join(", "))}` : ""}
-      </div>`
-    : "";
-
+  /* ---------------- watermarks --------------------------------------------- */
+  // Subtle, horizontal and behind the content. It only ever appears on a
+  // staff working copy: an approved, published or locked report never shows
+  // "working copy" marking, and the portals (published-only by design) never
+  // receive one. The institution may additionally configure its own watermark
+  // text through the report template.
   const watermark = t.showWatermark && t.watermarkText
-    ? `<div class="watermark">${esc(t.watermarkText)}</div>`
+    ? `<div class="watermark" aria-hidden="true"><span>${esc(t.watermarkText)}</span></div>`
+    : "";
+  const draftMark = !opts.portal && !opts.publicCopy && nonFinal
+    ? `<div class="draft-mark" aria-hidden="true"><span>${esc(L("Working copy — not final", "نسخة عمل — غير نهائية"))}</span></div>`
     : "";
 
-  // Logical sides so the RTL sheet mirrors correctly.
-  const side = rtl ? "left" : "right";
-  const other = rtl ? "right" : "left";
-
-  const draftMark = !opts.portal && !opts.publicCopy && ["draft", "returned", "submitted", "under_review"].includes(data.status)
-    ? `<div class="draft-mark">${esc(L("WORKING COPY — NOT FINAL", "نسخة عمل — غير نهائية"))}</div>`
+  /* ---------------- footer -------------------------------------------------- */
+  const termName = rtl ? (data.term.nameAr || data.term.nameEn) : (data.term.nameEn || data.term.nameAr);
+  const footLine1 = [data.madrasa.nameEn, addressLine].filter((x) => x && String(x).trim()).join("  —  ");
+  const footLine2 = contactLine;
+  const footLine3 = [
+    `${L("Academic session", "العام الدراسي")}: ${data.session}`,
+    `${L("Term", "الفترة")}: ${termName}`,
+    t.showReference ? `${L("Report no.", "رقم التقرير")}: ${data.reference}` : "",
+    data.summary.publishedAt ? `${L("Issued", "صدر")}: ${fmtDateHuman(data.summary.publishedAt)}` : "",
+  ].filter(Boolean).join("  ·  ");
+  // The public result checker's verification stamp is part of the document
+  // footer — a paragraph after the sheet would spill onto an extra page.
+  const verifiedLine = opts.publicCopy
+    ? `Published online copy — verified ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`
     : "";
 
-  const logo = asset(data.madrasa.logoPath)
-    ? `<img class="logo" src="${esc(asset(data.madrasa.logoPath))}" alt="">`
-    : `<div class="logo logo-fallback" aria-hidden="true">${esc((data.madrasa.nameEn || "?").trim().charAt(0).toUpperCase())}</div>`;
-
-  const contactBits = [
-    data.madrasa.address,
-    data.madrasa.city,
-    data.madrasa.stateName,
-    data.madrasa.phone ? `${L("Tel", "هاتف")}: ${data.madrasa.phone}` : "",
-    data.madrasa.email,
-    data.madrasa.website,
-  ].filter((x) => x && String(x).trim());
-  const contactLine = contactBits.map(esc).join(" · ");
-
-  const credit = t.showEdusphereCredit
-    ? `<div class="credit">Powered by EduSphere</div>`
-    : "";
-
+  /* ---------------- non-printing toolbar ----------------------------------- */
+  const printLabel = esc(L("🖨 Print / Save as PDF", "🖨 طباعة / حفظ PDF"));
   const toolbar = opts.portal || opts.publicCopy
-    ? `<div class="noprint toolbar"><button type="button" onclick="window.print()">${esc(L("🖨 Print / Save as PDF", "🖨 طباعة / حفظ PDF"))}</button></div>`
+    ? `<div class="noprint toolbar"><div class="tb-left"></div><button type="button" class="print-btn" data-print onclick="window.print()">${printLabel}</button></div>`
     : `<div class="noprint toolbar">
-        <span class="status-pill status-${esc(data.status)}">${esc(data.status.replace("_", " "))}</span>
-        ${incomplete ? `<span class="status-pill status-incomplete">${esc(L("Incomplete", "غير مكتمل"))}</span>` : ""}
-        ${opts.statusNote ? `<span class="note">${esc(opts.statusNote)}</span>` : ""}
-        <button type="button" onclick="window.print()">${esc(L("🖨 Print / Save as PDF", "🖨 طباعة / حفظ PDF"))}</button>
+        <div class="tb-left">
+          <span class="status-pill status-${esc(data.status)}">${esc(L(STATUS_LABELS[data.status] || data.status.replace("_", " "), data.status.replace("_", " ")))}</span>
+          ${incomplete ? `<span class="status-pill status-incomplete">${esc(L("Incomplete", "غير مكتمل"))}</span>` : ""}
+          ${opts.statusNote ? `<span class="note">${esc(opts.statusNote)}</span>` : ""}
+        </div>
+        <button type="button" class="print-btn" data-print onclick="window.print()">${printLabel}</button>
       </div>`;
 
   return `<!DOCTYPE html>
@@ -946,137 +1102,233 @@ function renderReportSheetHTML(data, opts = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(L("Report Sheet", "بطاقة النتائج"))} — ${esc(data.student.name)}</title>
 <style>
-  @page { size: A4 ${orientation}; margin: ${compact ? "8mm" : "10mm"}; }
+  @page { size: A4 ${orientation}; margin: 0; }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: #eef1f4; }
-  body { font-family: "Segoe UI", Tahoma, "Noto Naskh Arabic", Arial, sans-serif; color: #1f2937; }
-  .sheet {
-    position: relative; background: #fff; margin: 0 auto 16px;
-    width: ${orientation === "landscape" ? "285mm" : "202mm"};
-    min-height: ${orientation === "landscape" ? "180mm" : "285mm"};
-    padding: ${compact ? "6mm" : "9mm"};
-    ${modern ? `border-top: 4mm solid ${brand};` : `border: ${compact ? "1.5px" : "2px"} solid ${brandDark};`}
-    overflow: hidden;
-  }
-  .watermark {
-    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    font-size: 56px; font-weight: 800; letter-spacing: 6px; color: ${brand}; opacity: .07;
-    transform: rotate(-28deg); pointer-events: none; z-index: 0;
-  }
-  .draft-mark {
-    position: absolute; top: 46%; ${side}: 6mm; transform: rotate(${rtl ? "90" : "-90"}deg);
-    font-size: 11px; font-weight: 700; letter-spacing: 3px; color: #b91c1c; opacity: .55;
-  }
-  .inner { position: relative; z-index: 1; }
-  .head { display: flex; align-items: center; gap: 14px; padding-bottom: 10px; border-bottom: ${modern ? "none" : `2px solid ${brand}`}; }
-  .head .logo { width: ${compact ? "58px" : "76px"}; height: ${compact ? "58px" : "76px"}; object-fit: contain; border-radius: 8px; }
-  .head .logo-fallback { display: flex; align-items: center; justify-content: center; background: ${brandSoft}; color: ${brandDark}; font-size: 30px; font-weight: 800; }
-  .head .id { flex: 1; text-align: center; }
-  .head .name { font-size: ${compact ? "17px" : "21px"}; font-weight: 800; color: ${brandDark}; letter-spacing: .5px; }
-  .head .name .ar { font-size: ${compact ? "15px" : "18px"}; font-weight: 700; }
-  .head .motto { font-size: 12px; font-style: italic; color: #4b5563; margin-top: 2px; }
-  .head .contact { font-size: 10.5px; color: #6b7280; margin-top: 3px; }
-  .doc-title { text-align: center; margin: ${compact ? "8px" : "12px"} 0 8px; }
-  .doc-title .en { font-size: ${compact ? "13px" : "15px"}; font-weight: 800; letter-spacing: 2.5px; text-transform: uppercase; color: ${brandDark}; }
-  .doc-title .ar { font-size: 13px; font-weight: 700; color: ${brandDark}; }
-  .student-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 18px; ${photo ? "margin-inline-end: 96px;" : ""} }
-  .student-grid .cell { display: flex; gap: 6px; font-size: ${compact ? "10.5px" : "12px"}; border-bottom: 1px dotted #d1d5db; padding: 3px 0; }
-  .student-grid .k { min-width: 108px; font-weight: 700; color: #374151; }
-  .photo { float: ${side}; width: 82px; height: 100px; object-fit: cover; border: 1px solid #9ca3af; border-radius: 6px; margin: 6px 0 4px 12px; margin-${side}: 12px; margin-${other}: 0; }
-  table.results { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: ${compact ? "10px" : "11.5px"}; }
-  table.results th, table.results td { border: 1px solid ${shade(brand, 90)}; padding: ${compact ? "2.5px 5px" : "4px 7px"}; text-align: center; }
-  table.results th { background: ${brand}; color: #fff; font-weight: 700; }
-  table.results td.subj, table.results th.subj { text-align: start; }
-  table.results td.grade { font-weight: 800; }
-  table.results tr { break-inside: avoid; page-break-inside: avoid; }
-  table.results thead { display: table-header-group; }
-  table.results tbody tr:nth-child(even) { background: ${shade(brand, 122)}; }
-  .notice { border: 1.5px solid #b45309; background: #fffbeb; color: #92400e; font-size: 11px; padding: 6px 10px; border-radius: 6px; margin-top: 8px; }
-  .perf { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-  .perf .stat { border: 1px solid ${shade(brand, 90)}; background: ${shade(brand, 124)}; border-radius: 6px; padding: 5px 10px; font-size: 11px; display: flex; gap: 6px; }
-  .perf .k { font-weight: 700; color: ${brandDark}; }
-  .block { margin-top: 12px; }
-  .block h2 { font-size: ${compact ? "10.5px" : "12px"}; text-transform: uppercase; letter-spacing: 1.2px; color: ${brandDark}; border-bottom: 1.5px solid ${shade(brand, 90)}; padding-bottom: 3px; margin: 0 0 6px; }
-  .att, .behaviour { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 16px; }
-  .att .cell, .behaviour .cell { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; border-bottom: 1px dotted #d1d5db; padding: 2.5px 0; }
-  .att .k, .behaviour .k { font-weight: 700; color: #374151; }
-  .comment { display: flex; gap: 10px; font-size: 11.5px; padding: 5px 0; border-bottom: 1px dashed #d1d5db; }
-  .comment .k { min-width: 170px; font-weight: 700; color: ${brandDark}; }
-  .comment p { margin: 0; min-height: 18px; }
-  .promotion { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-  .promotion h2 { flex-basis: 100%; }
-  .promo-badge { border: 2px solid ${brandDark}; color: ${brandDark}; font-weight: 800; font-size: 13px; letter-spacing: 1px; padding: 6px 16px; border-radius: 999px; }
-  .next-term { font-size: 11.5px; margin: 0; }
-  .signatures { display: flex; justify-content: space-around; gap: 18px; margin-top: ${compact ? "16px" : "26px"}; }
-  .sig { flex: 1; max-width: 240px; text-align: center; font-size: 11px; }
-  .sig .line { border-top: 1px solid #374151; margin-bottom: 4px; height: ${compact ? "18px" : "30px"}; }
-  .sig .who { font-weight: 700; }
-  .sig .name { color: #4b5563; }
-  .legend { font-size: 9.5px; color: #6b7280; margin: 10px 0 0; }
-  .foot { margin-top: 12px; border-top: 1px solid ${shade(brand, 90)}; padding-top: 6px; text-align: center; font-size: 10px; color: #6b7280; }
-  .credit { font-size: 9px; color: #9ca3af; margin-top: 2px; }
-  .empty { font-size: 11px; color: #6b7280; margin: 2px 0; font-style: italic; }
-  .noprint { position: sticky; top: 0; z-index: 5; background: #111827; color: #fff; padding: 8px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .noprint button { background: ${brand}; color: #fff; border: 0; padding: 8px 18px; border-radius: 8px; font-size: 13px; cursor: pointer; }
-  .status-pill { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 3px 10px; border-radius: 999px; background: #374151; }
+  html, body { margin: 0; padding: 0; background: #e7ebef; }
+  body { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, "Noto Naskh Arabic", Tahoma, sans-serif; color: #1f2937; padding: 16px 0 30px; }
+
+  /* ---------- screen-only toolbar ---------- */
+  .noprint { position: sticky; top: 0; z-index: 50; background: #0f172a; color: #e2e8f0; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+  .noprint .tb-left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .noprint .note { font-size: 12px; color: #cbd5e1; }
+  .noprint .print-btn { background: ${brand}; color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .noprint .print-btn:hover { background: ${brandDark}; }
+  .status-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 3px 10px; border-radius: 999px; background: #475569; color: #fff; }
   .status-published, .status-approved, .status-locked { background: #15803d; }
   .status-draft, .status-returned { background: #b45309; }
   .status-submitted, .status-under_review { background: #1d4ed8; }
   .status-incomplete { background: #b91c1c; }
-  .noprint .note { font-size: 12px; color: #d1d5db; }
-  @media print {
-    html, body { background: #fff; }
-    .noprint { display: none !important; }
-    .sheet { width: auto; min-height: auto; margin: 0; border-top-width: ${modern ? "4mm" : "2px"}; box-shadow: none; }
+
+  /* ---------- the A4 page ---------- */
+  .sheet {
+    position: relative; background: #fff; margin: 0 auto 16px;
+    width: ${sheetW}; min-height: ${sheetH}; padding: ${padY} ${padX};
+    box-shadow: 0 1px 3px rgba(15,23,42,.15), 0 14px 34px rgba(15,23,42,.08);
+    /* With @page margin 0 the sheet itself carries the printable margins.
+       When a long report flows onto a second page, clone the box padding so
+       the continuation page keeps its top/bottom margins too. */
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
   }
-  @media screen and (max-width: 720px) {
-    .sheet { width: 100%; padding: 4mm; }
-    .student-grid { margin-inline-end: 0; }
-    .photo { float: none; display: block; margin: 6px auto; }
+  .inner {
+    position: relative; z-index: 1;
+    /* Fills exactly one printable page; the trailing reserve keeps in-flow
+       content out of the footer zone (see .foot below). */
+    min-height: ${innerH};
+    padding-bottom: 19mm;
+  }
+
+  /* ---------- watermarks (subtle, behind content) ---------- */
+  .watermark { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 0; pointer-events: none; }
+  .watermark span { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: 34px; letter-spacing: .3em; text-transform: uppercase; color: ${brand}; opacity: .06; text-align: center; max-width: 86%; line-height: 1.6; }
+  .draft-mark { position: absolute; top: 40%; inset-inline: 0; display: flex; justify-content: center; z-index: 0; pointer-events: none; }
+  .draft-mark span { font-size: 11px; font-weight: 700; letter-spacing: .42em; text-transform: uppercase; color: #b91c1c; opacity: .38; }
+
+  /* ---------- school header ---------- */
+  .masthead { display: flex; align-items: center; gap: 5mm; padding-bottom: 2.5mm; }
+  .masthead .logo { width: ${logoSize}; height: ${logoSize}; object-fit: contain; flex: none; }
+  .logo-fallback { display: flex; align-items: center; justify-content: center; background: ${tint(brand, 0.88)}; color: ${brandDark}; border: .4mm solid ${tint(brand, 0.6)}; font-family: Georgia, "Times New Roman", serif; font-size: ${compact ? "9mm" : "10.5mm"}; font-weight: 700; }
+  .masthead-id { flex: 1; min-width: 0; text-align: center; }
+  .school-name { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: ${nameSize}px; font-weight: 700; color: ${brandDark}; line-height: 1.16; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
+  .school-name .ar { font-size: .8em; letter-spacing: 0; }
+  .motto { margin: 1.2mm 0 0; font-size: ${compact ? "9px" : "10px"}; font-style: italic; color: #4b5563; letter-spacing: .16em; text-transform: uppercase; }
+  .contact { margin: 1.5mm 0 0; font-size: 8.8px; color: #5b6672; }
+  .masthead-crest { width: ${logoSize}; flex: none; }
+  .masthead-rule { border-top: 1mm solid ${brand}; border-bottom: .35mm solid ${brand}; height: 1.4mm; margin: 0 0 3mm; }
+
+  /* ---------- report title ---------- */
+  .doc-title { text-align: center; margin: 0 0 3mm; padding: 1.8mm 0 1.6mm; border-top: .35mm solid ${tint(brand, 0.5)}; border-bottom: .35mm solid ${tint(brand, 0.5)}; }
+  .doc-title .en { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: ${compact ? "13px" : "14.5px"}; font-weight: 700; letter-spacing: .3em; text-transform: uppercase; color: ${brandDark}; }
+  .doc-title .ar-inline { font-size: .8em; letter-spacing: 0; }
+  .doc-title .meta { margin: 1.4mm 0 0; font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: #475361; }
+  .doc-title .meta b { color: #111827; }
+
+  /* ---------- student information ---------- */
+  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4.5mm; border: .35mm solid ${tint(brand, 0.55)}; background: ${tint(brand, 0.965)}; padding: 2.4mm 3.5mm 2.6mm; }
+  .student-band.no-photo { grid-template-columns: 1fr; }
+  .student-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 6mm; margin: 0; }
+  .student-grid .cell { display: flex; align-items: baseline; gap: 2mm; border-bottom: 1px dotted #c3ccd5; padding: 1.25mm 0; }
+  .student-grid dt { min-width: 30mm; flex: none; color: #5b6672; font-size: 8.8px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .student-grid dd { margin: 0; flex: 1; min-width: 0; font-size: 10.4px; font-weight: 600; color: #111827; overflow-wrap: anywhere; }
+  .photo-slot { width: 23mm; height: 28.5mm; border: .35mm solid #b7c2cc; background: #fff; overflow: hidden; align-self: start; }
+  .photo-slot .photo { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .photo-slot.photo-empty { display: flex; align-items: center; justify-content: center; background: #f2f5f7; }
+  .photo-slot.photo-empty svg { width: 12mm; height: 12mm; fill: #b6c2cd; }
+
+  /* ---------- sections ---------- */
+  .block { margin-top: 2.6mm; }
+  .block h2 { margin: 0 0 1.8mm; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; color: ${brandDark}; display: flex; align-items: center; gap: 2.5mm; break-after: avoid; }
+  .block h2::after { content: ""; flex: 1; border-top: .4mm solid ${tint(brand, 0.5)}; }
+
+  /* ---------- academic performance table ---------- */
+  table.results { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: ${dense ? "9.6px" : "10.2px"}; }
+  table.results th, table.results td { border: .3mm solid #c6cfd6; padding: ${dense ? "1.1mm 1.6mm" : "1.4mm 2mm"}; text-align: center; line-height: 1.3; }
+  table.results th { background: ${brand}; color: #fff; font-size: ${dense ? "8.2px" : "8.6px"}; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: ${dense ? "1.3mm 1mm" : "1.6mm 1.2mm"}; }
+  table.results td.subj, table.results th.subj { text-align: start; padding-inline-start: 2.2mm; overflow-wrap: anywhere; }
+  table.results td.num { font-variant-numeric: tabular-nums; }
+  table.results td.total { font-weight: 700; }
+  table.results td.grade { font-weight: 700; color: ${brandDark}; }
+  table.results td.remark { text-align: start; color: #374151; }
+  table.results tbody tr:nth-child(even) td { background: ${tint(brand, 0.94)}; }
+  table.results thead { display: table-header-group; }
+  table.results tr { break-inside: avoid; page-break-inside: avoid; }
+
+  /* ---------- status notice ---------- */
+  .status-notice { border: .35mm solid #d9a441; border-inline-start: 1.8mm solid #b45309; background: #fffaf0; padding: 2mm 3mm; margin-top: 2.5mm; break-inside: avoid; }
+  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: #92400e; }
+  .status-notice .notice-body { margin: .8mm 0 0; font-size: 9.6px; color: #7c4a12; }
+
+  /* ---------- performance summary ---------- */
+  table.summary { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  
+  table.summary .k { display: block; font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: #5b6672; margin: 0 0 .6mm; }
+  table.summary .v { display: block; font-size: 12px; font-weight: 700; color: ${brandDark}; line-height: 1.15; }
+  table.summary .sum-blank { background: #fafbfc; }
+
+  /* ---------- grading scale ---------- */
+  .legend-wrap { margin-top: 1.6mm; }
+  table.legend-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.legend-table th.legend-head { background: ${tint(brand, 0.88)}; color: ${brandDark}; border: .3mm solid #cfd8de; padding: 1mm 1.5mm; font-size: 8.3px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; text-align: start; white-space: nowrap; }
+  table.legend-table td { border: .3mm solid #cfd8de; padding: 1mm 1.5mm; text-align: center; font-size: 8.3px; color: #374151; background: #fbfcfd; overflow-wrap: anywhere; }
+  table.legend-table b { color: ${brandDark}; font-size: 9.3px; margin-inline-end: .8mm; }
+
+  /* ---------- attendance ---------- */
+  table.mini { width: 100%; border-collapse: collapse; font-size: 9.8px; }
+  table.mini th { background: ${tint(brand, 0.88)}; color: ${brandDark}; font-size: 8.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; border: .3mm solid #c6cfd6; padding: 1.1mm 1.8mm; }
+  table.mini td { border: .3mm solid #c6cfd6; padding: 1.2mm 1.8mm; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* ---------- behaviour ---------- */
+  .behaviour { display: grid; grid-template-columns: repeat(auto-fill, minmax(42mm, 1fr)); gap: 1.2mm 4mm; }
+  .behaviour .beh-cell { display: flex; justify-content: space-between; gap: 2mm; font-size: 9.8px; border-bottom: 1px dotted #c3ccd5; padding: .9mm 0; }
+  .behaviour .k { font-weight: 600; color: #374151; min-width: 0; }
+  .behaviour .v { font-weight: 700; color: #111827; white-space: nowrap; }
+
+  /* ---------- comments ---------- */
+  .comments-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm; }
+  .comment-box { border: .35mm solid #c6cfd6; min-width: 0; break-inside: avoid; }
+  .comment-label { margin: 0; background: ${tint(brand, 0.92)}; color: ${brandDark}; font-size: 8.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; padding: 1.4mm 2.5mm; border-bottom: .3mm solid #c6cfd6; }
+  .comment-text { margin: 0; padding: 2mm 2.5mm 2.2mm; font-size: 10.2px; color: #1f2937; min-height: ${dense ? "7mm" : "8mm"}; line-height: 1.45; overflow-wrap: anywhere; }
+
+  /* ---------- promotion ---------- */
+  .promo-line { display: flex; align-items: center; gap: 5mm; flex-wrap: wrap; }
+  .promo-badge { display: inline-block; border: .5mm solid ${brandDark}; color: ${brandDark}; background: ${tint(brand, 0.93)}; font-weight: 700; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; padding: 1.8mm 5mm; }
+  .next-term { margin: 0; font-size: 9.8px; color: #374151; }
+  .next-term b { color: #111827; }
+
+  /* ---------- signatures ---------- */
+  .signatures { display: flex; justify-content: space-around; gap: 6mm; margin-top: 4mm; break-inside: avoid; }
+  .sig { flex: 1; max-width: 75mm; text-align: center; }
+  .sig-space { height: ${dense ? "9.5mm" : "11.5mm"}; }
+  .sig-rule { border-top: .35mm solid #374151; }
+  .sig-who { margin: 1.2mm 0 0; font-size: 9.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #1f2937; }
+  .sig-name { margin: .5mm 0 0; font-size: 9.2px; color: #4b5563; }
+  .sig-date { margin: 1mm 0 0; font-size: 8.4px; color: #6b7280; letter-spacing: .06em; }
+
+  /* ---------- footer (pinned to the foot of the page) ---------- */
+  .foot { position: absolute; bottom: 0; left: 0; right: 0; border-top: .8mm solid ${brand}; padding-top: 1.8mm; text-align: center; font-size: 8.4px; color: #5b6672; line-height: 1.55; }
+  .foot .verified { margin-top: .6mm; font-size: 7.9px; color: #6b7280; }
+  .foot .credit { margin-top: .8mm; font-size: 8px; color: #9aa4ae; letter-spacing: .1em; text-transform: uppercase; }
+
+  .empty { font-size: 9.8px; color: #6b7280; margin: 1mm 0 0; font-style: italic; }
+
+  /* ---------- layout variants ---------- */
+  .layout-modern .masthead { background: ${tint(brand, 0.9)}; margin: calc(-1 * ${padY}) calc(-1 * ${padX}) 3.5mm; padding: ${padY} ${padX} 3mm; }
+  .layout-modern .masthead-rule { display: none; }
+  .layout-compact .masthead { gap: 4mm; padding-bottom: 2mm; }
+  .layout-compact .doc-title { padding: 1.6mm 0 1.4mm; margin-bottom: 2.6mm; }
+  .d-dense .block { margin-top: 2.2mm; }
+  .d-dense .student-grid .cell { padding: 1.1mm 0; }
+  .d-dense .photo-slot { width: 20mm; height: 24.5mm; }
+  .d-dense .behaviour { grid-template-columns: repeat(auto-fill, minmax(36mm, 1fr)); }
+  .d-dense .sig-space { height: 9.5mm; }
+
+  /* ---------- printing ---------- */
+  @media print {
+    html, body { background: #fff; padding: 0; }
+    .noprint { display: none !important; }
+    .sheet { width: auto; min-height: auto; margin: 0; box-shadow: none; }
+    .sheet, .sheet * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    p, td, dd { orphans: 2; widows: 2; }
+  }
+
+  /* ---------- small screens: keep the document A4, allow panning ---------- */
+  @media screen and (max-width: 840px) {
+    body { padding: 0; }
+    .sheet { margin: 0; box-shadow: none; }
+    .noprint { padding: 8px 10px; }
   }
 </style>
 </head>
 <body>
 ${toolbar}
-<div class="sheet layout-${esc(t.layout)}">
+<div class="sheet layout-${esc(t.layout)}${dense ? " d-dense" : ""}">
   ${watermark}
   ${draftMark}
   <div class="inner">
-    <header class="head">
+    <header class="masthead">
       ${logo}
-      <div class="id">
-        <div class="name">${esc(data.madrasa.nameEn)}${data.madrasa.nameAr ? ` <span class="ar" dir="rtl">· ${esc(data.madrasa.nameAr)}</span>` : ""}</div>
-        ${data.madrasa.mottoEn || data.madrasa.mottoAr ? `<div class="motto">${esc(rtl && data.madrasa.mottoAr ? data.madrasa.mottoAr : (data.madrasa.mottoEn || data.madrasa.mottoAr))}</div>` : ""}
-        ${contactLine ? `<div class="contact">${contactLine}</div>` : ""}
+      <div class="masthead-id">
+        <h1 class="school-name">${esc(data.madrasa.nameEn)}${data.madrasa.nameAr ? ` <span class="ar" dir="rtl">· ${esc(data.madrasa.nameAr)}</span>` : ""}</h1>
+        ${motto ? `<p class="motto">${esc(motto)}</p>` : ""}
+        ${addressLine ? `<p class="contact">${esc(addressLine)}</p>` : ""}
+        ${contactLine ? `<p class="contact">${esc(contactLine)}</p>` : ""}
       </div>
-      <div style="width:${compact ? "58px" : "76px"}" aria-hidden="true"></div>
-    </header>    <div class="doc-title">
-      <div class="en">${esc(L("Termly Report Sheet", "التقرير الفصلي"))}</div>
-      ${data.madrasa.nameAr ? `<div class="ar" dir="rtl">بطاقة النتائج المدرسية</div>` : ""}
+      <div class="masthead-crest" aria-hidden="true"></div>
+    </header>
+    <div class="masthead-rule" aria-hidden="true"></div>
+    <div class="doc-title">
+      <p class="en">${esc(L("Term Report Sheet", "التقرير الفصلي"))}${data.madrasa.nameAr ? ` <span class="ar-inline" dir="rtl">· بطاقة النتائج المدرسية</span>` : ""}</p>
+      <p class="meta">${esc(L("Academic session", "العام الدراسي"))}: <b>${esc(data.session)}</b> &nbsp;·&nbsp; ${esc(L("Term", "الفترة"))}: <b>${esc(termName)}</b></p>
     </div>
-    ${photo}
-    <div class="student-grid">${infoCells.join("")}</div>
-    <table class="results">
-      <thead>${subjectHeader}</thead>
-      <tbody>${subjectRows || `<tr><td class="subj" colspan="${colCount + 1}">${esc(L("No approved subject results for this term yet.", "لا توجد نتائج معتمدة لهذه الفترة بعد."))}</td></tr>`}</tbody>
-    </table>
-    ${incompleteNotice}
-    ${perfRows ? `<div class="perf">${perfRows}</div>` : ""}
-    ${legend}
+    <section class="student-band${photoSlot ? "" : " no-photo"}" aria-label="${esc(L("Student information", "بيانات الطالب"))}">
+      <dl class="student-grid">${infoCells.join("")}</dl>
+      ${photoSlot}
+    </section>
+    <section class="block">
+      <h2>${esc(L("Academic performance", "الأداء الأكاديمي"))}</h2>
+      <table class="results">${colgroup}
+        <thead>${subjectHeader}</thead>
+        <tbody>${subjectRows || `<tr><td class="subj" colspan="${colCount + 1}">${esc(L("No approved subject results for this term yet.", "لا توجد نتائج معتمدة لهذه الفترة بعد."))}</td></tr>`}</tbody>
+      </table>
+      ${statusNotice}
+    </section>
+    ${summarySection}
+    ${summarySection ? "" : legend ? `<section class="block">${legend}</section>` : ""}
     ${attendanceSection}
     ${behaviourSection}
     ${commentsSection}
     ${promoSection}
-    <div class="signatures">${signatures}</div>
+    ${signatures ? `<div class="signatures">${signatures}</div>` : ""}
     <footer class="foot">
-      <div>${esc(data.madrasa.nameEn)}${contactLine ? ` · ${contactLine}` : ""}</div>
-      <div>${esc(L("Session", "العام"))}: ${esc(data.session)} — ${esc(rtl ? (data.term.nameAr || data.term.nameEn) : data.term.nameEn)}${data.summary.publishedAt ? ` · ${esc(L("Issued", "صدر"))}: ${esc(fmtDate(data.summary.publishedAt))}` : ""}</div>
-      ${t.showReference ? `<div>${esc(L("Report no.", "رقم التقرير"))}: ${esc(data.reference)}</div>` : ""}
-      ${credit}
+      ${footLine1 ? `<div>${esc(footLine1)}</div>` : ""}
+      ${footLine2 ? `<div>${esc(footLine2)}</div>` : ""}
+      ${footLine3 ? `<div>${esc(footLine3)}</div>` : ""}
+      ${verifiedLine ? `<div class="verified">${esc(verifiedLine)}</div>` : ""}
+      ${t.showEdusphereCredit ? `<div class="credit">Powered by EduSphere</div>` : ""}
     </footer>
   </div>
 </div>
-${opts.publicCopy ? `<div style="text-align:center;font-size:11px;color:#6b7280;padding:6px 0 12px">Published online copy — verified ${esc(new Date().toISOString().slice(0, 16).replace("T", " "))} UTC</div>` : ""}
+<script src="/js/report-sheet-viewer.js" defer></script>
 </body>
 </html>`;
 }
@@ -1089,18 +1341,20 @@ function renderBulkReportSheets(sheets, opts = {}) {
     .replace("</style>", "\n  .bulk-page { break-after: page; page-break-after: always; }\n  .bulk-page:last-child { break-after: auto; page-break-after: auto; }\n</style>");
   // Each sheet keeps its own direction: an Arabic-named student's sheet is
   // extracted with dir="rtl" so the combined document lays out correctly.
+  // The per-document viewer <script> is stripped (one copy is added below).
   const bodies = sheets.map((sheet, i) => {
     const doc = documents[i];
     const start = doc.indexOf('<div class="sheet');
     const end = doc.lastIndexOf("</body>");
     const dir = String(sheet.student && sheet.student.nameAr || "") ? "rtl" : "ltr";
-    return `<section class="bulk-page" dir="${dir}">${doc.slice(start, end)}</section>`;
+    return `<section class="bulk-page" dir="${dir}">${doc.slice(start, end).replace(/<script[\s\S]*?<\/script>/g, "")}</section>`;
   }).join("\n");
   return `<!doctype html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Report sheets — batch</title>${style}</head>
-<body><div class="noprint toolbar"><button type="button" onclick="window.print()">🖨 Print / Save all as PDF</button><span class="note">${sheets.length} report sheet(s)</span></div>
+<body><div class="noprint toolbar"><div class="tb-left"><span class="note">${sheets.length} report sheet(s)</span></div><button type="button" class="print-btn" data-print onclick="window.print()">🖨 Print / Save all as PDF</button></div>
 ${bodies}
+<script src="/js/report-sheet-viewer.js" defer></script>
 </body></html>`;
 }
 
