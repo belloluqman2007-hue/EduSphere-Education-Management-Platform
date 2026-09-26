@@ -27,3 +27,6 @@ Thumbs.db
 
 # Promo pipeline render outputs (regenerate via tools/promo scripts)
 tools/promo/dist/
+
+# Agent workspace scratch (dev-only preview/seed scripts, never shipped)
+.arena/

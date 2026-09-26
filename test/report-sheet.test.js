@@ -537,3 +537,96 @@ test("the public result checker still serves the new sheet for published terms o
   // Republish for any later tests.
   await adminA.api("PUT", "/api/results/summaries/publish", { classId: ctx.classA1, termId: ctx.termA1 });
 });
+
+/* ------------------- redesigned sheet: images, print, marks --------------- */
+
+test("images are only emitted for upload files that actually exist", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  // A real photograph on disk, and a logo path whose file is gone (the
+  // classic "restored database without the uploads directory" case).
+  fs.mkdirSync(path.join(process.env.UPLOAD_DIR, "photos"), { recursive: true });
+  fs.writeFileSync(
+    path.join(process.env.UPLOAD_DIR, "photos", "report-test.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64")
+  );
+  await db.run("UPDATE students SET photo_path = '/uploads/photos/report-test.png' WHERE id = ?", [ctx.studentA1]);
+  await db.run("UPDATE madaris SET logo_path = '/uploads/logos/gone.png' WHERE id = ?", [ctx.madrasaA]);
+
+  const html = await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`);
+  assert.equal(html.status, 200);
+  const text = await html.res.text();
+  // The real photograph is emitted as a same-origin upload URL…
+  assert.match(text, /<img class="photo" src="\/uploads\/photos\/report-test\.png"/);
+  // …but the dangling logo never becomes an <img>: the browser must not be
+  // handed a URL that answers with the SPA's index.html and paint a
+  // broken-image icon. A monogram placeholder is shown instead.
+  assert.ok(!text.includes("/uploads/logos/gone.png"), "a missing upload file is never referenced");
+  assert.match(text, /logo-fallback/);
+  // A traversal-shaped path is refused as well.
+  await db.run("UPDATE students SET photo_path = '/uploads/../server/config.js' WHERE id = ?", [ctx.studentA1]);
+  const hostile = await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`);
+  const hostileText = await hostile.res.text();
+  assert.ok(!hostileText.includes("../server/config.js"));
+  assert.match(hostileText, /photo-slot photo-empty/);
+
+  // Restore the fixture for any later assertions.
+  await db.run("UPDATE students SET photo_path = '' WHERE id = ?", [ctx.studentA1]);
+  await db.run("UPDATE madaris SET logo_path = '' WHERE id = ?", [ctx.madrasaA]);
+});
+
+test("the print button works under the platform CSP (script-src-attr 'none')", async () => {
+  const html = await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`);
+  const text = await html.res.text();
+  assert.match(text, /data-print/);                    // CSP-safe click hook
+  assert.match(text, /\/js\/report-sheet-viewer\.js/); // same-origin script wires it
+  assert.match(text, /window\.print\(\)/);             // inline fallback for CSP-less contexts
+  // The bulk document carries exactly one viewer script, not one per sheet.
+  const bulk = await adminA.req("GET", `/api/results/report-cards/bulk?classId=${ctx.classA1}&termId=${ctx.termA1}`);
+  const bulkText = await bulk.res.text();
+  assert.equal((bulkText.match(/report-sheet-viewer\.js/g) || []).length, 1);
+});
+
+test("working-copy marking is subtle and disappears once results are final", async () => {
+  const reset = (status) => db.run(
+    "UPDATE results SET status=? WHERE madrasa_id=? AND class_id=? AND term_id=?",
+    [status, ctx.madrasaA, ctx.classA1, ctx.termA1]
+  );
+  // Retract publication first — a published summary keeps the report in the
+  // "published" state whatever the individual result rows say.
+  await adminA.api("PUT", "/api/results/summaries/publish", { classId: ctx.classA1, termId: ctx.termA1, publish: false });
+  await reset("draft");
+  const draftText = await (await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`)).res.text();
+  assert.match(draftText, /<div class="draft-mark"/, "a draft staff copy is marked as a working copy");
+  assert.match(draftText, /status-notice/);
+
+  await reset("approved");
+  const approvedText = await (await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`)).res.text();
+  assert.ok(!/<div class="draft-mark"/.test(approvedText), "an approved report carries no working-copy mark");
+  assert.ok(!/<aside class="status-notice"/.test(approvedText), "and no incomplete warning");
+
+  // The published portal copy is a clean, final document.
+  await adminA.api("PUT", "/api/results/summaries/publish", { classId: ctx.classA1, termId: ctx.termA1 });
+  const portal = await studentA1.req("GET", `/api/portal/report-card?termId=${ctx.termA1}`);
+  assert.equal(portal.status, 200);
+  const portalText = await portal.res.text();
+  assert.ok(!/<div class="draft-mark"/.test(portalText), "the student portal never shows a working-copy mark");
+});
+
+test("the redesigned sheet is a print-ready A4 document, not a dashboard", async () => {
+  const html = await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`);
+  const text = await html.res.text();
+  // Full-bleed A4 page whose own padding provides the printable margins, and
+  // box-decoration-break so a continuation page keeps them too.
+  assert.match(text, /@page\s*\{\s*size:\s*A4\s+portrait;\s*margin:\s*0/);
+  assert.match(text, /box-decoration-break:\s*clone/);
+  assert.match(text, /print-color-adjust:\s*exact/);
+  // Performance is a structured summary table (no dashboard pills)…
+  assert.match(text, /<table class="summary"/);
+  assert.match(text, /Subjects offered|عدد المواد/);
+  assert.ok(!text.includes('class="perf"'));
+  // …attendance is a compact table…
+  assert.match(text, /<table class="mini att"/);
+  // …and the grading scale prints in a readable strip.
+  assert.match(text, /legend-table/);
+});

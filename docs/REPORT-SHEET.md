@@ -90,8 +90,28 @@ The platform's document pipeline (ID cards, certificates) renders HTML and produ
 PDFs through the browser's print dialog; the report sheet uses the same pipeline.
 This is deliberate: it preserves Arabic text shaping, RTL layout, school branding,
 table page breaks and works on mobile and desktop without a server-side PDF binary.
-The print CSS uses real A4 `@page` rules, repeats table headers after page breaks,
-never splits a row across pages, and hides all application chrome.
+The sheet is laid out as a true A4 document — `@page { size: A4 …; margin: 0 }`
+with the sheet itself carrying the printable margins — so the on-screen preview
+matches the printed PDF. Long reports fragment cleanly (repeating table headers,
+rows never split across pages, `box-decoration-break: clone` keeps the margins on
+continuation pages) and the footer is pinned to the foot of the final page.
+
+**Images never show as broken.** A logo or photograph `<img>` is only emitted
+after the renderer has verified the underlying file exists in this deployment's
+upload directory (`assetServed` in `services/report-sheet.js`). The classic cause
+of broken images — a database row whose photo/logo path survived a restore
+without the file, which the static handler then answers with the SPA's
+`index.html` — degrades to a clean placeholder instead. A small same-origin
+script (`/js/report-sheet-viewer.js`) additionally wires the print button (the
+platform CSP blocks inline `onclick` handlers) and swaps any image that still
+fails at request time for the same placeholder, so a broken-image icon or raw
+alt text is never displayed.
+
+**Working copies.** A staff preview of a not-yet-approved report carries a
+subtle "Working copy — not final" mark and, when results are missing or
+unapproved, a compact status notice naming the affected subjects. Approved,
+published and locked reports — and every portal/public copy — are clean final
+documents with no draft marking.
 
 ## Database
 
