@@ -27,13 +27,18 @@ results (gradebook) → submit → review → approve → compute → publish �
 
 Everything is dynamic, from the institution's own data:
 
-- **School identity**: logo (fallback monogram), name (EN + AR), motto, address, phone,
-  email, website, brand colour. The platform never substitutes its own branding for the
-  school's; "Powered by EduSphere" appears in the footer only when the institution
-  enables it.
-- **Student identity**: name (EN/AR), admission number, student code, class, gender,
-  date of birth, section/program where present, photograph where uploaded (only
-  `/uploads/...` paths are ever used as image sources).
+- **School identity** (printed once, in the masthead): logo (fallback monogram), name
+  (EN + AR), motto, address, phone, email, website, brand colour. The platform never
+  substitutes its own branding for the school's; "Powered by EduSphere" appears in the
+  footer only when the institution enables it. The academic session and term are
+  printed once, in the title band — never repeated in the student block or footer.
+- **Student identity** (printed): name (EN/AR), student ID, class, gender and the
+  photograph where uploaded (only `/uploads/...` paths are ever used as image
+  sources). Date of birth, admission number, section/program and the report
+  reference are **kept in the database and returned by the API** but are no longer
+  printed in the student block — an official report card identifies the student,
+  it does not restate their whole record. The reference still appears once, small,
+  in the footer.
 - **Subjects**: the subjects actually assigned to the class with approved/published
   results — Islamic and Western institutions use the same engine because subjects are
   data, not code.
@@ -55,6 +60,40 @@ Everything is dynamic, from the institution's own data:
 - **Reference number**: deterministic `EDU-<session>-<class>-<admission>` value stored
   on `term_summaries.report_reference`; internal database ids are never printed.
 
+## Category themes (Islamic / Western)
+
+One engine, one data structure, one set of sections — the *look* is chosen from the
+institution's **existing** category (`madaris.category`, falling back to
+`institution_type`), normalised by `services/institution.js`. No second report system
+and no new school-type system were introduced.
+
+| | Islamic | Western |
+| --- | --- | --- |
+| Palette | deep academic green `#14532d` + subtle gold `#a87f2b` | navy `#0a2342` + slate blue `#3f6fa6` |
+| Typography | serif academic headings | modern sans headings |
+| Masthead | centred, small diamond crest, green/gold double rule | left-aligned with a navy keyline, contacts stacked right, single rule |
+| Title | framed band with a faint 8-point-star hairline and `◆` marks | reversed solid navy bar |
+| Detail | diamond section markers, gold-underlined table header | square accent markers, slate zebra striping |
+
+Only the active theme's CSS is emitted, so a Western report contains no Islamic
+selector, ornament or Arabic text at all, and the engine never generates religious
+content of its own. A school's configured brand colour overrides the category default
+in either theme. `GET /results/report-template/preview` previews the *viewing
+tenant's* theme, and uses category-appropriate sample subjects.
+
+## Page layout and density
+
+The renderer measures the document in millimetres before emitting it
+(`planReportSheet()` exposes the result). `planSheet()` picks the loosest of three
+density tiers that still fits A4's 279 mm of printable height with a 5 mm reserve:
+`regular` (10.2 px table text, 6.0 mm rows), `dense` (9.6 px, 5.2 mm) and `tight`
+(9.0 px, 4.6 mm) — never smaller, so the sheet stays readable. **At least 12
+subjects fit one A4 portrait page**; 15 fit at `dense`, 20 at `tight`, and only
+beyond that does the sheet flow onto a second page. Spare millimetres are returned
+to the comment boxes and signature space rather than left as dead whitespace, and
+`planColumns()` shares the horizontal space between the subject and remark columns
+according to the text they actually contain.
+
 ## Configurable template
 
 Stored per institution in the existing `settings` table under `report_template`
@@ -62,7 +101,8 @@ Stored per institution in the existing `settings` table under `report_template`
 setup. An administrator (permission `report_cards.templates`) can configure:
 
 layout (classic / modern / compact) · orientation (auto/portrait/landscape — auto
-switches to landscape for wide subject tables) · brand colour · result columns ·
+switches to landscape only when *every* result column is enabled, because portrait
+now carries long subject lists on one page) · brand colour · result columns ·
 CA/Exam labels · section visibility (position, attendance, behaviour, comments,
 promotion, class performance, student details, photo, next term, grading legend,
 reference, watermark, credit line) · watermark text · behaviour categories ·
@@ -96,12 +136,18 @@ matches the printed PDF. Long reports fragment cleanly (repeating table headers,
 rows never split across pages, `box-decoration-break: clone` keeps the margins on
 continuation pages) and the footer is pinned to the foot of the final page.
 
-**Images never show as broken.** A logo or photograph `<img>` is only emitted
-after the renderer has verified the underlying file exists in this deployment's
-upload directory (`assetServed` in `services/report-sheet.js`). The classic cause
-of broken images — a database row whose photo/logo path survived a restore
-without the file, which the static handler then answers with the SPA's
-`index.html` — degrades to a clean placeholder instead. A small same-origin
+**Images never show as broken.** The classic cause was a transport bug, now fixed
+at the source: `/uploads` is served by `express.static(..., { fallthrough: true })`,
+and the SPA fallback answered any GET that `req.accepts("html")` — which is true for
+an `<img>` request, because browsers send `Accept: image/*,*/*;q=0.8`. A path whose
+file had not survived a restore therefore returned **200 `text/html`** and the
+browser painted a broken-image icon with the alt text. `server/app.js` now
+terminates `/uploads` with a 404 straight after the static mount, so no file route
+can ever be answered with the application shell. On top of that, a logo or
+photograph `<img>` is only emitted after the renderer has verified the underlying
+file exists in this deployment's upload directory (`assetServed` in
+`services/report-sheet.js`); anything else degrades to a designed placeholder (brand
+monogram / framed silhouette in a 30 × 36 mm passport frame). A small same-origin
 script (`/js/report-sheet-viewer.js`) additionally wires the print button (the
 platform CSP blocks inline `onclick` handlers) and swaps any image that still
 fails at request time for the same placeholder, so a broken-image icon or raw

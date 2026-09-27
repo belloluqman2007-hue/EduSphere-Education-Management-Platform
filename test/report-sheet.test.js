@@ -630,3 +630,60 @@ test("the redesigned sheet is a print-ready A4 document, not a dashboard", async
   // …and the grading scale prints in a readable strip.
   assert.match(text, /legend-table/);
 });
+
+test("a missing upload answers 404 — the SPA never impersonates an image", async () => {
+  // Root cause of the broken logo / broken student photograph: express.static
+  // fell through to the HTML SPA fallback, so <img src="/uploads/…"> for a
+  // vanished file received "200 OK, text/html" and every browser painted a
+  // broken-image icon with the alt text beside it.
+  const miss = await anon.req("GET", "/uploads/students/definitely-missing.jpg", null, {
+    headers: { Accept: "image/avif,image/webp,image/*,*/*;q=0.8" },
+  });
+  assert.equal(miss.status, 404, "a missing upload is a 404, not a page");
+  assert.ok(!/text\/html/.test(miss.res.headers.get("content-type") || ""), "and never text/html");
+
+  // Even a browser navigation to the same URL must not be answered with the app.
+  const asPage = await anon.req("GET", "/uploads/logos/definitely-missing.png", null, {
+    headers: { Accept: "text/html,application/xhtml+xml" },
+  });
+  assert.equal(asPage.status, 404);
+  const text = await asPage.res.text();
+  assert.ok(!text.includes("<html"), "the SPA shell is not served under /uploads");
+
+  // Real application routes still fall through to the SPA as before.
+  const spa = await anon.req("GET", "/some/app/route", null, { headers: { Accept: "text/html" } });
+  assert.equal(spa.status, 200);
+  assert.match(await spa.res.text(), /<html/i);
+});
+
+test("the report theme follows the institution's own category, per tenant", async () => {
+  const themeOf = async (client, studentId, termId) => {
+    const html = await client.req("GET", `/api/results/report-card/${studentId}/${termId}`);
+    const text = await html.res.text();
+    return /class="sheet [^"]*theme-(islamic|western)/.exec(text)[1];
+  };
+
+  // The fixture tenants default to the Islamic category.
+  assert.equal(await themeOf(adminA, ctx.studentA1, ctx.termA1), "islamic");
+
+  // Switching madrasa A to the Western category restyles only madrasa A.
+  await db.run("UPDATE madaris SET category = 'western' WHERE id = ?", [ctx.madrasaA]);
+  const western = await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`);
+  const westernText = await western.res.text();
+  assert.match(westernText, /class="sheet [^"]*theme-western/);
+  assert.ok(!westernText.includes("theme-islamic"), "a Western sheet carries no Islamic styling at all");
+  assert.ok(!westernText.includes("masthead-crest"));
+
+  // Madrasa B is untouched by its neighbour's branding.
+  const b = await db.get("SELECT category FROM madaris WHERE id = ?", [ctx.madrasaB]);
+  assert.equal(String(b.category || "islamic"), "islamic");
+
+  // The template preview follows the same tenant category.
+  const preview = await adminA.req("GET", "/api/results/report-template/preview");
+  const previewText = await preview.res.text();
+  assert.match(previewText, /theme-western/);
+  assert.ok(!previewText.includes("Islamic Studies"), "a Western preview shows no Islamic terminology");
+
+  await db.run("UPDATE madaris SET category = 'islamic' WHERE id = ?", [ctx.madrasaA]);
+  assert.equal(await themeOf(adminA, ctx.studentA1, ctx.termA1), "islamic");
+});

@@ -691,7 +691,9 @@ router.get("/report-template/preview", requireStaffPermission("report_cards.view
   const stored = await reportSheet.getReportTemplate(tid);
   const incoming = req.query.template ? reportSheet.normaliseTemplate(String(req.query.template)) : stored;
   const cfg = await grading.getGradingConfig(tid);
-  const sample = reportSheet.sampleReportSheet(incoming, cfg);
+  // Preview in this tenant's own theme (existing institution category).
+  const inst = await db.get("SELECT category, institution_type FROM madaris WHERE id = ?", [tid]);
+  const sample = reportSheet.sampleReportSheet(incoming, cfg, inst ? (inst.category || inst.institution_type) : "");
   res.type("html").send(reportSheet.renderReportSheetHTML(sample)
     .replace("<body>", '<body data-sample-preview="1">')
     .replace('class="doc-title"', 'class="doc-title" title="Sample preview"'));
