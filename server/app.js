@@ -119,6 +119,20 @@ function createApp() {
   // Static frontend + uploads
   app.use(express.static(path.join(__dirname, "..", "public")));
   app.use("/uploads", express.static(config.UPLOAD_DIR, { maxAge: "1h", fallthrough: true }));
+  // Uploads are files, never pages. Without this terminator a missing file
+  // (a photo/logo path that outlived its file — restored backup, ephemeral
+  // disk) fell through to the SPA fallback below, so <img src="/uploads/…">
+  // received "200 OK, text/html" and every browser painted a broken-image
+  // icon with the alt text next to it — exactly the broken logos and student
+  // photographs seen on report sheets. Answering 404 lets the <img> error
+  // event fire so the report's placeholder (monogram / photo silhouette) can
+  // take over, and keeps HTML out of image and file responses everywhere
+  // else in the platform too.
+  app.use("/uploads", (req, res) => {
+    res.status(404);
+    if (req.accepts("json") && !req.accepts("html")) return res.json({ error: "Not found." });
+    res.type("txt").send("Not found.");
+  });
 
   /* ----------------- pretty per-school links (/s/<slug>) --------------- */
   // Every registered madrasa gets its own shareable link,

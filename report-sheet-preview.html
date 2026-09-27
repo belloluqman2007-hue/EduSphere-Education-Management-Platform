@@ -6,16 +6,30 @@
 <title>بطاقة النتائج — Alpha One</title>
 <style>
   @page { size: A4 portrait; margin: 0; }
+  :root {
+    --brand: #14532d;
+    --brand-dark: #003913;
+    --brand-soft: #e3eae6;
+    --brand-tint: #f1f5f2;
+    --brand-line: #95b2a1;
+    --accent: #a87f2b;
+    --accent-soft: #e7dbc4;
+    --ink: #1a2230;
+    --muted: #5b6672;
+    --line: #c6cfd6;
+    --heading-font: Georgia, "Times New Roman", "Noto Naskh Arabic", serif;
+    --body-font: "Segoe UI", -apple-system, "Helvetica Neue", Arial, "Noto Naskh Arabic", Tahoma, sans-serif;
+  }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #e7ebef; }
-  body { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, "Noto Naskh Arabic", Tahoma, sans-serif; color: #1f2937; padding: 16px 0 30px; }
+  body { font-family: var(--body-font); color: var(--ink); padding: 16px 0 30px; }
 
   /* ---------- screen-only toolbar ---------- */
   .noprint { position: sticky; top: 0; z-index: 50; background: #0f172a; color: #e2e8f0; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
   .noprint .tb-left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
   .noprint .note { font-size: 12px; color: #cbd5e1; }
-  .noprint .print-btn { background: #14532d; color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
-  .noprint .print-btn:hover { background: #003913; }
+  .noprint .print-btn { background: var(--brand); color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .noprint .print-btn:hover { background: var(--brand-dark); }
   .status-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 3px 10px; border-radius: 999px; background: #475569; color: #fff; }
   .status-published, .status-approved, .status-locked { background: #15803d; }
   .status-draft, .status-returned { background: #b45309; }
@@ -25,7 +39,7 @@
   /* ---------- the A4 page ---------- */
   .sheet {
     position: relative; background: #fff; margin: 0 auto 16px;
-    width: 210mm; min-height: 297mm; padding: 10mm 12mm;
+    width: var(--sheet-w); min-height: var(--sheet-h); padding: var(--pad);
     box-shadow: 0 1px 3px rgba(15,23,42,.15), 0 14px 34px rgba(15,23,42,.08);
     /* With @page margin 0 the sheet itself carries the printable margins.
        When a long report flows onto a second page, clone the box padding so
@@ -35,135 +49,155 @@
   }
   .inner {
     position: relative; z-index: 1;
-    /* Fills exactly one printable page; the trailing reserve keeps in-flow
-       content out of the footer zone (see .foot below). */
-    min-height: 276mm;
-    padding-bottom: 19mm;
+    /* Exactly one printable page; the trailing reserve keeps in-flow content
+       clear of the pinned footer (see .foot below). */
+    min-height: var(--inner-h);
+    padding-bottom: 11mm;
   }
 
-  /* ---------- watermarks (subtle, behind content) ---------- */
+  /* ---------- watermarks (subtle, behind the content) ---------- */
   .watermark { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 0; pointer-events: none; }
-  .watermark span { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: 34px; letter-spacing: .3em; text-transform: uppercase; color: #14532d; opacity: .06; text-align: center; max-width: 86%; line-height: 1.6; }
-  .draft-mark { position: absolute; top: 40%; inset-inline: 0; display: flex; justify-content: center; z-index: 0; pointer-events: none; }
-  .draft-mark span { font-size: 11px; font-weight: 700; letter-spacing: .42em; text-transform: uppercase; color: #b91c1c; opacity: .38; }
+  .watermark span { font-family: var(--heading-font); font-weight: 700; font-size: 34px; letter-spacing: .3em; text-transform: uppercase; color: var(--brand); opacity: .06; text-align: center; max-width: 86%; line-height: 1.6; }
+  .draft-mark { position: absolute; top: 42%; inset-inline: 0; display: flex; justify-content: center; z-index: 0; pointer-events: none; }
+  .draft-mark span { font-size: 11px; font-weight: 700; letter-spacing: .42em; text-transform: uppercase; color: #b91c1c; opacity: .34; }
 
   /* ---------- school header ---------- */
-  .masthead { display: flex; align-items: center; gap: 5mm; padding-bottom: 2.5mm; }
-  .masthead .logo { width: 19mm; height: 19mm; object-fit: contain; flex: none; }
-  .logo-fallback { display: flex; align-items: center; justify-content: center; background: #e3eae6; color: #003913; border: .4mm solid #a1baab; font-family: Georgia, "Times New Roman", serif; font-size: 10.5mm; font-weight: 700; }
-  .masthead-id { flex: 1; min-width: 0; text-align: center; }
-  .school-name { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 20px; font-weight: 700; color: #003913; line-height: 1.16; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
+  .masthead { display: flex; align-items: center; gap: 4.5mm; }
+  .masthead .logo { width: var(--logo); height: var(--logo); object-fit: contain; flex: none; }
+  .logo-fallback { display: flex; align-items: center; justify-content: center; background: var(--brand-soft); color: var(--brand-dark); border: .4mm solid var(--brand-line); font-family: var(--heading-font); font-size: calc(var(--logo) * .5); font-weight: 700; }
+  .masthead-id { flex: 1; min-width: 0; }
+  .school-name { margin: 0; font-family: var(--heading-font); font-size: var(--name-size); font-weight: 700; color: var(--brand-dark); line-height: 1.16; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
   .school-name .ar { font-size: .8em; letter-spacing: 0; }
-  .motto { margin: 1.2mm 0 0; font-size: 10px; font-style: italic; color: #4b5563; letter-spacing: .16em; text-transform: uppercase; }
-  .contact { margin: 1.5mm 0 0; font-size: 8.8px; color: #5b6672; }
-  .masthead-crest { width: 19mm; flex: none; }
-  .masthead-rule { border-top: 1mm solid #14532d; border-bottom: .35mm solid #14532d; height: 1.4mm; margin: 0 0 3mm; }
+  .motto { margin: .8mm 0 0; font-size: 9px; color: var(--muted); letter-spacing: .14em; text-transform: uppercase; line-height: 1.3; }
+  .contact { margin: .6mm 0 0; font-size: 8.4px; color: var(--muted); line-height: 1.35; }
+  .masthead-rule { margin: 1.3mm 0 2.2mm; }
 
   /* ---------- report title ---------- */
-  .doc-title { text-align: center; margin: 0 0 3mm; padding: 1.8mm 0 1.6mm; border-top: .35mm solid #8aa996; border-bottom: .35mm solid #8aa996; }
-  .doc-title .en { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 14.5px; font-weight: 700; letter-spacing: .3em; text-transform: uppercase; color: #003913; }
-  .doc-title .ar-inline { font-size: .8em; letter-spacing: 0; }
-  .doc-title .meta { margin: 1.4mm 0 0; font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: #475361; }
-  .doc-title .meta b { color: #111827; }
+  .doc-title { margin: 0 0 var(--gap); }
+  .doc-title .en { margin: 0; font-family: var(--heading-font); font-weight: 700; text-transform: uppercase; line-height: 1.2; }
+  .doc-title .meta { margin: 0; font-size: 9.2px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; line-height: 1.3; }
+  .doc-title .meta .sep { display: inline-block; width: 4mm; }
 
   /* ---------- student information ---------- */
-  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4.5mm; border: .35mm solid #95b2a1; background: #f7f9f8; padding: 2.4mm 3.5mm 2.6mm; }
+  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4mm; border: .3mm solid var(--brand-line); background: var(--brand-tint); padding: 1.7mm 2.6mm; }
   .student-band.no-photo { grid-template-columns: 1fr; }
+  .student-main { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1.2mm; }
   .student-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 6mm; margin: 0; }
-  .student-grid .cell { display: flex; align-items: baseline; gap: 2mm; border-bottom: 1px dotted #c3ccd5; padding: 1.25mm 0; }
-  .student-grid dt { min-width: 30mm; flex: none; color: #5b6672; font-size: 8.8px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
-  .student-grid dd { margin: 0; flex: 1; min-width: 0; font-size: 10.4px; font-weight: 600; color: #111827; overflow-wrap: anywhere; }
-  .photo-slot { width: 23mm; height: 28.5mm; border: .35mm solid #b7c2cc; background: #fff; overflow: hidden; align-self: start; }
+  .student-grid .cell { display: flex; align-items: baseline; gap: 2mm; min-height: var(--info-row-h); border-bottom: .2mm dotted #b9c3cd; padding-top: 1mm; }
+  .student-grid dt { min-width: 24mm; flex: none; color: var(--muted); font-size: 8.4px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .student-grid dd { margin: 0; flex: 1; min-width: 0; font-size: 10.6px; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+  .photo-slot { width: var(--photo-w); height: var(--photo-h); border: .3mm solid #b7c2cc; background: #fff; overflow: hidden; align-self: center; }
   .photo-slot .photo { display: block; width: 100%; height: 100%; object-fit: cover; }
   .photo-slot.photo-empty { display: flex; align-items: center; justify-content: center; background: #f2f5f7; }
   .photo-slot.photo-empty svg { width: 12mm; height: 12mm; fill: #b6c2cd; }
 
+  /* ---------- result status ---------- */
+  .status-line { margin: 0; display: flex; align-items: center; gap: 2mm; font-size: 9px; }
+  .status-line .k { color: var(--muted); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+  .status-line .v { font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand-dark); border: .3mm solid var(--brand-line); background: #fff; padding: .5mm 2.4mm; }
+  .status-notice { border: .3mm solid #d9a441; border-inline-start: 1.4mm solid #b45309; background: #fffaf0; padding: 1.2mm 2.4mm; break-inside: avoid; }
+  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #92400e; }
+  .status-notice .notice-body { margin: .5mm 0 0; font-size: 9.2px; color: #7c4a12; line-height: 1.35; }
+
   /* ---------- sections ---------- */
-  .block { margin-top: 2.6mm; }
-  .block h2 { margin: 0 0 1.8mm; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; color: #003913; display: flex; align-items: center; gap: 2.5mm; break-after: avoid; }
-  .block h2::after { content: ""; flex: 1; border-top: .4mm solid #8aa996; }
+  .block { margin-top: var(--gap); }
+  .block h2 { margin: 0 0 1.2mm; height: calc(var(--heading-h) - 1.2mm); font-family: var(--heading-font); font-size: 9.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: var(--brand-dark); display: flex; align-items: center; gap: 2mm; break-after: avoid; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4mm; margin-top: var(--gap); align-items: start; }
+  .pair.single { grid-template-columns: 1fr; }
+  .pair .block { margin-top: 0; }
 
   /* ---------- academic performance table ---------- */
-  table.results { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10.2px; }
-  table.results th, table.results td { border: .3mm solid #c6cfd6; padding: 1.4mm 2mm; text-align: center; line-height: 1.3; }
-  table.results th { background: #14532d; color: #fff; font-size: 8.6px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 1.6mm 1.2mm; }
-  table.results td.subj, table.results th.subj { text-align: start; padding-inline-start: 2.2mm; overflow-wrap: anywhere; }
+  table.results { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--tbl-font); }
+  table.results th, table.results td { border: .25mm solid var(--line); padding: var(--row-pad) 1.4mm; text-align: center; line-height: 1.28; }
+  table.results tbody td { height: var(--row-h); }
+  table.results th { background: var(--brand); color: #fff; font-size: var(--tbl-head); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1mm .8mm; }
+  table.results td.subj, table.results th.subj { text-align: start; padding-inline-start: 2mm; overflow-wrap: anywhere; }
+  table.results td.subj .sn { display: inline-block; min-width: 4.4mm; color: var(--muted); font-size: .84em; font-variant-numeric: tabular-nums; }
   table.results td.num { font-variant-numeric: tabular-nums; }
   table.results td.total { font-weight: 700; }
-  table.results td.grade { font-weight: 700; color: #003913; }
+  table.results td.grade { font-weight: 700; color: var(--brand-dark); }
   table.results td.remark { text-align: start; color: #374151; }
-  table.results tbody tr:nth-child(even) td { background: #f1f5f2; }
+  table.results tbody tr:nth-child(even) td { background: var(--brand-tint); }
   table.results thead { display: table-header-group; }
   table.results tr { break-inside: avoid; page-break-inside: avoid; }
 
-  /* ---------- status notice ---------- */
-  .status-notice { border: .35mm solid #d9a441; border-inline-start: 1.8mm solid #b45309; background: #fffaf0; padding: 2mm 3mm; margin-top: 2.5mm; break-inside: avoid; }
-  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: #92400e; }
-  .status-notice .notice-body { margin: .8mm 0 0; font-size: 9.6px; color: #7c4a12; }
-
   /* ---------- performance summary ---------- */
   table.summary { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  
-  table.summary .k { display: block; font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: #5b6672; margin: 0 0 .6mm; }
-  table.summary .v { display: block; font-size: 12px; font-weight: 700; color: #003913; line-height: 1.15; }
-  table.summary .sum-blank { background: #fafbfc; }
+  table.summary th { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .9mm 1mm; font-size: 7.9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; line-height: 1.2; }
+  table.summary td { border: .25mm solid var(--line); padding: 1.1mm 1mm; text-align: center; font-size: 11px; font-weight: 700; color: var(--brand-dark); font-variant-numeric: tabular-nums; }
 
   /* ---------- grading scale ---------- */
-  .legend-wrap { margin-top: 1.6mm; }
+  .legend-wrap { margin-top: 1.5mm; }
   table.legend-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.legend-table th.legend-head { background: #e3eae6; color: #003913; border: .3mm solid #cfd8de; padding: 1mm 1.5mm; font-size: 8.3px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; text-align: start; white-space: nowrap; }
-  table.legend-table td { border: .3mm solid #cfd8de; padding: 1mm 1.5mm; text-align: center; font-size: 8.3px; color: #374151; background: #fbfcfd; overflow-wrap: anywhere; }
-  table.legend-table b { color: #003913; font-size: 9.3px; margin-inline-end: .8mm; }
+  table.legend-table th.legend-head { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .8mm 1.4mm; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; text-align: start; white-space: nowrap; width: 26mm; }
+  table.legend-table td { border: .25mm solid var(--line); padding: .8mm 1mm; text-align: center; font-size: 8.2px; color: #374151; background: #fff; overflow-wrap: anywhere; }
+  table.legend-table b { color: var(--brand-dark); font-size: 9.2px; margin-inline-end: .7mm; }
 
   /* ---------- attendance ---------- */
-  table.mini { width: 100%; border-collapse: collapse; font-size: 9.8px; }
-  table.mini th { background: #e3eae6; color: #003913; font-size: 8.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; border: .3mm solid #c6cfd6; padding: 1.1mm 1.8mm; }
-  table.mini td { border: .3mm solid #c6cfd6; padding: 1.2mm 1.8mm; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+  table.mini { width: 100%; border-collapse: collapse; font-size: 9.6px; }
+  table.mini th { background: var(--brand-soft); color: var(--brand-dark); font-size: 7.9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; border: .25mm solid var(--line); padding: .8mm 1mm; line-height: 1.2; }
+  table.mini td { border: .25mm solid var(--line); padding: 1mm; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
 
-  /* ---------- behaviour ---------- */
-  .behaviour { display: grid; grid-template-columns: repeat(auto-fill, minmax(42mm, 1fr)); gap: 1.2mm 4mm; }
-  .behaviour .beh-cell { display: flex; justify-content: space-between; gap: 2mm; font-size: 9.8px; border-bottom: 1px dotted #c3ccd5; padding: .9mm 0; }
-  .behaviour .k { font-weight: 600; color: #374151; min-width: 0; }
-  .behaviour .v { font-weight: 700; color: #111827; white-space: nowrap; }
+  /* ---------- behaviour / conduct ---------- */
+  .behaviour { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4mm; }
+  .behaviour .beh-cell { display: flex; justify-content: space-between; gap: 2mm; align-items: baseline; font-size: 9.2px; border-bottom: .2mm dotted #b9c3cd; padding: .9mm 0; min-height: 4.6mm; }
+  .behaviour .k { color: #374151; min-width: 0; }
+  .behaviour .v { font-weight: 700; color: var(--ink); white-space: nowrap; }
+  .behaviour .v i { font-style: normal; font-weight: 600; color: var(--muted); font-size: .92em; }
 
   /* ---------- comments ---------- */
-  .comments-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm; }
-  .comment-box { border: .35mm solid #c6cfd6; min-width: 0; break-inside: avoid; }
-  .comment-label { margin: 0; background: #ecf1ee; color: #003913; font-size: 8.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; padding: 1.4mm 2.5mm; border-bottom: .3mm solid #c6cfd6; }
-  .comment-text { margin: 0; padding: 2mm 2.5mm 2.2mm; font-size: 10.2px; color: #1f2937; min-height: 8mm; line-height: 1.45; overflow-wrap: anywhere; }
+  .comments-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
+  .comment-box { border: .25mm solid var(--line); min-width: 0; break-inside: avoid; }
+  .comment-label { margin: 0; background: var(--brand-soft); color: var(--brand-dark); font-size: 8.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 1mm 2mm; border-bottom: .25mm solid var(--line); }
+  .comment-text { margin: 0; padding: 1.6mm 2mm; font-size: 10px; color: var(--ink); min-height: var(--comment-min); line-height: 1.42; overflow-wrap: anywhere; }
 
   /* ---------- promotion ---------- */
-  .promo-line { display: flex; align-items: center; gap: 5mm; flex-wrap: wrap; }
-  .promo-badge { display: inline-block; border: .5mm solid #003913; color: #003913; background: #eff3f0; font-weight: 700; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; padding: 1.8mm 5mm; }
-  .next-term { margin: 0; font-size: 9.8px; color: #374151; }
-  .next-term b { color: #111827; }
+  .promo-strip { margin-top: var(--gap); display: flex; align-items: center; gap: 3mm; flex-wrap: wrap; border: .25mm solid var(--line); padding: 1.2mm 2.6mm; min-height: 8.4mm; }
+  .promo-k { font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
+  .promo-badge { font-weight: 700; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; padding: .9mm 3.4mm; }
+  .next-term { margin-inline-start: auto; font-size: 9px; color: #374151; }
+  .next-term b { color: var(--ink); }
 
   /* ---------- signatures ---------- */
-  .signatures { display: flex; justify-content: space-around; gap: 6mm; margin-top: 4mm; break-inside: avoid; }
-  .sig { flex: 1; max-width: 75mm; text-align: center; }
-  .sig-space { height: 11.5mm; }
-  .sig-rule { border-top: .35mm solid #374151; }
-  .sig-who { margin: 1.2mm 0 0; font-size: 9.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #1f2937; }
-  .sig-name { margin: .5mm 0 0; font-size: 9.2px; color: #4b5563; }
-  .sig-date { margin: 1mm 0 0; font-size: 8.4px; color: #6b7280; letter-spacing: .06em; }
+  .signatures { display: flex; justify-content: space-between; gap: 6mm; margin-top: 3.4mm; break-inside: avoid; }
+  .sig { flex: 1; max-width: 72mm; text-align: center; }
+  .sig-space { height: var(--sig-space); }
+  .sig-rule { border-top: .3mm solid #4b5563; }
+  .sig-who { margin: 1mm 0 0; font-size: 9.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--ink); }
+  .sig-name { margin: .4mm 0 0; font-size: 8.8px; color: var(--muted); }
+  .sig-date { margin: .7mm 0 0; font-size: 8.2px; color: var(--muted); letter-spacing: .05em; }
 
-  /* ---------- footer (pinned to the foot of the page) ---------- */
-  .foot { position: absolute; bottom: 0; left: 0; right: 0; border-top: .8mm solid #14532d; padding-top: 1.8mm; text-align: center; font-size: 8.4px; color: #5b6672; line-height: 1.55; }
-  .foot .verified { margin-top: .6mm; font-size: 7.9px; color: #6b7280; }
-  .foot .credit { margin-top: .8mm; font-size: 8px; color: #9aa4ae; letter-spacing: .1em; text-transform: uppercase; }
+  /* ---------- minimal footer (pinned to the foot of the page) ---------- */
+  .foot { position: absolute; bottom: 0; left: 0; right: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 4mm; flex-wrap: wrap; border-top: .5mm solid var(--brand); padding-top: 1.2mm; font-size: 8px; color: #8c96a1; letter-spacing: .08em; line-height: 1.35; }
+  .foot .credit { text-transform: uppercase; }
+  .foot .ref { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .foot .verified { width: 100%; text-align: center; letter-spacing: 0; color: var(--muted); }
 
-  .empty { font-size: 9.8px; color: #6b7280; margin: 1mm 0 0; font-style: italic; }
+  .empty { font-size: 9.4px; color: var(--muted); margin: 0; font-style: italic; }
 
-  /* ---------- layout variants ---------- */
-  .layout-modern .masthead { background: #e8eeea; margin: calc(-1 * 10mm) calc(-1 * 12mm) 3.5mm; padding: 10mm 12mm 3mm; }
+  /* =======================================================================
+     THEME — ISLAMIC: deep academic green, restrained gold, serif academic
+     typography, framed title carrying a faint geometric hairline.
+     ======================================================================= */
+  .theme-islamic .masthead-id { text-align: center; }
+  .theme-islamic .masthead-crest { width: var(--logo); flex: none; display: flex; align-items: center; justify-content: center; }
+  .theme-islamic .crest { width: calc(var(--logo) * .5); height: calc(var(--logo) * .5); border: .4mm solid var(--accent); transform: rotate(45deg); position: relative; }
+  .theme-islamic .crest::after { content: ""; position: absolute; inset: 1.1mm; border: .3mm solid var(--brand-line); }
+  .theme-islamic .masthead-rule { height: 1.5mm; border-top: .9mm solid var(--brand); border-bottom: .3mm solid var(--accent); }
+  .theme-islamic .doc-title { text-align: center; padding: 1.4mm 0 1.2mm; border-top: .25mm solid var(--brand-line); border-bottom: .25mm solid var(--brand-line); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg fill='none' stroke='%23a87f2b' stroke-width='1.1' opacity='0.45'%3E%3Crect x='12' y='12' width='24' height='24'/%3E%3Crect x='12' y='12' width='24' height='24' transform='rotate(45 24 24)'/%3E%3C/g%3E%3C/svg%3E"); background-size: 12mm 12mm; background-position: center; }
+  .theme-islamic .doc-title .en { font-size: 14px; letter-spacing: .3em; color: var(--brand-dark); }
+  .theme-islamic .doc-title .en::before, .theme-islamic .doc-title .en::after { content: "◆"; color: var(--accent); font-size: .5em; vertical-align: .24em; margin: 0 2.6mm; letter-spacing: 0; }
+  .theme-islamic .doc-title .meta { margin-top: .9mm; color: #46525f; }
+  .theme-islamic .doc-title .meta b { color: var(--brand-dark); }
+  .theme-islamic .block h2::before { content: ""; width: 1.8mm; height: 1.8mm; flex: none; background: var(--accent); transform: rotate(45deg); }
+  .theme-islamic .block h2::after { content: ""; flex: 1; border-top: .3mm solid var(--brand-line); }
+  .theme-islamic table.results th { border-bottom: .5mm solid var(--accent); }
+  .theme-islamic .promo-badge { border: .4mm double var(--brand-dark); color: var(--brand-dark); background: var(--brand-soft); font-family: var(--heading-font); }
+  .theme-islamic .foot { box-shadow: 0 .55mm 0 var(--accent-soft); }
+
+  /* ---------- layout variants (template option, theme-independent) ---------- */
+  .layout-modern .masthead { background: var(--brand-soft); margin: calc(-1 * var(--pad)) calc(-1 * var(--pad)) 0; padding: var(--pad) var(--pad) 2.4mm; }
   .layout-modern .masthead-rule { display: none; }
-  .layout-compact .masthead { gap: 4mm; padding-bottom: 2mm; }
-  .layout-compact .doc-title { padding: 1.6mm 0 1.4mm; margin-bottom: 2.6mm; }
-  .d-dense .block { margin-top: 2.2mm; }
-  .d-dense .student-grid .cell { padding: 1.1mm 0; }
-  .d-dense .photo-slot { width: 20mm; height: 24.5mm; }
-  .d-dense .behaviour { grid-template-columns: repeat(auto-fill, minmax(36mm, 1fr)); }
-  .d-dense .sig-space { height: 9.5mm; }
 
   /* ---------- printing ---------- */
   @media print {
@@ -176,7 +210,7 @@
 
   /* ---------- small screens: keep the document A4, allow panning ---------- */
   @media screen and (max-width: 840px) {
-    body { padding: 0; }
+    body { padding: 0; overflow-x: auto; }
     .sheet { margin: 0; box-shadow: none; }
     .noprint { padding: 8px 10px; }
   }
@@ -185,13 +219,13 @@
 <body>
 <div class="noprint toolbar">
         <div class="tb-left">
-          <span class="status-pill status-published">published</span>
+          <span class="status-pill status-approved">approved</span>
           
           
         </div>
         <button type="button" class="print-btn" data-print onclick="window.print()">🖨 طباعة / حفظ PDF</button>
       </div>
-<div class="sheet layout-classic">
+<div class="sheet layout-classic theme-islamic d-dense" style="--pad:9mm;--sheet-w:210mm;--sheet-h:297mm;--inner-h:279mm;--gap:2.2mm;--heading-h:4.5mm;--logo:17mm;--name-size:18px;--photo-w:30mm;--photo-h:35.5mm;--info-row-h:8.4mm;--row-h:5.2mm;--row-pad:1.05mm;--tbl-font:9.6px;--tbl-head:8.2px;--comment-min:19.1mm;--sig-space:13.8mm">
   
   
   <div class="inner">
@@ -199,76 +233,74 @@
       <div class="logo logo-fallback" aria-hidden="true">T</div>
       <div class="masthead-id">
         <h1 class="school-name">Test Madrasa A <span class="ar" dir="rtl">· المدرسة الاختبارية أ</span></h1>
-        <p class="motto">Motto A</p>
-        <p class="contact">1 Test St, Ijebu-Ode, Ogun</p>
-        <p class="contact">هاتف: +2348000000001  ·  a@test.example</p>
+        <p class="motto">Knowledge · Character · Service</p>
+        <p class="contact">14 Ring Road, Ibadan, Oyo</p><p class="contact">هاتف: +234 802 000 1122  ·  office@example.edu.ng  ·  www.example.edu.ng</p>
       </div>
-      <div class="masthead-crest" aria-hidden="true"></div>
+      <div class="masthead-crest" aria-hidden="true"><span class="crest"></span></div>
     </header>
     <div class="masthead-rule" aria-hidden="true"></div>
     <div class="doc-title">
-      <p class="en">التقرير الفصلي <span class="ar-inline" dir="rtl">· بطاقة النتائج المدرسية</span></p>
-      <p class="meta">العام الدراسي: <b>2026/2027</b> &nbsp;·&nbsp; الفترة: <b>الفترة الأولى</b></p>
+      <p class="en">التقرير الفصلي</p>
+      <p class="meta"><span>العام الدراسي: <b>2026/2027</b></span><span class="sep" aria-hidden="true"></span><span>الفترة: <b>الفترة الأولى</b></span></p>
     </div>
     <section class="student-band" aria-label="بيانات الطالب">
-      <dl class="student-grid"><div class="cell"><dt>اسم الطالب</dt><dd>ألف واحد</dd></div><div class="cell"><dt>رقم التسجيل</dt><dd>TTA0001</dd></div><div class="cell"><dt>الرقم التعريفي</dt><dd>TTA0001</dd></div><div class="cell"><dt>الفصل</dt><dd>قسم أ1</dd></div><div class="cell"><dt>الجنس</dt><dd>ذكر</dd></div><div class="cell"><dt>تاريخ الميلاد</dt><dd>01/01/2012</dd></div><div class="cell"><dt>العام الدراسي</dt><dd>2026/2027</dd></div><div class="cell"><dt>الفترة</dt><dd>الفترة الأولى</dd></div><div class="cell"><dt>رقم التقرير</dt><dd>EDU-20262027-CLASSA1-TTA0001</dd></div></dl>
+      <div class="student-main">
+        <dl class="student-grid"><div class="cell"><dt>اسم الطالب</dt><dd>ألف واحد</dd></div><div class="cell"><dt>الرقم التعريفي</dt><dd>TTA0001</dd></div><div class="cell"><dt>الفصل</dt><dd>قسم أ1</dd></div><div class="cell"><dt>الجنس</dt><dd>ذكر</dd></div></dl>
+        <p class="status-line"><span class="k">حالة النتيجة</span><span class="v">معتمدة</span></p>
+      </div>
       <div class="photo-slot photo-empty" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>
     </section>
     <section class="block">
       <h2>الأداء الأكاديمي</h2>
-      <table class="results"><colgroup><col><col style="width:15mm"><col style="width:16mm"><col style="width:13mm"><col style="width:12mm"><col style="width:12mm"><col style="width:30mm"></colgroup>
+      <table class="results"><colgroup><col style="width:96mm"><col style="width:14mm"><col style="width:16mm"><col style="width:14mm"><col style="width:13mm"><col style="width:13mm"><col style="width:26mm"></colgroup>
         <thead><tr><th class="subj" scope="col">المادة</th><th scope="col">CA</th><th scope="col">Exam</th><th scope="col">المجموع</th><th scope="col">%</th><th scope="col">الدرجة</th><th scope="col">ملاحظة</th></tr></thead>
-        <tbody><tr><td class="subj">اللغة الإنجليزية</td><td class="num">35</td><td class="num">60</td><td class="num total">95</td><td class="num">95%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj">الفقه</td><td class="num">30</td><td class="num">50</td><td class="num total">80</td><td class="num">80%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr></tbody>
+        <tbody><tr><td class="subj"><span class="sn">1</span>العلوم الزراعية</td><td class="num">30</td><td class="num">40</td><td class="num total">70</td><td class="num">70%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr><tr><td class="subj"><span class="sn">2</span>العلوم والتكنولوجيا</td><td class="num">32</td><td class="num">46</td><td class="num total">78</td><td class="num">78%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">3</span>التربية المدنية</td><td class="num">25</td><td class="num">33</td><td class="num total">58</td><td class="num">58%</td><td class="grade">C</td><td class="remark">جيد</td></tr><tr><td class="subj"><span class="sn">4</span>الحاسوب</td><td class="num">35</td><td class="num">47</td><td class="num total">82</td><td class="num">82%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">5</span>اللغة الإنجليزية</td><td class="num">35</td><td class="num">60</td><td class="num total">95</td><td class="num">95%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">6</span>اللغة الإنجليزية</td><td class="num">27</td><td class="num">39</td><td class="num total">66</td><td class="num">66%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr><tr><td class="subj"><span class="sn">7</span>الفقه</td><td class="num">30</td><td class="num">50</td><td class="num total">80</td><td class="num">80%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">8</span>الرياضيات</td><td class="num">22</td><td class="num">32</td><td class="num total">54</td><td class="num">54%</td><td class="grade">D</td><td class="remark">مقبول</td></tr><tr><td class="subj"><span class="sn">9</span>التربية البدنية</td><td class="num">23</td><td class="num">54</td><td class="num total">77</td><td class="num">77%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">10</span>حفظ القرآن</td><td class="num">28</td><td class="num">34</td><td class="num total">62</td><td class="num">62%</td><td class="grade">C</td><td class="remark">جيد</td></tr><tr><td class="subj"><span class="sn">11</span>الدراسات الاجتماعية</td><td class="num">37</td><td class="num">53</td><td class="num total">90</td><td class="num">90%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">12</span>التجويد</td><td class="num">33</td><td class="num">41</td><td class="num total">74</td><td class="num">74%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr></tbody>
       </table>
-      
     </section>
     <section class="block">
         <h2>ملخص الأداء</h2>
-        <table class="summary"><tbody><tr><td class="sum-cell"><span class="k">عدد المواد</span><span class="v">2</span></td><td class="sum-cell"><span class="k">مجموع الدرجات</span><span class="v">175</span></td><td class="sum-cell"><span class="k">المعدل</span><span class="v">87.5%</span></td><td class="sum-cell"><span class="k">الدرجة العامة</span><span class="v">A</span></td></tr><tr><td class="sum-cell"><span class="k">الترتيب</span><span class="v">1st من 2</span></td><td class="sum-cell"><span class="k">عدد الطلاب</span><span class="v">2</span></td><td class="sum-cell"><span class="k">معدل الفصل</span><span class="v">77.5%</span></td><td class="sum-cell sum-blank" aria-hidden="true"></td></tr></tbody></table>
-        <div class="legend-wrap"><table class="legend-table"><tbody><tr><th class="legend-head">سلم الدرجات</th><td><b>A</b>75+ · ممتاز</td><td><b>B</b>65+ · جيد جداً</td><td><b>C</b>55+ · جيد</td><td><b>D</b>45+ · مقبول</td><td><b>E</b>40+ · ضعيف</td><td><b>F</b>0+ · راسب</td></tr></tbody></table></div>
+        <table class="summary">
+          <thead><tr><th scope="col">عدد المواد</th><th scope="col">مجموع الدرجات</th><th scope="col">المعدل</th><th scope="col">الدرجة العامة</th><th scope="col">الترتيب</th><th scope="col">عدد الطلاب</th><th scope="col">معدل الفصل</th></tr></thead>
+          <tbody><tr><td>12</td><td>886</td><td>73.8%</td><td>B</td><td>1st من 2</td><td>2</td><td>68%</td></tr></tbody>
+        </table>
+        <div class="legend-wrap"><table class="legend-table"><tbody><tr><th class="legend-head" scope="row">سلم الدرجات</th><td><b>A</b>75+ · ممتاز</td><td><b>B</b>65+ · جيد جداً</td><td><b>C</b>55+ · جيد</td><td><b>D</b>45+ · مقبول</td><td><b>E</b>40+ · ضعيف</td><td><b>F</b>0+ · راسب</td></tr></tbody></table></div>
       </section>
-    
-    <section class="block">
+    <div class="pair"><section class="block">
         <h2>الحضور</h2>
         <table class="mini att"><thead><tr><th scope="col">أيام مسجلة</th><th scope="col">حاضر</th><th scope="col">غائب</th><th scope="col">متأخر</th><th scope="col">نسبة الحضور</th></tr></thead><tbody><tr><td>1</td><td>1</td><td>0</td><td>0</td><td>100%</td></tr></tbody></table>
-      </section>
-    <section class="block">
+      </section><section class="block">
         <h2>السلوك والمواظبة</h2>
-        <div class="behaviour"><div class="beh-cell"><span class="k">الالتزام بالمواعيد</span><span class="v">5/5 — Excellent</span></div><div class="beh-cell"><span class="k">النظافة</span><span class="v">4/5 — Very Good</span></div><div class="beh-cell"><span class="k">الانضباط</span><span class="v">5/5 — Excellent</span></div><div class="beh-cell"><span class="k">المشاركة</span><span class="v">4/5 — Very Good</span></div><div class="beh-cell"><span class="k">التعاون</span><span class="v">5/5 — Excellent</span></div><div class="beh-cell"><span class="k">الاحترام</span><span class="v">5/5 — Excellent</span></div><div class="beh-cell"><span class="k">السلوك العام</span><span class="v">5/5 — Excellent</span></div></div>
-      </section>
+        <p class="empty">لا توجد تقييمات سلوك لهذه الفترة.</p>
+      </section></div>
     <section class="block">
         <h2>الملاحظات</h2>
         <div class="comments-grid">
-          <div class="comment-box"><p class="comment-label">تعليق معلم الفصل</p><p class="comment-text">The student has shown consistent improvement throughout the term.</p></div>
-          <div class="comment-box"><p class="comment-label">تعليق رئيس المؤسسة</p><p class="comment-text">An excellent term&#39;s work. Keep it up.</p></div>
+          <div class="comment-box"><p class="comment-label">تعليق معلم الفصل</p><p class="comment-text">A focused and productive term. Written work is neat and contributions in class are thoughtful.</p></div>
+          <div class="comment-box"><p class="comment-label">تعليق رئيس المؤسسة</p><p class="comment-text">A pleasing set of results. Keep up the steady effort next term.</p></div>
         </div>
       </section>
-    <section class="block">
-        <h2>قرار الترقية</h2>
-        <div class="promo-line">
-          <span class="promo-badge">نُقل إلى الصف الأعلى</span>
-          <p class="next-term">تبدأ الفترة القادمة: <b>08/01/2027</b> — تنتهي <b>02/04/2027</b></p>
-        </div>
-      </section>
+    <div class="promo-strip">
+        <span class="promo-k">قرار الترقية</span>
+        <span class="promo-badge">نُقل إلى الصف الأعلى</span>
+        <span class="next-term">تبدأ الفترة القادمة: <b>01/09/2026</b> — تنتهي <b>19/12/2026</b></span>
+      </div>
     <div class="signatures"><div class="sig">
         <div class="sig-space"></div>
         <div class="sig-rule"></div>
-        <p class="sig-who">Class Teacher</p>
+        <p class="sig-who">مُعلّم الفصل</p>
         
         <p class="sig-date">التاريخ: ____________________</p>
       </div><div class="sig">
         <div class="sig-space"></div>
         <div class="sig-rule"></div>
-        <p class="sig-who">المدير</p>
-        <p class="sig-name">Alhaji A. Bello</p>
+        <p class="sig-who">رئيس المؤسسة</p>
+        
         <p class="sig-date">التاريخ: ____________________</p>
       </div></div>
     <footer class="foot">
-      <div>Test Madrasa A  —  1 Test St, Ijebu-Ode, Ogun</div>
-      <div>هاتف: +2348000000001  ·  a@test.example</div>
-      <div>العام الدراسي: 2026/2027  ·  الفترة: الفترة الأولى  ·  رقم التقرير: EDU-20262027-CLASSA1-TTA0001  ·  صدر: 26/09/2026</div>
+      <span class="credit">Powered by EduSphere</span>
+      <span class="ref">المرجع: EDU-20262027-CLASSA1-TTA0001</span>
       
-      <div class="credit">Powered by EduSphere</div>
     </footer>
   </div>
 </div>

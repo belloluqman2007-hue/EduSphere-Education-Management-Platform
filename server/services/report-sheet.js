@@ -31,6 +31,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../config");
 const grading = require("./grading");
+const institution = require("./institution");
 
 /* --------------------------- template defaults --------------------------- */
 
@@ -605,6 +606,10 @@ async function preloadClassTerm(madrasaId, classId, termId) {
       email: madrasa.email,
       website: madrasa.website,
       brandColor: madrasa.brand_color || "",
+      // Drives the report theme (Islamic / Western). Reuses the institution
+      // category that already exists on the tenant — no second system.
+      category: madrasa.category || "",
+      institutionType: madrasa.institution_type || "",
     },
     config,
     template,
@@ -707,14 +712,14 @@ function visibleColumnCount(template) {
   return RESULT_COLUMNS.filter((key) => template.columns[key]).length;
 }
 
-/** Auto orientation: wide subject tables print landscape. */
-function resolveOrientation(template, subjectCount) {
+/**
+ * Auto orientation. A long subject list is NOT a reason to rotate the page:
+ * the density planner below fits 12–15 subjects on A4 portrait. Only a very
+ * wide table (every optional column switched on) turns the sheet landscape.
+ */
+function resolveOrientation(template) {
   if (template.orientation !== "auto") return template.orientation;
-  return subjectCount > 11 || visibleColumnCount(template) >= 7 ? "landscape" : "portrait";
-}
-
-function brandColorOf(data) {
-  return hexColor(data.template.brandColor) || hexColor(data.madrasa && data.madrasa.brandColor) || "#14532d";
+  return visibleColumnCount(template) >= 7 ? "landscape" : "portrait";
 }
 
 /** Colour helpers so banded headers stay readable on any brand colour. */
@@ -737,6 +742,368 @@ function tint(hex, ratio) {
     .map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
+/* ------------------------------ page geometry ----------------------------- */
+
+/**
+ * A4 geometry. `@page` keeps a zero margin and the printable margin lives on
+ * the sheet itself, so the on-screen preview and the printed page are exactly
+ * the same box and a continuation page keeps its margins through
+ * `box-decoration-break: clone`.
+ */
+const PAGE_SIZES = { portrait: { w: 210, h: 297 }, landscape: { w: 297, h: 210 } };
+const PAGE_MARGIN_MM = 9;              // house style: 8–10 mm
+// Safety reserve kept free on every page. The budget below is an analytical
+// model of the CSS, not a browser layout pass, so a tier is only accepted
+// when it fits with a few millimetres to spare — that absorbs font-metric
+// differences between print engines instead of spilling one row onto page 2.
+const FIT_RESERVE_MM = 5;
+const MM_PER_PX = 0.2645833;
+const mmOf = (px) => Math.round(px * MM_PER_PX * 1000) / 1000;
+const round1 = (n) => Math.round(n * 10) / 10;
+const clampMm = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+
+/** Baseline mm widths of the numeric result columns. */
+const RESULT_COL_MM = { ca: 14, exam: 16, total: 14, pct: 13, grade: 13, gradePoint: 12, remark: 34 };
+/** Reference font used when apportioning column widths (see planColumns). */
+const NOMINAL_TABLE_FONT = 9.6;
+
+/**
+ * Apportions the two text columns — subject and remark — across whatever the
+ * numeric columns leave over, aiming to keep the longest value in each on no
+ * more than two lines. A roster of short subject names hands its surplus to
+ * the remark column (and vice versa) instead of leaving one column padded
+ * with empty space while the other wraps three times and pushes the report
+ * onto a second page.
+ */
+function planColumns(template, subjects, rtl, printableW) {
+  const charMm = NOMINAL_TABLE_FONT * 0.52 * MM_PER_PX;
+  const widest = (pick) => subjects.reduce((max, s) => Math.max(max, String(pick(s) || "").length), 0);
+  const subjChars = Math.max(10, widest((s) => (rtl ? (s.nameAr || s.nameEn) : (s.nameEn || s.nameAr))));
+  const remChars = template.columns.remark
+    ? Math.max(6, widest((s) => (rtl ? (s.remarkAr || s.remark) : (s.remark || s.remarkAr))))
+    : 0;
+
+  const cols = {};
+  let fixed = 0;
+  for (const key of RESULT_COLUMNS) {
+    if (!template.columns[key] || key === "remark") continue;
+    cols[key] = RESULT_COL_MM[key];
+    fixed += RESULT_COL_MM[key];
+  }
+  const available = Math.max(60, printableW - fixed);
+
+  // Width that puts the longest entry on two lines, plus cell padding.
+  const twoLines = (chars, pad) => (Math.ceil(chars / 2) + 2) * charMm + pad;
+  let subj = clampMm(twoLines(subjChars, 9), 44, available);
+  let rem = remChars ? clampMm(twoLines(remChars, 3), 26, 56) : 0;
+  if (subj + rem > available) {
+    // Shrink both toward their floors in proportion to what they asked for.
+    const over = subj + rem - available;
+    const subjRoom = subj - 44;
+    const remRoom = rem ? rem - 26 : 0;
+    const room = subjRoom + remRoom || 1;
+    subj -= over * (subjRoom / room);
+    rem -= over * (remRoom / room);
+  } else {
+    subj = available - rem;                 // any surplus widens the subject
+  }
+  if (rem) cols.remark = round1(rem);
+  return { cols, subjectMm: round1(Math.max(30, subj)) };
+}
+
+/**
+ * Density tiers. The planner picks the loosest tier whose measured height
+ * still fits one printable page, so a 6-subject report breathes while a 12-
+ * or 15-subject report is tightened — never shrunk to unreadable text (the
+ * results table never prints below 9 px).
+ */
+const DENSITY_TIERS = [
+  {
+    key: "regular",
+    tableFont: 10.2, headFont: 8.6, rowH: 6.0, rowPad: 1.35,
+    logo: 18, nameMax: 20, gap: 2.6, headingH: 4.8, titleH: 10.4,
+    photoW: 31, photoH: 37, infoRowH: 9.2, statusH: 7.4,
+    commentMin: 13, sigSpace: 12,
+  },
+  {
+    key: "dense",
+    tableFont: 9.6, headFont: 8.2, rowH: 5.2, rowPad: 1.05,
+    logo: 17, nameMax: 18, gap: 2.2, headingH: 4.5, titleH: 9.8,
+    photoW: 30, photoH: 35.5, infoRowH: 8.4, statusH: 7.0,
+    commentMin: 11, sigSpace: 10,
+  },
+  {
+    key: "tight",
+    tableFont: 9.0, headFont: 7.7, rowH: 4.6, rowPad: 0.8,
+    logo: 15.5, nameMax: 16, gap: 1.8, headingH: 4.2, titleH: 9.2,
+    // The photograph keeps its 30 × 35 mm passport frame even here — the
+    // millimetres come out of the comment and signature reserves instead,
+    // which grow again the moment the page has slack.
+    photoW: 30, photoH: 35, infoRowH: 7.6, statusH: 6.4,
+    commentMin: 8, sigSpace: 7.5,
+  },
+];
+
+/* --------------------------------- theming -------------------------------- */
+
+/**
+ * Two genuinely different visual identities, selected by the tenant's
+ * EXISTING category (`madaris.category` / `institution_type`, normalised by
+ * services/institution.js) — no new school-type system, and never a
+ * hard-coded school name:
+ *
+ *   islamic  — deep academic green with a restrained gold accent, serif
+ *              academic typography, framed title carrying a faint 8-point
+ *              star hairline, diamond section markers, double rules.
+ *   western  — modern navy academic design: reversed solid title bar,
+ *              left-aligned masthead with the contact block on the right,
+ *              modern sans typography, square accent markers, single rules,
+ *              no Islamic ornament and no decorative Arabic.
+ *
+ * A school's own configured brand colour always wins over the category
+ * default, so tenant branding is preserved in both themes.
+ */
+const THEME_DEFAULTS = {
+  islamic: {
+    brand: "#14532d",
+    accent: "#a87f2b",
+    zebra: 0.94,
+    headingFont: 'Georgia, "Times New Roman", "Noto Naskh Arabic", serif',
+    titleText: ["Term Report Sheet", "التقرير الفصلي"],
+  },
+  western: {
+    brand: "#0a2342",
+    accent: "#3f6fa6",
+    zebra: 0.955,
+    headingFont: '"Segoe UI Semibold", "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif',
+    titleText: ["Term Report", "التقرير الفصلي"],
+  },
+};
+
+/** Resolves the report theme for a tenant from the existing category field. */
+function reportTheme(data) {
+  const key = institution.normalizeCategory(
+    data.madrasa ? data.madrasa.category : "",
+    data.madrasa ? data.madrasa.institutionType : ""
+  );
+  const base = THEME_DEFAULTS[key] || THEME_DEFAULTS.islamic;
+  const brand = hexColor(data.template && data.template.brandColor)
+    || hexColor(data.madrasa && data.madrasa.brandColor)
+    || base.brand;
+  return {
+    key,
+    brand,
+    brandDark: shade(brand, -26),
+    brandSoft: tint(brand, 0.88),
+    brandTint: tint(brand, base.zebra),
+    brandLine: tint(brand, 0.55),
+    accent: base.accent,
+    accentSoft: tint(base.accent, 0.72),
+    headingFont: base.headingFont,
+    titleText: base.titleText,
+    islamic: key === "islamic",
+  };
+}
+
+/** Faint geometric hairline (two crossed squares = 8-point star) — Islamic only. */
+function geometricPattern(color) {
+  const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'>"
+    + `<g fill='none' stroke='${color}' stroke-width='1.1' opacity='0.45'>`
+    + "<rect x='12' y='12' width='24' height='24'/>"
+    + "<rect x='12' y='12' width='24' height='24' transform='rotate(45 24 24)'/>"
+    + "</g></svg>";
+  return `url("data:image/svg+xml,${svg.replace(/#/g, "%23").replace(/</g, "%3C").replace(/>/g, "%3E")}")`;
+}
+
+/**
+ * Only the active theme's rules are emitted. A Western school's report
+ * therefore contains no Islamic ornament, pattern or selector at all — not
+ * merely unused ones — and an Islamic report carries no dead Western rules.
+ * (A bulk document reuses the first sheet's stylesheet; every sheet in a
+ * batch belongs to the same institution, so the theme is the same.)
+ */
+function themeCss(theme) {
+  if (theme.islamic) {
+    return `
+  /* =======================================================================
+     THEME — ISLAMIC: deep academic green, restrained gold, serif academic
+     typography, framed title carrying a faint geometric hairline.
+     ======================================================================= */
+  .theme-islamic .masthead-id { text-align: center; }
+  .theme-islamic .masthead-crest { width: var(--logo); flex: none; display: flex; align-items: center; justify-content: center; }
+  .theme-islamic .crest { width: calc(var(--logo) * .5); height: calc(var(--logo) * .5); border: .4mm solid var(--accent); transform: rotate(45deg); position: relative; }
+  .theme-islamic .crest::after { content: ""; position: absolute; inset: 1.1mm; border: .3mm solid var(--brand-line); }
+  .theme-islamic .masthead-rule { height: 1.5mm; border-top: .9mm solid var(--brand); border-bottom: .3mm solid var(--accent); }
+  .theme-islamic .doc-title { text-align: center; padding: 1.4mm 0 1.2mm; border-top: .25mm solid var(--brand-line); border-bottom: .25mm solid var(--brand-line); background-image: ${geometricPattern(theme.accent)}; background-size: 12mm 12mm; background-position: center; }
+  .theme-islamic .doc-title .en { font-size: 14px; letter-spacing: .3em; color: var(--brand-dark); }
+  .theme-islamic .doc-title .en::before, .theme-islamic .doc-title .en::after { content: "◆"; color: var(--accent); font-size: .5em; vertical-align: .24em; margin: 0 2.6mm; letter-spacing: 0; }
+  .theme-islamic .doc-title .meta { margin-top: .9mm; color: #46525f; }
+  .theme-islamic .doc-title .meta b { color: var(--brand-dark); }
+  .theme-islamic .block h2::before { content: ""; width: 1.8mm; height: 1.8mm; flex: none; background: var(--accent); transform: rotate(45deg); }
+  .theme-islamic .block h2::after { content: ""; flex: 1; border-top: .3mm solid var(--brand-line); }
+  .theme-islamic table.results th { border-bottom: .5mm solid var(--accent); }
+  .theme-islamic .promo-badge { border: .4mm double var(--brand-dark); color: var(--brand-dark); background: var(--brand-soft); font-family: var(--heading-font); }
+  .theme-islamic .foot { box-shadow: 0 .55mm 0 var(--accent-soft); }`;
+  }
+  return `  /* =======================================================================
+     THEME — WESTERN: modern navy academic design, reversed title bar,
+     left-aligned masthead, square accent markers, no Islamic ornament.
+     ======================================================================= */
+  .theme-western .masthead { gap: 3.6mm; }
+  .theme-western .logo-fallback { background: var(--brand); color: #fff; border: 0; }
+  .theme-western .masthead-id { display: flex; flex-direction: column; justify-content: center; text-align: start; border-inline-start: .8mm solid var(--brand); padding-inline-start: 3mm; }
+  .theme-western .school-name { letter-spacing: .01em; }
+  .theme-western .motto { letter-spacing: .1em; text-transform: none; font-size: 9.2px; }
+  .theme-western .masthead-contact { flex: none; max-width: 60mm; text-align: end; }
+  .theme-western .masthead-contact p { margin: 0 0 .7mm; font-size: 8.4px; color: var(--muted); line-height: 1.32; }
+  .theme-western .masthead-contact p:last-child { margin-bottom: 0; }
+  .theme-western .masthead-rule { height: .7mm; background: var(--brand); }
+  .theme-western .doc-title { display: flex; align-items: baseline; justify-content: space-between; gap: 4mm; background: var(--brand); color: #fff; padding: 1.5mm 3mm; }
+  .theme-western .doc-title .en { font-size: 12.5px; letter-spacing: .18em; color: #fff; }
+  .theme-western .doc-title .meta { color: rgba(255,255,255,.86); letter-spacing: .08em; }
+  .theme-western .doc-title .meta b { color: #fff; }
+  .theme-western .student-band { border: 0; border-top: .25mm solid var(--line); border-bottom: .25mm solid var(--line); background: #f5f7fa; }
+  .theme-western .block h2 { letter-spacing: .1em; }
+  .theme-western .block h2::before { content: ""; width: 1.4mm; height: 3.2mm; flex: none; background: var(--accent); }
+  .theme-western .block h2::after { content: ""; flex: 1; border-top: .25mm solid #d5dbe3; }
+  .theme-western table.results th { border-color: var(--brand); }
+  .theme-western table.results tbody tr:nth-child(even) td { background: #f4f7fb; }
+  .theme-western .promo-badge { background: var(--brand); color: #fff; }
+  .theme-western .promo-strip { border-inline-start: 1.4mm solid var(--brand); }`;
+}
+
+/* ------------------------------- page planner ----------------------------- */
+
+/** Estimated wrapped line count for `text` in a column `widthMm` wide. */
+function textLines(text, widthMm, fontPx, weight = 0.52) {
+  const chars = String(text === null || text === undefined ? "" : text).length;
+  if (!chars) return 1;
+  const charMm = Math.max(0.6, fontPx * weight * MM_PER_PX);
+  const perLine = Math.max(6, Math.floor(widthMm / charMm));
+  return Math.max(1, Math.ceil(chars / perLine));
+}
+
+/**
+ * Measures the whole document in millimetres for one density tier.
+ *
+ * This is the mechanism behind the "12 subjects on one A4 page" guarantee.
+ * Every block is rendered at exactly the height budgeted here — the CSS is
+ * driven by the same numbers through custom properties — so the planner knows
+ * before any HTML exists whether the report fits a page, and tightens the
+ * density instead of spilling three rows onto a second sheet.
+ */
+function measureSheet(m, tier) {
+  const t = m.data.template;
+  const w = m.printableW;
+  const parts = {};
+
+  /* masthead --------------------------------------------------------------- */
+  const nameSize = m.nameSizeFor(tier.nameMax);
+  const nameWidth = m.theme.islamic ? w - tier.logo * 2 - 12 : w - tier.logo - 66;
+  const nameLines = textLines(m.data.madrasa.nameEn, nameWidth, nameSize, 0.6);
+  const identityH = nameLines * mmOf(nameSize * 1.16)
+    + (m.motto ? mmOf(11.2) : 0)
+    + (m.theme.islamic ? m.contactLines.length * mmOf(10.2) : 0);
+  const contactStackH = m.theme.islamic ? 0 : m.contactLines.length * mmOf(10.8);
+  parts.masthead = Math.max(tier.logo, identityH, contactStackH) + 1.3;
+  parts.rule = 1.5 + 2.2;
+
+  /* title band -------------------------------------------------------------- */
+  parts.title = tier.titleH + tier.gap;
+
+  /* student information + photograph ---------------------------------------- */
+  const infoRows = Math.ceil(m.infoFields.length / 2);
+  const statusH = m.statusKind === "final"
+    ? tier.statusH
+    : 3.2 + m.statusLines * mmOf(9.2 * 1.35) + 2.4;
+  const infoH = infoRows * tier.infoRowH + 1.2 + statusH;
+  parts.student = Math.max(m.showPhoto ? tier.photoH : 0, infoH) + 3.4;
+
+  /* academic performance table ---------------------------------------------- */
+  const subjectColMm = m.columns.subjectMm;
+  const lineMm = mmOf(tier.tableFont * 1.28);
+  let extraLines = 0;
+  for (const s of m.data.subjects) {
+    const nameL = textLines(m.rtl ? (s.nameAr || s.nameEn) : (s.nameEn || s.nameAr), subjectColMm - 9, tier.tableFont);
+    const remarkL = t.columns.remark
+      ? textLines(m.rtl ? (s.remarkAr || s.remark) : (s.remark || s.remarkAr), m.columns.cols.remark - 3, tier.tableFont)
+      : 1;
+    extraLines += Math.max(nameL, remarkL) - 1;
+  }
+  const bodyRows = Math.max(1, m.data.subjects.length);
+  parts.table = tier.gap + tier.headingH + (tier.rowH + 0.8) + bodyRows * tier.rowH + extraLines * lineMm;
+
+  /* performance summary + grading scale -------------------------------------- */
+  parts.summary = m.perf.length ? tier.gap + tier.headingH + 4.8 + 6.8 : 0;
+  parts.legend = m.legendRows ? (m.perf.length ? 1.5 : tier.gap) + m.legendRows * 5.2 : 0;
+
+  /* attendance + behaviour (side by side) ------------------------------------ */
+  const attendanceH = m.showAttendance ? (m.data.attendance.total ? 9.8 + 5.6 : 5.0) : 0;
+  const behaviourH = m.showBehaviour ? (m.ratedCategories.length ? Math.ceil(m.ratedCategories.length / 2) * 4.6 : 5.0) : 0;
+  parts.record = (m.showAttendance || m.showBehaviour)
+    ? tier.gap + tier.headingH + Math.max(attendanceH, behaviourH)
+    : 0;
+
+  /* comments ----------------------------------------------------------------- */
+  parts.comments = m.showComments ? tier.gap + tier.headingH + 5.0 + tier.commentMin : 0;
+
+  /* promotion ---------------------------------------------------------------- */
+  parts.promotion = m.showPromotion ? tier.gap + 8.4 : 0;
+
+  /* signatures + minimal footer ----------------------------------------------- */
+  parts.signatures = m.signatures.length
+    ? 3.4 + tier.sigSpace + 0.4 + 3.6 + (m.signatureNames ? 3.2 : 0) + 3.0
+    : 0;
+  parts.footer = 1.2 + m.footerLines * 3.4 + 1.4;
+
+  let total = 0;
+  for (const key of Object.keys(parts)) total += parts[key];
+  return { parts, total: round1(total) };
+}
+
+/**
+ * Chooses the density that fits and distributes any leftover millimetres.
+ * Left-over space goes where it is actually useful on a school report — the
+ * comment boxes and the signature area — instead of leaving a dead band above
+ * the footer.
+ */
+function planSheet(m) {
+  const budget = m.printableH - FIT_RESERVE_MM;
+  let chosen = null;
+  for (const tier of DENSITY_TIERS) {
+    if (m.forceDense && tier.key === "regular") continue;
+    const measured = measureSheet(m, tier);
+    if (measured.total <= budget) { chosen = { tier, measured }; break; }
+  }
+  // Nothing fits comfortably: keep the tightest readable density (never
+  // smaller than 9 px) and let the document flow onto a second page. The
+  // table header repeats there and no row is split, so a 20+ subject report
+  // stays legible instead of being crushed.
+  if (!chosen) {
+    const tier = DENSITY_TIERS[DENSITY_TIERS.length - 1];
+    chosen = { tier, measured: measureSheet(m, tier) };
+  }
+  const total = chosen.measured.total;
+  const slack = Math.max(0, budget - total);   // never spend the reserve
+  return {
+    tier: chosen.tier,
+    density: chosen.tier.key,
+    orientation: m.orientation,
+    subjects: m.data.subjects.length,
+    printableHeightMm: m.printableH,
+    reserveMm: FIT_RESERVE_MM,
+    heightMm: total,
+    parts: chosen.measured.parts,
+    slackMm: round1(slack),
+    pages: Math.max(1, Math.ceil(total / m.printableH)),
+    fitsOnePage: total <= m.printableH,
+    commentMin: round1(chosen.tier.commentMin + clampMm(slack * 0.42, 0, 20)),
+    sigSpace: round1(chosen.tier.sigSpace + clampMm(slack * 0.2, 0, 9)),
+  };
+}
+
+/* ------------------------------ shared pieces ----------------------------- */
+
 /** Neutral person silhouette used when a student has no photograph. */
 const PHOTO_PLACEHOLDER_SVG = '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>';
 
@@ -751,8 +1118,15 @@ const STATUS_LABELS = {
   locked: "Locked",
 };
 
-/** Fixed mm widths of the numeric result columns (subject takes the rest). */
-const RESULT_COL_WIDTHS = { ca: "15mm", exam: "16mm", total: "13mm", pct: "12mm", grade: "12mm", gradePoint: "11mm", remark: "30mm" };
+const PROMOTION_TEXT = {
+  promoted: { en: "Promoted", ar: "نُقل إلى الصف الأعلى" },
+  repeating: { en: "Repeating", ar: "يعيد السنة" },
+  graduated: { en: "Graduated", ar: "تخرّج" },
+  pending: { en: "Pending", ar: "قيد القرار" },
+  promoted_trial: { en: "Promoted on Trial", ar: "نُقل تحت التجربة" },
+  withdrawn: { en: "Withdrawn", ar: "منسحب" },
+  completed: { en: "Completed", ar: "أكمل البرنامج" },
+};
 
 /**
  * Fills any field the assembler normally provides so the renderer also
@@ -764,7 +1138,7 @@ function normalizeRenderInput(data) {
   const summary = data.summary || {};
   const d = Object.assign({}, data);
   d.template = template;
-  d.madrasa = Object.assign({ nameEn: "", nameAr: "", logoPath: "", mottoEn: "", mottoAr: "", address: "", city: "", stateName: "", phone: "", email: "", website: "", brandColor: "" }, data.madrasa || {});
+  d.madrasa = Object.assign({ nameEn: "", nameAr: "", logoPath: "", mottoEn: "", mottoAr: "", address: "", city: "", stateName: "", phone: "", email: "", website: "", brandColor: "", category: "", institutionType: "" }, data.madrasa || {});
   d.student = Object.assign({ photoPath: "", nameAr: "", gender: "", dateOfBirth: "", section: "", program: "", studentCode: "", classEn: "", classAr: "", admissionNo: "", name: "" }, data.student || {});
   d.term = Object.assign({ nameEn: "", nameAr: "" }, data.term || {});
   d.subjects = Array.isArray(data.subjects) ? data.subjects : [];
@@ -790,169 +1164,86 @@ function normalizeRenderInput(data) {
   return d;
 }
 
-const PROMOTION_TEXT = {
-  promoted: { en: "Promoted", ar: "نُقل إلى الصف الأعلى" },
-  repeating: { en: "Repeating", ar: "يعيد السنة" },
-  graduated: { en: "Graduated", ar: "تخرّج" },
-  pending: { en: "Pending", ar: "قيد القرار" },
-  promoted_trial: { en: "Promoted on Trial", ar: "نُقل تحت التجربة" },
-  withdrawn: { en: "Withdrawn", ar: "منسحب" },
-  completed: { en: "Completed", ar: "أكمل البرنامج" },
-};
+/* ------------------------------ report model ------------------------------ */
 
 /**
- * Renders the professional A4 report sheet — an official academic document
- * rather than a dashboard page. The document is print/PDF ready: the
- * browser's print dialog (or "Save as PDF") produces the final file with
- * branding, tables, page breaks and Arabic text preserved — the same
- * pipeline the platform's ID cards and certificates already use.
+ * Everything the document shows, derived once from the assembled data: which
+ * sections are on, the (de-duplicated) student identity fields, the result
+ * status, the summary figures, the grading bands, the conduct ratings and the
+ * measured page plan. The renderer below only turns this into markup and the
+ * planner only measures it — one source of truth for both.
  *
- * Design contract:
- *   • @page A4 with margin 0; the sheet itself carries the printable
- *     margins, so nothing is ever clipped and the screen preview matches
- *     the printed PDF,
- *   • school branding, session, term, subjects, scores, grades, summary,
- *     attendance, conduct, comments, promotion and signatures all come
- *     from the assembled tenant data — nothing is hard-coded,
- *   • logo and photograph <img> tags are only emitted for files that
- *     actually exist in this deployment's upload directory (assetServed),
- *     so a dangling path degrades to a clean placeholder instead of a
- *     browser broken-image icon,
- *   • the print button and image fallbacks are wired by the same-origin
- *     /js/report-sheet-viewer.js because the platform CSP blocks inline
- *     event handlers (the inline onclick stays as a CSP-less fallback).
- *
- * opts.portal        render inside the student/parent portal (published only)
- * opts.publicCopy    render for the public result checker (adds verified line)
- * opts.statusNote    extra line for the non-printing toolbar
+ * Information is deliberately shown ONCE:
+ *   • academic session + term live in the title band only,
+ *   • the student block carries name, student ID, class and gender only
+ *     (date of birth and admission number are intentionally not printed —
+ *     they remain in the database and in every other screen and export),
+ *   • the report reference appears once, small, in the minimal footer.
  */
-function renderReportSheetHTML(data, opts = {}) {
+function reportModel(data, opts = {}) {
   data = normalizeRenderInput(data);
   const t = data.template;
-  const ar = String(data.student.nameAr || "");
-  const rtl = ar.length > 0;
+  const rtl = String(data.student.nameAr || "").length > 0;
   const L = (en, arabic) => (rtl && arabic ? arabic : en);
-  const orientation = resolveOrientation(t, data.subjects.length);
-  const brand = brandColorOf(data);
-  const brandDark = shade(brand, -26);
-  const compact = t.layout === "compact";
-  const modern = t.layout === "modern";
-  // Density adapts to content volume so a full class report still fits the
-  // A4 page: many subjects (or the compact layout, or the extra height of an
-  // incomplete-status notice) tighten row padding and font sizes instead of
-  // spilling onto a second page by a few millimetres.
+  const theme = reportTheme(data);
+  const orientation = resolveOrientation(t);
+  const page = PAGE_SIZES[orientation] || PAGE_SIZES.portrait;
+  const printableW = page.w - PAGE_MARGIN_MM * 2;
+  const printableH = page.h - PAGE_MARGIN_MM * 2;
+
   const incomplete = !data.completeness.complete;
-  const dense = compact || incomplete || data.subjects.length >= 8;
+  const nonFinal = ["draft", "returned", "submitted", "under_review"].includes(data.status);
+  const workingCopy = !opts.portal && !opts.publicCopy && nonFinal;
 
-  const cols = t.columns;
-  const colCount = visibleColumnCount(t);
-
-  /* ---------------- page geometry (screen mirrors the printed page) ------- */
-  const padX = dense ? "10mm" : "12mm";
-  const padY = dense ? "8.5mm" : "10mm";
-  const sheetW = orientation === "landscape" ? "297mm" : "210mm";
-  const sheetH = orientation === "landscape" ? "207mm" : "297mm";
-  const logoSize = compact ? "16mm" : "19mm";
-  // The content box fills exactly one printable page so the footer can sit at
-  // the foot of the A4 sheet; the reserved padding keeps in-flow content out
-  // of the footer's zone, and on a multi-page report the footer lands at the
-  // bottom of the LAST page (never duplicated, never orphaned).
-  const innerH = orientation === "landscape" ? "191mm" : dense ? "278mm" : "276mm";
-
-  /* ---------------- school identity --------------------------------------- */
-  const nameLen = String(data.madrasa.nameEn || "").length;
-  const nameSize = nameLen <= 30 ? 20 : nameLen <= 46 ? 17 : nameLen <= 64 ? 15 : 13.5;
-
-  const logoUrl = assetServed(data.madrasa.logoPath);
-  const logoInitial = String((data.madrasa.nameEn || "?").trim().charAt(0) || "?").toUpperCase();
-  const logo = logoUrl
-    ? `<img class="logo" src="${esc(logoUrl)}" alt="${esc(data.madrasa.nameEn)}" data-fallback="logo" data-initial="${esc(logoInitial)}">`
-    : `<div class="logo logo-fallback" aria-hidden="true">${esc(logoInitial)}</div>`;
-
+  /* school identity ---------------------------------------------------------- */
   const motto = rtl && data.madrasa.mottoAr ? data.madrasa.mottoAr : (data.madrasa.mottoEn || data.madrasa.mottoAr);
-  const addressLine = [data.madrasa.address, data.madrasa.city, data.madrasa.stateName].filter((x) => x && String(x).trim()).join(", ");
-  const contactLine = [
+  const addressLine = [data.madrasa.address, data.madrasa.city, data.madrasa.stateName]
+    .filter((x) => x && String(x).trim()).join(", ");
+  const contactBits = [
     data.madrasa.phone ? `${L("Tel", "هاتف")}: ${data.madrasa.phone}` : "",
     data.madrasa.email,
     data.madrasa.website,
-  ].filter((x) => x && String(x).trim()).join("  ·  ");
+  ].filter((x) => x && String(x).trim());
+  // Islamic: address + contacts centred under the name. Western: the same
+  // facts stacked at the right of the masthead. Either way they appear once.
+  const contactLines = theme.islamic
+    ? [addressLine, contactBits.join("  ·  ")].filter(Boolean)
+    : [addressLine].concat(contactBits).filter(Boolean);
 
-  /* ---------------- student photograph ------------------------------------ */
-  const photoUrl = t.showPhoto ? assetServed(data.student.photoPath) : "";
-  const photoSlot = !t.showPhoto ? "" : (photoUrl
-    ? `<div class="photo-slot"><img class="photo" src="${esc(photoUrl)}" alt="${esc(data.student.name)}" data-fallback="photo"></div>`
-    : `<div class="photo-slot photo-empty" aria-hidden="true">${PHOTO_PLACEHOLDER_SVG}</div>`);
-
-  /* ---------------- student information grid ------------------------------ */
-  const infoCells = [];
+  /* student identity --------------------------------------------------------- */
+  const infoFields = [];
   const addInfo = (label, value) => {
     if (value === null || value === undefined || String(value).trim() === "") return;
-    infoCells.push(`<div class="cell"><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`);
+    infoFields.push([label, String(value)]);
   };
   addInfo(L("Student name", "اسم الطالب"), rtl ? (data.student.nameAr || data.student.name) : data.student.name);
-  addInfo(L("Admission no.", "رقم التسجيل"), data.student.admissionNo);
-  addInfo(L("Student ID", "الرقم التعريفي"), data.student.studentCode);
+  addInfo(L("Student ID", "الرقم التعريفي"), data.student.studentCode || data.student.admissionNo);
   addInfo(L("Class", "الفصل"), rtl ? (data.student.classAr || data.student.classEn) : (data.student.classEn || data.student.classAr));
-  if (t.showStudentDetails) {
-    if (data.student.section) addInfo(L("Section", "القسم"), data.student.section);
-    if (data.student.program) addInfo(L("Program", "البرنامج"), data.student.program);
-    if (data.student.gender) addInfo(L("Gender", "الجنس"), data.student.gender === "M" ? L("Male", "ذكر") : data.student.gender === "F" ? L("Female", "أنثى") : data.student.gender);
-    if (data.student.dateOfBirth) addInfo(L("Date of birth", "تاريخ الميلاد"), fmtDateHuman(data.student.dateOfBirth));
+  if (t.showStudentDetails && data.student.gender) {
+    addInfo(L("Gender", "الجنس"), data.student.gender === "M" ? L("Male", "ذكر")
+      : data.student.gender === "F" ? L("Female", "أنثى") : data.student.gender);
   }
-  addInfo(L("Academic session", "العام الدراسي"), data.session);
-  addInfo(L("Term", "الفترة"), rtl ? (data.term.nameAr || data.term.nameEn) : (data.term.nameEn || data.term.nameAr));
-  if (t.showReference) addInfo(L("Report no.", "رقم التقرير"), data.reference);
 
-  /* ---------------- academic performance table ---------------------------- */
-  const colTags = RESULT_COLUMNS.filter((key) => cols[key]).map((key) => `<col style="width:${RESULT_COL_WIDTHS[key]}">`).join("");
-  const colgroup = `<colgroup><col>${colTags}</colgroup>`;
-
-  const subjectRows = data.subjects.map((s) => {
-    const name = rtl ? (s.nameAr || s.nameEn) : (s.nameEn || s.nameAr);
-    const remark = rtl ? (s.remarkAr || s.remark) : (s.remark || s.remarkAr);
-    const cells = [];
-    if (cols.ca) cells.push(`<td class="num">${esc(s.ca)}</td>`);
-    if (cols.exam) cells.push(`<td class="num">${esc(s.exam)}</td>`);
-    if (cols.total) cells.push(`<td class="num total">${esc(s.total)}</td>`);
-    if (cols.pct) cells.push(`<td class="num">${esc(s.pct)}%</td>`);
-    if (cols.grade) cells.push(`<td class="grade">${esc(s.grade)}</td>`);
-    if (cols.gradePoint) cells.push(`<td class="num">${esc(s.gradePoint)}</td>`);
-    if (cols.remark) cells.push(`<td class="remark">${esc(remark || "—")}</td>`);
-    return `<tr><td class="subj">${esc(name)}</td>${cells.join("")}</tr>`;
-  }).join("");
-
-  const subjectHeader = (() => {
-    const heads = [];
-    if (cols.ca) heads.push(`<th scope="col">${esc(L(`${t.caLabel} (${data.config.caMax})`, `${t.caLabel}`))}</th>`);
-    if (cols.exam) heads.push(`<th scope="col">${esc(L(`${t.examLabel} (${data.config.examMax})`, `${t.examLabel}`))}</th>`);
-    if (cols.total) heads.push(`<th scope="col">${esc(L("Total", "المجموع"))}</th>`);
-    if (cols.pct) heads.push(`<th scope="col">%</th>`);
-    if (cols.grade) heads.push(`<th scope="col">${esc(L("Grade", "الدرجة"))}</th>`);
-    if (cols.gradePoint) heads.push(`<th scope="col">${esc(L("Point", "النقاط"))}</th>`);
-    if (cols.remark) heads.push(`<th scope="col">${esc(L("Remark", "ملاحظة"))}</th>`);
-    return `<tr><th class="subj" scope="col">${esc(L("Subject", "المادة"))}</th>${heads.join("")}</tr>`;
-  })();
-
-  /* ---------------- result status / completeness --------------------------- */
+  /* result status ------------------------------------------------------------ */
   const missing = data.completeness.missingSubjects || [];
   const pending = data.completeness.pendingSubjects || [];
-  const nonFinal = ["draft", "returned", "submitted", "under_review"].includes(data.status);
-  const subjList = (list) => list.map((s) => rtl && s.nameAr ? s.nameAr : s.nameEn).join(", ");
-  const statusNotice = incomplete
-    ? `<aside class="status-notice" role="note">
-        <p class="notice-title">${esc(L("Result status — incomplete", "حالة النتيجة — غير مكتملة"))}</p>
-        <p class="notice-body">${esc(L("This report is incomplete — some required results are missing or not yet approved.", "هذا التقرير غير مكتمل — بعض النتائج مفقودة أو لم تُعتمد بعد."))}</p>
-        ${missing.length ? `<p class="notice-body"><b>${esc(L("Missing", "مفقود"))}:</b> ${esc(subjList(missing))}</p>` : ""}
-        ${pending.length ? `<p class="notice-body"><b>${esc(L("Awaiting approval", "بانتظار الاعتماد"))}:</b> ${esc(subjList(pending))}</p>` : ""}
-      </aside>`
-    : (!opts.portal && !opts.publicCopy && nonFinal
-      ? `<aside class="status-notice" role="note">
-          <p class="notice-title">${esc(L("Result status — working copy", "حالة النتيجة — نسخة عمل"))}</p>
-          <p class="notice-body">${esc(L("These results have not completed the approval workflow; this sheet is not a final report.", "لم تكتمل دورة الاعتماد لهذه النتائج؛ هذه النسخة ليست تقريرًا نهائيًا."))}</p>
-        </aside>`
-      : "");
+  const subjList = (list) => list.map((s) => (rtl && s.nameAr ? s.nameAr : s.nameEn)).join(", ");
+  const statusDetail = [
+    missing.length ? `${L("Missing", "مفقود")}: ${subjList(missing)}` : "",
+    pending.length ? `${L("Awaiting approval", "بانتظار الاعتماد")}: ${subjList(pending)}` : "",
+  ].filter(Boolean).join("  ·  ");
+  const statusKind = incomplete ? "incomplete" : workingCopy ? "working" : "final";
+  const statusLabel = incomplete
+    ? L("Incomplete", "غير مكتملة")
+    : workingCopy
+      ? L("Working copy", "نسخة عمل")
+      : L(STATUS_LABELS[data.status] || data.status, "معتمدة");
+  const statusBody = statusKind === "incomplete"
+    ? (statusDetail || L("Some required results are missing or not yet approved.", "بعض النتائج مفقودة أو لم تُعتمد بعد."))
+    : L("These results have not completed the approval workflow; this sheet is not a final report.",
+      "لم تكتمل دورة الاعتماد لهذه النتائج؛ هذه النسخة ليست تقريرًا نهائيًا.");
 
-  /* ---------------- performance summary ------------------------------------ */
+  /* performance summary ------------------------------------------------------- */
   const perf = [];
   if (data.summary.subjectCount) {
     perf.push([L("Subjects offered", "عدد المواد"), data.summary.subjectCount]);
@@ -967,82 +1258,280 @@ function renderReportSheetHTML(data, opts = {}) {
     perf.push([L("Class size", "عدد الطلاب"), data.classPerformance.size]);
     perf.push([L("Class average", "معدل الفصل"), `${data.classPerformance.average}%`]);
   }
-  /* ---------------- grading scale ------------------------------------------ */
-  const legend = t.showGradeLegend && data.config.bands.length
-    ? `<table class="legend-table"><tbody><tr><th class="legend-head">${esc(L("Grading scale", "سلم الدرجات"))}</th>${data.config.bands
-      .slice().sort((a, b) => Number(b.min) - Number(a.min))
-      .map((b) => `<td><b>${esc(b.grade)}</b>${Number(b.min)}+${b.remark ? ` · ${esc(rtl && b.remark_ar ? b.remark_ar : b.remark)}` : ""}</td>`)
-      .join("")}</tr></tbody></table>`
+
+  /* grading scale, conduct, footer -------------------------------------------- */
+  const bands = t.showGradeLegend && data.config.bands.length
+    ? data.config.bands.slice().sort((a, b) => Number(b.min) - Number(a.min))
+    : [];
+  const ratedCategories = t.showBehaviour
+    ? data.behaviour.categories.filter((c) => data.behaviour.ratings[c.key] !== null && data.behaviour.ratings[c.key] !== undefined)
+    : [];
+  const verifiedLine = opts.publicCopy
+    ? `Published online copy — verified ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`
     : "";
+  const footerBits = [
+    t.showEdusphereCredit ? "Powered by EduSphere" : "",
+    t.showReference && data.reference ? `${L("Ref", "المرجع")}: ${data.reference}` : "",
+  ].filter(Boolean);
 
-  let summarySection = "";
-  if (perf.length) {
-    const cells = perf.map(([k, v]) => `<td class="sum-cell"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></td>`);
-    while (cells.length % 4) cells.push(`<td class="sum-cell sum-blank" aria-hidden="true"></td>`);
+  const nameLen = String(data.madrasa.nameEn || "").length;
+  const columns = planColumns(t, data.subjects, rtl, printableW);
+  const model = {
+    columns,
+    data, t, opts, rtl, L, theme, orientation, page, printableW, printableH,
+    incomplete, nonFinal, workingCopy,
+    motto, addressLine, contactBits, contactLines,
+    infoFields, statusKind, statusLabel, statusDetail, statusBody,
+    statusLines: statusKind === "final" ? 1 : Math.min(3, 1 + Math.ceil(Math.max(statusBody.length, 1) / 95)),
+    perf, bands,
+    legendRows: bands.length ? Math.ceil(bands.length / 7) : 0,
+    ratedCategories,
+    showPhoto: t.showPhoto,
+    showAttendance: t.showAttendance,
+    showBehaviour: t.showBehaviour && t.behaviourCategories.length > 0,
+    showComments: t.showComments,
+    showPromotion: t.showPromotion,
+    signatures: t.signatures,
+    signatureNames: t.signatures.some((s) => s.name),
+    verifiedLine,
+    footerBits,
+    footerLines: Math.max(1, (footerBits.length ? 1 : 0) + (verifiedLine ? 1 : 0)),
+    forceDense: t.layout === "compact",
+    // A long school name steps down instead of wrapping the masthead — but
+    // never below 11px, which is still comfortably legible in print.
+    nameSizeFor: (max) => Math.max(11, nameLen <= 30 ? max : nameLen <= 46 ? max - 3 : nameLen <= 64 ? max - 5 : max - 6.5),
+  };
+  model.plan = planSheet(model);
+  return model;
+}
+
+/**
+ * The measured A4 plan for a report (density tier, millimetre budget, page
+ * count). Exported so the layout contract — "at least 12 subjects on one A4
+ * portrait page" — is verifiable rather than merely asserted in a comment.
+ */
+function planReportSheet(data, opts = {}) {
+  return reportModel(data, opts).plan;
+}
+
+/* --------------------------------- renderer -------------------------------- */
+
+/**
+ * Renders the official A4 report sheet.
+ *
+ * Presentation only: every figure on the page (CA, exam, total, percentage,
+ * grade, average, position, class average, attendance, promotion) comes from
+ * services/grading.js and the existing term_summaries engine and is merely
+ * laid out here.
+ *
+ * Design contract:
+ *   • one A4 portrait page carries at least 12 subjects with ≥9 px table text
+ *     — planSheet() measures the document in millimetres and picks the
+ *     loosest density that still fits, so nothing is uniformly shrunk,
+ *   • nothing is printed twice: session/term in the title band, identity in
+ *     the student block, one short footer line,
+ *   • the theme (Islamic / Western) comes from the tenant's existing
+ *     category, while the data, sections and calculations stay shared,
+ *   • logo and photograph <img> tags are only emitted for files that actually
+ *     exist in this deployment's upload directory (assetServed), so a
+ *     dangling path degrades to a designed placeholder instead of a browser
+ *     broken-image icon,
+ *   • the print button and image fallbacks are wired by the same-origin
+ *     /js/report-sheet-viewer.js because the platform CSP blocks inline
+ *     handlers (the inline onclick stays as a CSP-less fallback).
+ *
+ * opts.portal        render inside the student/parent portal (published only)
+ * opts.publicCopy    render for the public result checker (adds verified line)
+ * opts.statusNote    extra line for the non-printing toolbar
+ */
+function renderReportSheetHTML(data, opts = {}) {
+  const m = reportModel(data, opts);
+  const { t, rtl, L, theme, plan } = m;
+  const d = m.data;
+  const tier = plan.tier;
+  const cols = t.columns;
+  const colCount = visibleColumnCount(t);
+  const nameSize = m.nameSizeFor(tier.nameMax);
+
+  /* ---------------- masthead ---------------------------------------------- */
+  const logoUrl = assetServed(d.madrasa.logoPath);
+  const logoInitial = String((d.madrasa.nameEn || "?").trim().charAt(0) || "?").toUpperCase();
+  const logo = logoUrl
+    ? `<img class="logo" src="${esc(logoUrl)}" alt="${esc(d.madrasa.nameEn)}" data-fallback="logo" data-initial="${esc(logoInitial)}">`
+    : `<div class="logo logo-fallback" aria-hidden="true">${esc(logoInitial)}</div>`;
+
+  const mastheadId = `<div class="masthead-id">
+        <h1 class="school-name">${esc(d.madrasa.nameEn)}${d.madrasa.nameAr ? ` <span class="ar" dir="rtl">· ${esc(d.madrasa.nameAr)}</span>` : ""}</h1>
+        ${m.motto ? `<p class="motto">${esc(m.motto)}</p>` : ""}
+        ${theme.islamic ? m.contactLines.map((line) => `<p class="contact">${esc(line)}</p>`).join("") : ""}
+      </div>`;
+  const masthead = theme.islamic
+    ? `<header class="masthead">
+      ${logo}
+      ${mastheadId}
+      <div class="masthead-crest" aria-hidden="true"><span class="crest"></span></div>
+    </header>`
+    : `<header class="masthead">
+      ${logo}
+      ${mastheadId}
+      ${m.contactLines.length ? `<div class="masthead-contact">${m.contactLines.map((line) => `<p>${esc(line)}</p>`).join("")}</div>` : ""}
+    </header>`;
+
+  /* ---------------- title band --------------------------------------------- */
+  const termName = rtl ? (d.term.nameAr || d.term.nameEn) : (d.term.nameEn || d.term.nameAr);
+  const docTitle = `<div class="doc-title">
+      <p class="en">${esc(L(theme.titleText[0], theme.titleText[1]))}</p>
+      <p class="meta"><span>${esc(L("Academic session", "العام الدراسي"))}: <b>${esc(d.session || "—")}</b></span><span class="sep" aria-hidden="true"></span><span>${esc(L("Term", "الفترة"))}: <b>${esc(termName || "—")}</b></span></p>
+    </div>`;
+
+  /* ---------------- student information ------------------------------------ */
+  const photoUrl = t.showPhoto ? assetServed(d.student.photoPath) : "";
+  const photoSlot = !t.showPhoto ? "" : (photoUrl
+    ? `<div class="photo-slot"><img class="photo" src="${esc(photoUrl)}" alt="${esc(d.student.name)}" data-fallback="photo"></div>`
+    : `<div class="photo-slot photo-empty" aria-hidden="true">${PHOTO_PLACEHOLDER_SVG}</div>`);
+
+  const infoCells = m.infoFields
+    .map(([label, value]) => `<div class="cell"><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`)
+    .join("");
+
+  const statusStrip = m.statusKind === "final"
+    ? `<p class="status-line"><span class="k">${esc(L("Result status", "حالة النتيجة"))}</span><span class="v">${esc(m.statusLabel)}</span></p>`
+    : `<aside class="status-notice notice-${esc(m.statusKind)}" role="note">
+          <p class="notice-title">${esc(L("Result status", "حالة النتيجة"))} — ${esc(m.statusLabel)}</p>
+          <p class="notice-body">${esc(m.statusBody)}</p>
+        </aside>`;
+
+  const studentBand = `<section class="student-band${photoSlot ? "" : " no-photo"}" aria-label="${esc(L("Student information", "بيانات الطالب"))}">
+      <div class="student-main">
+        <dl class="student-grid">${infoCells}</dl>
+        ${statusStrip}
+      </div>
+      ${photoSlot}
+    </section>`;
+
+  /* ---------------- academic performance ----------------------------------- */
+  const colTags = RESULT_COLUMNS.filter((key) => cols[key])
+    .map((key) => `<col style="width:${m.columns.cols[key]}mm">`).join("");
+  const colgroup = `<colgroup><col style="width:${m.columns.subjectMm}mm">${colTags}</colgroup>`;
+
+  const subjectRows = d.subjects.map((s, i) => {
+    const name = rtl ? (s.nameAr || s.nameEn) : (s.nameEn || s.nameAr);
+    const remark = rtl ? (s.remarkAr || s.remark) : (s.remark || s.remarkAr);
+    const cells = [];
+    if (cols.ca) cells.push(`<td class="num">${esc(s.ca)}</td>`);
+    if (cols.exam) cells.push(`<td class="num">${esc(s.exam)}</td>`);
+    if (cols.total) cells.push(`<td class="num total">${esc(s.total)}</td>`);
+    if (cols.pct) cells.push(`<td class="num">${esc(s.pct)}%</td>`);
+    if (cols.grade) cells.push(`<td class="grade">${esc(s.grade)}</td>`);
+    if (cols.gradePoint) cells.push(`<td class="num">${esc(s.gradePoint)}</td>`);
+    if (cols.remark) cells.push(`<td class="remark">${esc(remark || "—")}</td>`);
+    return `<tr><td class="subj"><span class="sn">${i + 1}</span>${esc(name)}</td>${cells.join("")}</tr>`;
+  }).join("");
+
+  const subjectHeader = (() => {
+    const heads = [];
+    if (cols.ca) heads.push(`<th scope="col">${esc(L(`${t.caLabel} (${d.config.caMax})`, `${t.caLabel}`))}</th>`);
+    if (cols.exam) heads.push(`<th scope="col">${esc(L(`${t.examLabel} (${d.config.examMax})`, `${t.examLabel}`))}</th>`);
+    if (cols.total) heads.push(`<th scope="col">${esc(L("Total", "المجموع"))}</th>`);
+    if (cols.pct) heads.push(`<th scope="col">%</th>`);
+    if (cols.grade) heads.push(`<th scope="col">${esc(L("Grade", "الدرجة"))}</th>`);
+    if (cols.gradePoint) heads.push(`<th scope="col">${esc(L("Point", "النقاط"))}</th>`);
+    if (cols.remark) heads.push(`<th scope="col">${esc(L("Remark", "ملاحظة"))}</th>`);
+    return `<tr><th class="subj" scope="col">${esc(L("Subject", "المادة"))}</th>${heads.join("")}</tr>`;
+  })();
+
+  const academicSection = `<section class="block">
+      <h2>${esc(L("Academic performance", "الأداء الأكاديمي"))}</h2>
+      <table class="results">${colgroup}
+        <thead>${subjectHeader}</thead>
+        <tbody>${subjectRows || `<tr><td class="subj" colspan="${colCount + 1}">${esc(L("No approved subject results for this term yet.", "لا توجد نتائج معتمدة لهذه الفترة بعد."))}</td></tr>`}</tbody>
+      </table>
+    </section>`;
+
+  /* ---------------- performance summary + grading scale --------------------- */
+  // The scale is a single compact strip. A long scale wraps onto a second
+  // row of equal cells rather than squeezing ten unreadable columns.
+  const legend = (() => {
+    if (!m.bands.length) return "";
+    const rowCount = m.legendRows;
+    const perRow = Math.ceil(m.bands.length / rowCount);
+    const cell = (b) => `<td><b>${esc(b.grade)}</b>${Number(b.min)}+${b.remark ? ` · ${esc(rtl && b.remark_ar ? b.remark_ar : b.remark)}` : ""}</td>`;
     const rows = [];
-    for (let i = 0; i < cells.length; i += 4) rows.push(`<tr>${cells.slice(i, i + 4).join("")}</tr>`);
-    summarySection = `<section class="block">
-        <h2>${esc(L("Performance summary", "ملخص الأداء"))}</h2>
-        <table class="summary"><tbody>${rows.join("")}</tbody></table>
-        ${legend ? `<div class="legend-wrap">${legend}</div>` : ""}
-      </section>`;
-  }
+    for (let r = 0; r < rowCount; r++) {
+      const slice = m.bands.slice(r * perRow, (r + 1) * perRow);
+      const pad = "<td></td>".repeat(perRow - slice.length);
+      const head = r === 0
+        ? `<th class="legend-head"${rowCount > 1 ? ` rowspan="${rowCount}"` : ""} scope="row">${esc(L("Grading scale", "سلم الدرجات"))}</th>`
+        : "";
+      rows.push(`<tr>${head}${slice.map(cell).join("")}${pad}</tr>`);
+    }
+    return `<table class="legend-table"><tbody>${rows.join("")}</tbody></table>`;
+  })();
 
-  /* ---------------- attendance --------------------------------------------- */
-  const att = data.attendance;
-  const attendanceSection = t.showAttendance
+  const summarySection = m.perf.length
+    ? `<section class="block">
+        <h2>${esc(L("Performance summary", "ملخص الأداء"))}</h2>
+        <table class="summary">
+          <thead><tr>${m.perf.map(([k]) => `<th scope="col">${esc(k)}</th>`).join("")}</tr></thead>
+          <tbody><tr>${m.perf.map(([, v]) => `<td>${esc(v)}</td>`).join("")}</tr></tbody>
+        </table>
+        ${legend ? `<div class="legend-wrap">${legend}</div>` : ""}
+      </section>`
+    : (legend ? `<section class="block"><div class="legend-wrap">${legend}</div></section>` : "");
+
+  /* ---------------- attendance + conduct ------------------------------------ */
+  const att = d.attendance;
+  const attendanceBlock = m.showAttendance
     ? `<section class="block">
         <h2>${esc(L("Attendance", "الحضور"))}</h2>
         ${att.total ? `<table class="mini att"><thead><tr>${[
-      ["Days recorded", "أيام مسجلة"], ["Present", "حاضر"], ["Absent", "غائب"], ["Late", "متأخر"], ["Attendance", "نسبة الحضور"],
+      ["Days recorded", "أيام مسجلة"], ["Present", "حاضر"], ["Absent", "غائب"], ["Late", "متأخر"], ["Attendance %", "نسبة الحضور"],
     ].map(([en, ar2]) => `<th scope="col">${esc(L(en, ar2))}</th>`).join("")}</tr></thead><tbody><tr><td>${esc(att.total)}</td><td>${esc(att.present)}</td><td>${esc(att.absent)}</td><td>${esc(att.late)}</td><td>${att.percentage === null ? "—" : `${esc(att.percentage)}%`}</td></tr></tbody></table>`
       : `<p class="empty">${esc(L("No attendance records for this term.", "لا توجد سجلات حضور لهذه الفترة."))}</p>`}
       </section>`
     : "";
 
-  /* ---------------- behaviour / conduct ------------------------------------ */
-  const ratedCategories = t.showBehaviour
-    ? data.behaviour.categories.filter((c) => data.behaviour.ratings[c.key] !== null)
-    : [];
-  const behaviourSection = t.showBehaviour && t.behaviourCategories.length
+  const behaviourBlock = m.showBehaviour
     ? `<section class="block">
         <h2>${esc(L("Behaviour / Conduct", "السلوك والمواظبة"))}</h2>
-        ${ratedCategories.length ? `<div class="behaviour">${ratedCategories.map((c) => {
-      const rating = data.behaviour.ratings[c.key];
-      return `<div class="beh-cell"><span class="k">${esc(rtl && c.labelAr ? c.labelAr : c.label)}</span><span class="v">${esc(`${rating}/5 — ${RATING_LABELS[rating] || ""}`)}</span></div>`;
+        ${m.ratedCategories.length ? `<div class="behaviour">${m.ratedCategories.map((c) => {
+      const rating = d.behaviour.ratings[c.key];
+      return `<span class="beh-cell"><span class="k">${esc(rtl && c.labelAr ? c.labelAr : c.label)}</span><span class="v">${esc(rating)}/5 <i>${esc(RATING_LABELS[rating] || "")}</i></span></span>`;
     }).join("")}</div>`
       : `<p class="empty">${esc(L("No conduct ratings recorded for this term.", "لا توجد تقييمات سلوك لهذه الفترة."))}</p>`}
       </section>`
     : "";
 
-  /* ---------------- comments ----------------------------------------------- */
-  const commentsSection = t.showComments
+  const recordRow = attendanceBlock || behaviourBlock
+    ? `<div class="pair${attendanceBlock && behaviourBlock ? "" : " single"}">${attendanceBlock}${behaviourBlock}</div>`
+    : "";
+
+  /* ---------------- comments ------------------------------------------------ */
+  const commentsSection = m.showComments
     ? `<section class="block">
         <h2>${esc(L("Comments", "الملاحظات"))}</h2>
         <div class="comments-grid">
-          <div class="comment-box"><p class="comment-label">${esc(L("Class teacher's comment", "تعليق معلم الفصل"))}</p><p class="comment-text">${esc(data.summary.teacherComment || "—")}</p></div>
-          <div class="comment-box"><p class="comment-label">${esc(L("Head of institution's comment", "تعليق رئيس المؤسسة"))}</p><p class="comment-text">${esc(data.summary.headComment || "—")}</p></div>
+          <div class="comment-box"><p class="comment-label">${esc(L("Class teacher's comment", "تعليق معلم الفصل"))}</p><p class="comment-text">${esc(d.summary.teacherComment || "")}</p></div>
+          <div class="comment-box"><p class="comment-label">${esc(L("Head of institution's comment", "تعليق رئيس المؤسسة"))}</p><p class="comment-text">${esc(d.summary.headComment || "")}</p></div>
         </div>
       </section>`
     : "";
 
-  /* ---------------- promotion + next term ---------------------------------- */
-  const promo = PROMOTION_TEXT[data.summary.promotionStatus] || { en: data.summary.promotionStatus, ar: "" };
-  const nextTermLine = t.showNextTerm && data.nextTerm && data.nextTerm.begins
-    ? `<p class="next-term">${esc(L("Next term begins", "تبدأ الفترة القادمة"))}: <b>${esc(fmtDateHuman(data.nextTerm.begins))}</b>${data.nextTerm.ends ? ` — ${esc(L("ends", "تنتهي"))} <b>${esc(fmtDateHuman(data.nextTerm.ends))}</b>` : ""}</p>`
+  /* ---------------- promotion ----------------------------------------------- */
+  const promo = PROMOTION_TEXT[d.summary.promotionStatus] || { en: d.summary.promotionStatus, ar: "" };
+  const nextTermLine = t.showNextTerm && d.nextTerm && d.nextTerm.begins
+    ? `<span class="next-term">${esc(L("Next term begins", "تبدأ الفترة القادمة"))}: <b>${esc(fmtDateHuman(d.nextTerm.begins))}</b>${d.nextTerm.ends ? ` — ${esc(L("ends", "تنتهي"))} <b>${esc(fmtDateHuman(d.nextTerm.ends))}</b>` : ""}</span>`
     : "";
-  const promoSection = t.showPromotion
-    ? `<section class="block">
-        <h2>${esc(L("Promotion status", "قرار الترقية"))}</h2>
-        <div class="promo-line">
-          <span class="promo-badge">${esc(L(promo.en, promo.ar || promo.en))}</span>
-          ${nextTermLine}
-        </div>
-      </section>`
+  const promoSection = m.showPromotion
+    ? `<div class="promo-strip">
+        <span class="promo-k">${esc(L("Promotion status", "قرار الترقية"))}</span>
+        <span class="promo-badge">${esc(L(promo.en, promo.ar || promo.en))}</span>
+        ${nextTermLine}
+      </div>`
     : "";
 
-  /* ---------------- signatures --------------------------------------------- */
-  const signatures = t.signatures.map((sig) => {
+  /* ---------------- signatures ---------------------------------------------- */
+  const signatures = m.signatures.map((sig) => {
     const title = rtl && sig.titleAr ? sig.titleAr : sig.title;
     return `<div class="sig">
         <div class="sig-space"></div>
@@ -1053,66 +1542,85 @@ function renderReportSheetHTML(data, opts = {}) {
       </div>`;
   }).join("");
 
-  /* ---------------- watermarks --------------------------------------------- */
-  // Subtle, horizontal and behind the content. It only ever appears on a
-  // staff working copy: an approved, published or locked report never shows
-  // "working copy" marking, and the portals (published-only by design) never
-  // receive one. The institution may additionally configure its own watermark
-  // text through the report template.
+  /* ---------------- watermarks ---------------------------------------------- */
+  // Subtle, horizontal, behind the content. Only a staff working copy is ever
+  // marked: an approved, published or locked report — and every portal or
+  // public copy — carries no draft marking.
   const watermark = t.showWatermark && t.watermarkText
     ? `<div class="watermark" aria-hidden="true"><span>${esc(t.watermarkText)}</span></div>`
     : "";
-  const draftMark = !opts.portal && !opts.publicCopy && nonFinal
+  const draftMark = m.workingCopy
     ? `<div class="draft-mark" aria-hidden="true"><span>${esc(L("Working copy — not final", "نسخة عمل — غير نهائية"))}</span></div>`
     : "";
 
-  /* ---------------- footer -------------------------------------------------- */
-  const termName = rtl ? (data.term.nameAr || data.term.nameEn) : (data.term.nameEn || data.term.nameAr);
-  const footLine1 = [data.madrasa.nameEn, addressLine].filter((x) => x && String(x).trim()).join("  —  ");
-  const footLine2 = contactLine;
-  const footLine3 = [
-    `${L("Academic session", "العام الدراسي")}: ${data.session}`,
-    `${L("Term", "الفترة")}: ${termName}`,
-    t.showReference ? `${L("Report no.", "رقم التقرير")}: ${data.reference}` : "",
-    data.summary.publishedAt ? `${L("Issued", "صدر")}: ${fmtDateHuman(data.summary.publishedAt)}` : "",
-  ].filter(Boolean).join("  ·  ");
-  // The public result checker's verification stamp is part of the document
-  // footer — a paragraph after the sheet would spill onto an extra page.
-  const verifiedLine = opts.publicCopy
-    ? `Published online copy — verified ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`
-    : "";
-
-  /* ---------------- non-printing toolbar ----------------------------------- */
+  /* ---------------- non-printing toolbar ------------------------------------ */
   const printLabel = esc(L("🖨 Print / Save as PDF", "🖨 طباعة / حفظ PDF"));
   const toolbar = opts.portal || opts.publicCopy
     ? `<div class="noprint toolbar"><div class="tb-left"></div><button type="button" class="print-btn" data-print onclick="window.print()">${printLabel}</button></div>`
     : `<div class="noprint toolbar">
         <div class="tb-left">
-          <span class="status-pill status-${esc(data.status)}">${esc(L(STATUS_LABELS[data.status] || data.status.replace("_", " "), data.status.replace("_", " ")))}</span>
-          ${incomplete ? `<span class="status-pill status-incomplete">${esc(L("Incomplete", "غير مكتمل"))}</span>` : ""}
+          <span class="status-pill status-${esc(d.status)}">${esc(L(STATUS_LABELS[d.status] || d.status.replace("_", " "), d.status.replace("_", " ")))}</span>
+          ${m.incomplete ? `<span class="status-pill status-incomplete">${esc(L("Incomplete", "غير مكتمل"))}</span>` : ""}
           ${opts.statusNote ? `<span class="note">${esc(opts.statusNote)}</span>` : ""}
         </div>
         <button type="button" class="print-btn" data-print onclick="window.print()">${printLabel}</button>
       </div>`;
+
+  /* ---------------- per-sheet geometry (inline custom properties) ----------- */
+  // Kept on the element (not in the stylesheet) so a bulk document can share
+  // one stylesheet while every sheet keeps its own measured density.
+  const sheetVars = [
+    `--pad:${PAGE_MARGIN_MM}mm`,
+    `--sheet-w:${m.page.w}mm`,
+    `--sheet-h:${m.page.h}mm`,
+    `--inner-h:${m.printableH}mm`,
+    `--gap:${tier.gap}mm`,
+    `--heading-h:${tier.headingH}mm`,
+    `--logo:${tier.logo}mm`,
+    `--name-size:${nameSize}px`,
+    `--photo-w:${tier.photoW}mm`,
+    `--photo-h:${tier.photoH}mm`,
+    `--info-row-h:${tier.infoRowH}mm`,
+    `--row-h:${tier.rowH}mm`,
+    `--row-pad:${tier.rowPad}mm`,
+    `--tbl-font:${tier.tableFont}px`,
+    `--tbl-head:${tier.headFont}px`,
+    `--comment-min:${plan.commentMin}mm`,
+    `--sig-space:${plan.sigSpace}mm`,
+  ].join(";");
 
   return `<!DOCTYPE html>
 <html lang="${rtl ? "ar" : "en"}" dir="${rtl ? "rtl" : "ltr"}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(L("Report Sheet", "بطاقة النتائج"))} — ${esc(data.student.name)}</title>
+<title>${esc(L("Report Sheet", "بطاقة النتائج"))} — ${esc(d.student.name)}</title>
 <style>
-  @page { size: A4 ${orientation}; margin: 0; }
+  @page { size: A4 ${m.orientation}; margin: 0; }
+  :root {
+    --brand: ${theme.brand};
+    --brand-dark: ${theme.brandDark};
+    --brand-soft: ${theme.brandSoft};
+    --brand-tint: ${theme.brandTint};
+    --brand-line: ${theme.brandLine};
+    --accent: ${theme.accent};
+    --accent-soft: ${theme.accentSoft};
+    --ink: #1a2230;
+    --muted: #5b6672;
+    --line: #c6cfd6;
+    --heading-font: ${theme.headingFont};
+    --body-font: "Segoe UI", -apple-system, "Helvetica Neue", Arial, "Noto Naskh Arabic", Tahoma, sans-serif;
+  }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #e7ebef; }
-  body { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, "Noto Naskh Arabic", Tahoma, sans-serif; color: #1f2937; padding: 16px 0 30px; }
+  body { font-family: var(--body-font); color: var(--ink); padding: 16px 0 30px; }
 
   /* ---------- screen-only toolbar ---------- */
   .noprint { position: sticky; top: 0; z-index: 50; background: #0f172a; color: #e2e8f0; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
   .noprint .tb-left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
   .noprint .note { font-size: 12px; color: #cbd5e1; }
-  .noprint .print-btn { background: ${brand}; color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
-  .noprint .print-btn:hover { background: ${brandDark}; }
+  .noprint .print-btn { background: var(--brand); color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .noprint .print-btn:hover { background: var(--brand-dark); }
   .status-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 3px 10px; border-radius: 999px; background: #475569; color: #fff; }
   .status-published, .status-approved, .status-locked { background: #15803d; }
   .status-draft, .status-returned { background: #b45309; }
@@ -1122,7 +1630,7 @@ function renderReportSheetHTML(data, opts = {}) {
   /* ---------- the A4 page ---------- */
   .sheet {
     position: relative; background: #fff; margin: 0 auto 16px;
-    width: ${sheetW}; min-height: ${sheetH}; padding: ${padY} ${padX};
+    width: var(--sheet-w); min-height: var(--sheet-h); padding: var(--pad);
     box-shadow: 0 1px 3px rgba(15,23,42,.15), 0 14px 34px rgba(15,23,42,.08);
     /* With @page margin 0 the sheet itself carries the printable margins.
        When a long report flows onto a second page, clone the box padding so
@@ -1132,135 +1640,136 @@ function renderReportSheetHTML(data, opts = {}) {
   }
   .inner {
     position: relative; z-index: 1;
-    /* Fills exactly one printable page; the trailing reserve keeps in-flow
-       content out of the footer zone (see .foot below). */
-    min-height: ${innerH};
-    padding-bottom: 19mm;
+    /* Exactly one printable page; the trailing reserve keeps in-flow content
+       clear of the pinned footer (see .foot below). */
+    min-height: var(--inner-h);
+    padding-bottom: 11mm;
   }
 
-  /* ---------- watermarks (subtle, behind content) ---------- */
+  /* ---------- watermarks (subtle, behind the content) ---------- */
   .watermark { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 0; pointer-events: none; }
-  .watermark span { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: 34px; letter-spacing: .3em; text-transform: uppercase; color: ${brand}; opacity: .06; text-align: center; max-width: 86%; line-height: 1.6; }
-  .draft-mark { position: absolute; top: 40%; inset-inline: 0; display: flex; justify-content: center; z-index: 0; pointer-events: none; }
-  .draft-mark span { font-size: 11px; font-weight: 700; letter-spacing: .42em; text-transform: uppercase; color: #b91c1c; opacity: .38; }
+  .watermark span { font-family: var(--heading-font); font-weight: 700; font-size: 34px; letter-spacing: .3em; text-transform: uppercase; color: var(--brand); opacity: .06; text-align: center; max-width: 86%; line-height: 1.6; }
+  .draft-mark { position: absolute; top: 42%; inset-inline: 0; display: flex; justify-content: center; z-index: 0; pointer-events: none; }
+  .draft-mark span { font-size: 11px; font-weight: 700; letter-spacing: .42em; text-transform: uppercase; color: #b91c1c; opacity: .34; }
 
   /* ---------- school header ---------- */
-  .masthead { display: flex; align-items: center; gap: 5mm; padding-bottom: 2.5mm; }
-  .masthead .logo { width: ${logoSize}; height: ${logoSize}; object-fit: contain; flex: none; }
-  .logo-fallback { display: flex; align-items: center; justify-content: center; background: ${tint(brand, 0.88)}; color: ${brandDark}; border: .4mm solid ${tint(brand, 0.6)}; font-family: Georgia, "Times New Roman", serif; font-size: ${compact ? "9mm" : "10.5mm"}; font-weight: 700; }
-  .masthead-id { flex: 1; min-width: 0; text-align: center; }
-  .school-name { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: ${nameSize}px; font-weight: 700; color: ${brandDark}; line-height: 1.16; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
+  .masthead { display: flex; align-items: center; gap: 4.5mm; }
+  .masthead .logo { width: var(--logo); height: var(--logo); object-fit: contain; flex: none; }
+  .logo-fallback { display: flex; align-items: center; justify-content: center; background: var(--brand-soft); color: var(--brand-dark); border: .4mm solid var(--brand-line); font-family: var(--heading-font); font-size: calc(var(--logo) * .5); font-weight: 700; }
+  .masthead-id { flex: 1; min-width: 0; }
+  .school-name { margin: 0; font-family: var(--heading-font); font-size: var(--name-size); font-weight: 700; color: var(--brand-dark); line-height: 1.16; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
   .school-name .ar { font-size: .8em; letter-spacing: 0; }
-  .motto { margin: 1.2mm 0 0; font-size: ${compact ? "9px" : "10px"}; font-style: italic; color: #4b5563; letter-spacing: .16em; text-transform: uppercase; }
-  .contact { margin: 1.5mm 0 0; font-size: 8.8px; color: #5b6672; }
-  .masthead-crest { width: ${logoSize}; flex: none; }
-  .masthead-rule { border-top: 1mm solid ${brand}; border-bottom: .35mm solid ${brand}; height: 1.4mm; margin: 0 0 3mm; }
+  .motto { margin: .8mm 0 0; font-size: 9px; color: var(--muted); letter-spacing: .14em; text-transform: uppercase; line-height: 1.3; }
+  .contact { margin: .6mm 0 0; font-size: 8.4px; color: var(--muted); line-height: 1.35; }
+  .masthead-rule { margin: 1.3mm 0 2.2mm; }
 
   /* ---------- report title ---------- */
-  .doc-title { text-align: center; margin: 0 0 3mm; padding: 1.8mm 0 1.6mm; border-top: .35mm solid ${tint(brand, 0.5)}; border-bottom: .35mm solid ${tint(brand, 0.5)}; }
-  .doc-title .en { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: ${compact ? "13px" : "14.5px"}; font-weight: 700; letter-spacing: .3em; text-transform: uppercase; color: ${brandDark}; }
-  .doc-title .ar-inline { font-size: .8em; letter-spacing: 0; }
-  .doc-title .meta { margin: 1.4mm 0 0; font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: #475361; }
-  .doc-title .meta b { color: #111827; }
+  .doc-title { margin: 0 0 var(--gap); }
+  .doc-title .en { margin: 0; font-family: var(--heading-font); font-weight: 700; text-transform: uppercase; line-height: 1.2; }
+  .doc-title .meta { margin: 0; font-size: 9.2px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; line-height: 1.3; }
+  .doc-title .meta .sep { display: inline-block; width: 4mm; }
 
   /* ---------- student information ---------- */
-  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4.5mm; border: .35mm solid ${tint(brand, 0.55)}; background: ${tint(brand, 0.965)}; padding: 2.4mm 3.5mm 2.6mm; }
+  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4mm; border: .3mm solid var(--brand-line); background: var(--brand-tint); padding: 1.7mm 2.6mm; }
   .student-band.no-photo { grid-template-columns: 1fr; }
+  .student-main { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1.2mm; }
   .student-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 6mm; margin: 0; }
-  .student-grid .cell { display: flex; align-items: baseline; gap: 2mm; border-bottom: 1px dotted #c3ccd5; padding: 1.25mm 0; }
-  .student-grid dt { min-width: 30mm; flex: none; color: #5b6672; font-size: 8.8px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
-  .student-grid dd { margin: 0; flex: 1; min-width: 0; font-size: 10.4px; font-weight: 600; color: #111827; overflow-wrap: anywhere; }
-  .photo-slot { width: 23mm; height: 28.5mm; border: .35mm solid #b7c2cc; background: #fff; overflow: hidden; align-self: start; }
+  .student-grid .cell { display: flex; align-items: baseline; gap: 2mm; min-height: var(--info-row-h); border-bottom: .2mm dotted #b9c3cd; padding-top: 1mm; }
+  .student-grid dt { min-width: 24mm; flex: none; color: var(--muted); font-size: 8.4px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .student-grid dd { margin: 0; flex: 1; min-width: 0; font-size: 10.6px; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+  .photo-slot { width: var(--photo-w); height: var(--photo-h); border: .3mm solid #b7c2cc; background: #fff; overflow: hidden; align-self: center; }
   .photo-slot .photo { display: block; width: 100%; height: 100%; object-fit: cover; }
   .photo-slot.photo-empty { display: flex; align-items: center; justify-content: center; background: #f2f5f7; }
   .photo-slot.photo-empty svg { width: 12mm; height: 12mm; fill: #b6c2cd; }
 
+  /* ---------- result status ---------- */
+  .status-line { margin: 0; display: flex; align-items: center; gap: 2mm; font-size: 9px; }
+  .status-line .k { color: var(--muted); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+  .status-line .v { font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand-dark); border: .3mm solid var(--brand-line); background: #fff; padding: .5mm 2.4mm; }
+  .status-notice { border: .3mm solid #d9a441; border-inline-start: 1.4mm solid #b45309; background: #fffaf0; padding: 1.2mm 2.4mm; break-inside: avoid; }
+  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #92400e; }
+  .status-notice .notice-body { margin: .5mm 0 0; font-size: 9.2px; color: #7c4a12; line-height: 1.35; }
+
   /* ---------- sections ---------- */
-  .block { margin-top: 2.6mm; }
-  .block h2 { margin: 0 0 1.8mm; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; color: ${brandDark}; display: flex; align-items: center; gap: 2.5mm; break-after: avoid; }
-  .block h2::after { content: ""; flex: 1; border-top: .4mm solid ${tint(brand, 0.5)}; }
+  .block { margin-top: var(--gap); }
+  .block h2 { margin: 0 0 1.2mm; height: calc(var(--heading-h) - 1.2mm); font-family: var(--heading-font); font-size: 9.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: var(--brand-dark); display: flex; align-items: center; gap: 2mm; break-after: avoid; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4mm; margin-top: var(--gap); align-items: start; }
+  .pair.single { grid-template-columns: 1fr; }
+  .pair .block { margin-top: 0; }
 
   /* ---------- academic performance table ---------- */
-  table.results { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: ${dense ? "9.6px" : "10.2px"}; }
-  table.results th, table.results td { border: .3mm solid #c6cfd6; padding: ${dense ? "1.1mm 1.6mm" : "1.4mm 2mm"}; text-align: center; line-height: 1.3; }
-  table.results th { background: ${brand}; color: #fff; font-size: ${dense ? "8.2px" : "8.6px"}; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: ${dense ? "1.3mm 1mm" : "1.6mm 1.2mm"}; }
-  table.results td.subj, table.results th.subj { text-align: start; padding-inline-start: 2.2mm; overflow-wrap: anywhere; }
+  table.results { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--tbl-font); }
+  table.results th, table.results td { border: .25mm solid var(--line); padding: var(--row-pad) 1.4mm; text-align: center; line-height: 1.28; }
+  table.results tbody td { height: var(--row-h); }
+  table.results th { background: var(--brand); color: #fff; font-size: var(--tbl-head); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1mm .8mm; }
+  table.results td.subj, table.results th.subj { text-align: start; padding-inline-start: 2mm; overflow-wrap: anywhere; }
+  table.results td.subj .sn { display: inline-block; min-width: 4.4mm; color: var(--muted); font-size: .84em; font-variant-numeric: tabular-nums; }
   table.results td.num { font-variant-numeric: tabular-nums; }
   table.results td.total { font-weight: 700; }
-  table.results td.grade { font-weight: 700; color: ${brandDark}; }
+  table.results td.grade { font-weight: 700; color: var(--brand-dark); }
   table.results td.remark { text-align: start; color: #374151; }
-  table.results tbody tr:nth-child(even) td { background: ${tint(brand, 0.94)}; }
+  table.results tbody tr:nth-child(even) td { background: var(--brand-tint); }
   table.results thead { display: table-header-group; }
   table.results tr { break-inside: avoid; page-break-inside: avoid; }
 
-  /* ---------- status notice ---------- */
-  .status-notice { border: .35mm solid #d9a441; border-inline-start: 1.8mm solid #b45309; background: #fffaf0; padding: 2mm 3mm; margin-top: 2.5mm; break-inside: avoid; }
-  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: #92400e; }
-  .status-notice .notice-body { margin: .8mm 0 0; font-size: 9.6px; color: #7c4a12; }
-
   /* ---------- performance summary ---------- */
   table.summary { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  
-  table.summary .k { display: block; font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: #5b6672; margin: 0 0 .6mm; }
-  table.summary .v { display: block; font-size: 12px; font-weight: 700; color: ${brandDark}; line-height: 1.15; }
-  table.summary .sum-blank { background: #fafbfc; }
+  table.summary th { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .9mm 1mm; font-size: 7.9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; line-height: 1.2; }
+  table.summary td { border: .25mm solid var(--line); padding: 1.1mm 1mm; text-align: center; font-size: 11px; font-weight: 700; color: var(--brand-dark); font-variant-numeric: tabular-nums; }
 
   /* ---------- grading scale ---------- */
-  .legend-wrap { margin-top: 1.6mm; }
+  .legend-wrap { margin-top: 1.5mm; }
   table.legend-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.legend-table th.legend-head { background: ${tint(brand, 0.88)}; color: ${brandDark}; border: .3mm solid #cfd8de; padding: 1mm 1.5mm; font-size: 8.3px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; text-align: start; white-space: nowrap; }
-  table.legend-table td { border: .3mm solid #cfd8de; padding: 1mm 1.5mm; text-align: center; font-size: 8.3px; color: #374151; background: #fbfcfd; overflow-wrap: anywhere; }
-  table.legend-table b { color: ${brandDark}; font-size: 9.3px; margin-inline-end: .8mm; }
+  table.legend-table th.legend-head { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .8mm 1.4mm; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; text-align: start; white-space: nowrap; width: 26mm; }
+  table.legend-table td { border: .25mm solid var(--line); padding: .8mm 1mm; text-align: center; font-size: 8.2px; color: #374151; background: #fff; overflow-wrap: anywhere; }
+  table.legend-table b { color: var(--brand-dark); font-size: 9.2px; margin-inline-end: .7mm; }
 
   /* ---------- attendance ---------- */
-  table.mini { width: 100%; border-collapse: collapse; font-size: 9.8px; }
-  table.mini th { background: ${tint(brand, 0.88)}; color: ${brandDark}; font-size: 8.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; border: .3mm solid #c6cfd6; padding: 1.1mm 1.8mm; }
-  table.mini td { border: .3mm solid #c6cfd6; padding: 1.2mm 1.8mm; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+  table.mini { width: 100%; border-collapse: collapse; font-size: 9.6px; }
+  table.mini th { background: var(--brand-soft); color: var(--brand-dark); font-size: 7.9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; border: .25mm solid var(--line); padding: .8mm 1mm; line-height: 1.2; }
+  table.mini td { border: .25mm solid var(--line); padding: 1mm; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
 
-  /* ---------- behaviour ---------- */
-  .behaviour { display: grid; grid-template-columns: repeat(auto-fill, minmax(42mm, 1fr)); gap: 1.2mm 4mm; }
-  .behaviour .beh-cell { display: flex; justify-content: space-between; gap: 2mm; font-size: 9.8px; border-bottom: 1px dotted #c3ccd5; padding: .9mm 0; }
-  .behaviour .k { font-weight: 600; color: #374151; min-width: 0; }
-  .behaviour .v { font-weight: 700; color: #111827; white-space: nowrap; }
+  /* ---------- behaviour / conduct ---------- */
+  .behaviour { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4mm; }
+  .behaviour .beh-cell { display: flex; justify-content: space-between; gap: 2mm; align-items: baseline; font-size: 9.2px; border-bottom: .2mm dotted #b9c3cd; padding: .9mm 0; min-height: 4.6mm; }
+  .behaviour .k { color: #374151; min-width: 0; }
+  .behaviour .v { font-weight: 700; color: var(--ink); white-space: nowrap; }
+  .behaviour .v i { font-style: normal; font-weight: 600; color: var(--muted); font-size: .92em; }
 
   /* ---------- comments ---------- */
-  .comments-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm; }
-  .comment-box { border: .35mm solid #c6cfd6; min-width: 0; break-inside: avoid; }
-  .comment-label { margin: 0; background: ${tint(brand, 0.92)}; color: ${brandDark}; font-size: 8.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; padding: 1.4mm 2.5mm; border-bottom: .3mm solid #c6cfd6; }
-  .comment-text { margin: 0; padding: 2mm 2.5mm 2.2mm; font-size: 10.2px; color: #1f2937; min-height: ${dense ? "7mm" : "8mm"}; line-height: 1.45; overflow-wrap: anywhere; }
+  .comments-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
+  .comment-box { border: .25mm solid var(--line); min-width: 0; break-inside: avoid; }
+  .comment-label { margin: 0; background: var(--brand-soft); color: var(--brand-dark); font-size: 8.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 1mm 2mm; border-bottom: .25mm solid var(--line); }
+  .comment-text { margin: 0; padding: 1.6mm 2mm; font-size: 10px; color: var(--ink); min-height: var(--comment-min); line-height: 1.42; overflow-wrap: anywhere; }
 
   /* ---------- promotion ---------- */
-  .promo-line { display: flex; align-items: center; gap: 5mm; flex-wrap: wrap; }
-  .promo-badge { display: inline-block; border: .5mm solid ${brandDark}; color: ${brandDark}; background: ${tint(brand, 0.93)}; font-weight: 700; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; padding: 1.8mm 5mm; }
-  .next-term { margin: 0; font-size: 9.8px; color: #374151; }
-  .next-term b { color: #111827; }
+  .promo-strip { margin-top: var(--gap); display: flex; align-items: center; gap: 3mm; flex-wrap: wrap; border: .25mm solid var(--line); padding: 1.2mm 2.6mm; min-height: 8.4mm; }
+  .promo-k { font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
+  .promo-badge { font-weight: 700; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; padding: .9mm 3.4mm; }
+  .next-term { margin-inline-start: auto; font-size: 9px; color: #374151; }
+  .next-term b { color: var(--ink); }
 
   /* ---------- signatures ---------- */
-  .signatures { display: flex; justify-content: space-around; gap: 6mm; margin-top: 4mm; break-inside: avoid; }
-  .sig { flex: 1; max-width: 75mm; text-align: center; }
-  .sig-space { height: ${dense ? "9.5mm" : "11.5mm"}; }
-  .sig-rule { border-top: .35mm solid #374151; }
-  .sig-who { margin: 1.2mm 0 0; font-size: 9.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #1f2937; }
-  .sig-name { margin: .5mm 0 0; font-size: 9.2px; color: #4b5563; }
-  .sig-date { margin: 1mm 0 0; font-size: 8.4px; color: #6b7280; letter-spacing: .06em; }
+  .signatures { display: flex; justify-content: space-between; gap: 6mm; margin-top: 3.4mm; break-inside: avoid; }
+  .sig { flex: 1; max-width: 72mm; text-align: center; }
+  .sig-space { height: var(--sig-space); }
+  .sig-rule { border-top: .3mm solid #4b5563; }
+  .sig-who { margin: 1mm 0 0; font-size: 9.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--ink); }
+  .sig-name { margin: .4mm 0 0; font-size: 8.8px; color: var(--muted); }
+  .sig-date { margin: .7mm 0 0; font-size: 8.2px; color: var(--muted); letter-spacing: .05em; }
 
-  /* ---------- footer (pinned to the foot of the page) ---------- */
-  .foot { position: absolute; bottom: 0; left: 0; right: 0; border-top: .8mm solid ${brand}; padding-top: 1.8mm; text-align: center; font-size: 8.4px; color: #5b6672; line-height: 1.55; }
-  .foot .verified { margin-top: .6mm; font-size: 7.9px; color: #6b7280; }
-  .foot .credit { margin-top: .8mm; font-size: 8px; color: #9aa4ae; letter-spacing: .1em; text-transform: uppercase; }
+  /* ---------- minimal footer (pinned to the foot of the page) ---------- */
+  .foot { position: absolute; bottom: 0; left: 0; right: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 4mm; flex-wrap: wrap; border-top: .5mm solid var(--brand); padding-top: 1.2mm; font-size: 8px; color: #8c96a1; letter-spacing: .08em; line-height: 1.35; }
+  .foot .credit { text-transform: uppercase; }
+  .foot .ref { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .foot .verified { width: 100%; text-align: center; letter-spacing: 0; color: var(--muted); }
 
-  .empty { font-size: 9.8px; color: #6b7280; margin: 1mm 0 0; font-style: italic; }
+  .empty { font-size: 9.4px; color: var(--muted); margin: 0; font-style: italic; }
+${themeCss(theme)}
 
-  /* ---------- layout variants ---------- */
-  .layout-modern .masthead { background: ${tint(brand, 0.9)}; margin: calc(-1 * ${padY}) calc(-1 * ${padX}) 3.5mm; padding: ${padY} ${padX} 3mm; }
+  /* ---------- layout variants (template option, theme-independent) ---------- */
+  .layout-modern .masthead { background: var(--brand-soft); margin: calc(-1 * var(--pad)) calc(-1 * var(--pad)) 0; padding: var(--pad) var(--pad) 2.4mm; }
   .layout-modern .masthead-rule { display: none; }
-  .layout-compact .masthead { gap: 4mm; padding-bottom: 2mm; }
-  .layout-compact .doc-title { padding: 1.6mm 0 1.4mm; margin-bottom: 2.6mm; }
-  .d-dense .block { margin-top: 2.2mm; }
-  .d-dense .student-grid .cell { padding: 1.1mm 0; }
-  .d-dense .photo-slot { width: 20mm; height: 24.5mm; }
-  .d-dense .behaviour { grid-template-columns: repeat(auto-fill, minmax(36mm, 1fr)); }
-  .d-dense .sig-space { height: 9.5mm; }
 
   /* ---------- printing ---------- */
   @media print {
@@ -1273,7 +1782,7 @@ function renderReportSheetHTML(data, opts = {}) {
 
   /* ---------- small screens: keep the document A4, allow panning ---------- */
   @media screen and (max-width: 840px) {
-    body { padding: 0; }
+    body { padding: 0; overflow-x: auto; }
     .sheet { margin: 0; box-shadow: none; }
     .noprint { padding: 8px 10px; }
   }
@@ -1281,50 +1790,24 @@ function renderReportSheetHTML(data, opts = {}) {
 </head>
 <body>
 ${toolbar}
-<div class="sheet layout-${esc(t.layout)}${dense ? " d-dense" : ""}">
+<div class="sheet layout-${esc(t.layout)} theme-${esc(theme.key)} d-${esc(plan.density)}" style="${sheetVars}">
   ${watermark}
   ${draftMark}
   <div class="inner">
-    <header class="masthead">
-      ${logo}
-      <div class="masthead-id">
-        <h1 class="school-name">${esc(data.madrasa.nameEn)}${data.madrasa.nameAr ? ` <span class="ar" dir="rtl">· ${esc(data.madrasa.nameAr)}</span>` : ""}</h1>
-        ${motto ? `<p class="motto">${esc(motto)}</p>` : ""}
-        ${addressLine ? `<p class="contact">${esc(addressLine)}</p>` : ""}
-        ${contactLine ? `<p class="contact">${esc(contactLine)}</p>` : ""}
-      </div>
-      <div class="masthead-crest" aria-hidden="true"></div>
-    </header>
+    ${masthead}
     <div class="masthead-rule" aria-hidden="true"></div>
-    <div class="doc-title">
-      <p class="en">${esc(L("Term Report Sheet", "التقرير الفصلي"))}${data.madrasa.nameAr ? ` <span class="ar-inline" dir="rtl">· بطاقة النتائج المدرسية</span>` : ""}</p>
-      <p class="meta">${esc(L("Academic session", "العام الدراسي"))}: <b>${esc(data.session)}</b> &nbsp;·&nbsp; ${esc(L("Term", "الفترة"))}: <b>${esc(termName)}</b></p>
-    </div>
-    <section class="student-band${photoSlot ? "" : " no-photo"}" aria-label="${esc(L("Student information", "بيانات الطالب"))}">
-      <dl class="student-grid">${infoCells.join("")}</dl>
-      ${photoSlot}
-    </section>
-    <section class="block">
-      <h2>${esc(L("Academic performance", "الأداء الأكاديمي"))}</h2>
-      <table class="results">${colgroup}
-        <thead>${subjectHeader}</thead>
-        <tbody>${subjectRows || `<tr><td class="subj" colspan="${colCount + 1}">${esc(L("No approved subject results for this term yet.", "لا توجد نتائج معتمدة لهذه الفترة بعد."))}</td></tr>`}</tbody>
-      </table>
-      ${statusNotice}
-    </section>
+    ${docTitle}
+    ${studentBand}
+    ${academicSection}
     ${summarySection}
-    ${summarySection ? "" : legend ? `<section class="block">${legend}</section>` : ""}
-    ${attendanceSection}
-    ${behaviourSection}
+    ${recordRow}
     ${commentsSection}
     ${promoSection}
     ${signatures ? `<div class="signatures">${signatures}</div>` : ""}
     <footer class="foot">
-      ${footLine1 ? `<div>${esc(footLine1)}</div>` : ""}
-      ${footLine2 ? `<div>${esc(footLine2)}</div>` : ""}
-      ${footLine3 ? `<div>${esc(footLine3)}</div>` : ""}
-      ${verifiedLine ? `<div class="verified">${esc(verifiedLine)}</div>` : ""}
-      ${t.showEdusphereCredit ? `<div class="credit">Powered by EduSphere</div>` : ""}
+      ${m.footerBits.length ? `<span class="credit">${esc(m.footerBits[0])}</span>` : ""}
+      ${m.footerBits.length > 1 ? `<span class="ref">${esc(m.footerBits[1])}</span>` : ""}
+      ${m.verifiedLine ? `<span class="verified">${esc(m.verifiedLine)}</span>` : ""}
     </footer>
   </div>
 </div>
@@ -1341,7 +1824,9 @@ function renderBulkReportSheets(sheets, opts = {}) {
     .replace("</style>", "\n  .bulk-page { break-after: page; page-break-after: always; }\n  .bulk-page:last-child { break-after: auto; page-break-after: auto; }\n</style>");
   // Each sheet keeps its own direction: an Arabic-named student's sheet is
   // extracted with dir="rtl" so the combined document lays out correctly.
-  // The per-document viewer <script> is stripped (one copy is added below).
+  // Per-sheet geometry travels with the sheet element's inline custom
+  // properties, so one shared stylesheet serves every page. The per-document
+  // viewer <script> is stripped (one copy is added below).
   const bodies = sheets.map((sheet, i) => {
     const doc = documents[i];
     const start = doc.indexOf('<div class="sheet');
@@ -1357,24 +1842,33 @@ ${bodies}
 <script src="/js/report-sheet-viewer.js" defer></script>
 </body></html>`;
 }
-
 /* --------------------------- template preview ---------------------------- */
 
 /**
  * A realistic sample sheet so an administrator can see a template before
  * saving it. No institution's real student data is used, so a preview can
  * never leak another tenant's records.
+ *
+ * `category` is optional and presentation-only: passing the viewing tenant's
+ * existing institution category makes the preview show the theme (Islamic or
+ * Western) that this school's real report sheets will use. The sample
+ * subjects stay neutral in both themes.
  */
-function sampleReportSheet(template, config) {
+function sampleReportSheet(template, config, category) {
   const cfg = config || {
     caMax: 40, examMax: 60, passMark: 50,
     bands: grading.DEFAULT_BANDS.slice(),
   };
   const t = normaliseTemplate(JSON.stringify(template));
+  const cat = institution.normalizeCategory(category, "");
+  // Sample subjects follow the institution category so a Western preview
+  // never shows Islamic terminology (and vice versa).
   const subjNames = [
     ["Mathematics", "الرياضيات"], ["English Language", "اللغة الإنجليزية"], ["Basic Science", "العلوم"],
-    ["Social Studies", "الدراسات الاجتماعية"], ["Islamic Studies", "الدراسات الإسلامية"], ["Arabic", "اللغة العربية"],
-  ];
+    ["Social Studies", "الدراسات الاجتماعية"],
+  ].concat(cat === "western"
+    ? [["Computer Studies", "الحاسوب"], ["Physical Education", "التربية البدنية"]]
+    : [["Islamic Studies", "الدراسات الإسلامية"], ["Arabic", "اللغة العربية"]]);
   const subjects = subjNames.map(([en, ar], i) => {
     const sc = grading.subjectScore(cfg, 30 + i, 45 + (i % 3) * 4);
     return { subjectId: i + 1, nameEn: en, nameAr: ar, ca: sc.ca, exam: sc.exam, total: sc.total, pct: sc.pct, grade: sc.grade, gradePoint: sc.gradePoint, remark: sc.remark, remarkAr: sc.remarkAr, status: "approved", pass: sc.pass };
@@ -1390,6 +1884,7 @@ function sampleReportSheet(template, config) {
       mottoEn: "Knowledge · Character · Service", mottoAr: "العلم · الخلق · الخدمة",
       address: "1 Sample Avenue", city: "Ijebu-Ode", stateName: "Ogun", phone: "+234 800 000 0000",
       email: "info@example.edu", website: "www.example.edu",
+      category: cat, institutionType: "",
     },
     student: {
       id: 0, studentCode: "SAMPLE-0001", name: "Aisha Adebayo Example", nameAr: "عائشة أديبايو — نموذج",
@@ -1433,5 +1928,6 @@ module.exports = {
   deriveReportStatus,
   renderReportSheetHTML,
   renderBulkReportSheets,
+  planReportSheet,
   sampleReportSheet,
 };

@@ -285,6 +285,11 @@ async function reportCardData(madrasaId, studentId, termId) {
       city: madrasa.city,
       stateName: madrasa.state_name,
       phone: madrasa.phone,
+      // Presentation only: lets the report renderer pick the institution's
+      // existing category theme. No calculation reads these.
+      brandColor: madrasa.brand_color || "",
+      category: madrasa.category || "",
+      institutionType: madrasa.institution_type || "",
     },
     student: {
       id: Number(student.id),
