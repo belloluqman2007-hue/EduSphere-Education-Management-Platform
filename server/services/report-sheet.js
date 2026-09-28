@@ -926,43 +926,46 @@ function themeCss(theme) {
   if (theme.islamic) {
     return `
   /* =======================================================================
-     THEME — ISLAMIC: deep academic green, restrained gold, serif academic
-     typography, framed title carrying a faint geometric hairline.
+     THEME — ISLAMIC: a formal madrasa record in forest green and old gold.
+     Decoration is deliberately quiet; the marks frame the record instead of
+     competing with the marks and comments teachers need to read.
      ======================================================================= */
   .theme-islamic .masthead-id { text-align: center; }
   .theme-islamic .masthead-crest { width: var(--logo); flex: none; display: flex; align-items: center; justify-content: center; }
-  .theme-islamic .crest { width: calc(var(--logo) * .5); height: calc(var(--logo) * .5); border: .4mm solid var(--accent); transform: rotate(45deg); position: relative; }
-  .theme-islamic .crest::after { content: ""; position: absolute; inset: 1.1mm; border: .3mm solid var(--brand-line); }
-  .theme-islamic .masthead-rule { height: 1.5mm; border-top: .9mm solid var(--brand); border-bottom: .3mm solid var(--accent); }
-  .theme-islamic .doc-title { text-align: center; padding: 1.4mm 0 1.2mm; border-top: .25mm solid var(--brand-line); border-bottom: .25mm solid var(--brand-line); background-image: ${geometricPattern(theme.accent)}; background-size: 12mm 12mm; background-position: center; }
-  .theme-islamic .doc-title .en { font-size: 14px; letter-spacing: .3em; color: var(--brand-dark); }
-  .theme-islamic .doc-title .en::before, .theme-islamic .doc-title .en::after { content: "◆"; color: var(--accent); font-size: .5em; vertical-align: .24em; margin: 0 2.6mm; letter-spacing: 0; }
+  .theme-islamic .crest { width: calc(var(--logo) * .54); height: calc(var(--logo) * .54); border: .35mm solid var(--accent); transform: rotate(45deg); position: relative; }
+  .theme-islamic .crest::after { content: ""; position: absolute; inset: 1mm; border: .2mm solid var(--brand-line); }
+  .theme-islamic .masthead-rule { height: 1.3mm; border-top: .65mm solid var(--brand); border-bottom: .25mm solid var(--accent); }
+  .theme-islamic .doc-title { text-align: center; display: block; color: var(--brand-dark); background-color: #f5f8f5; background-image: ${geometricPattern(theme.accent)}; background-size: 13mm 13mm; background-position: center; border: .3mm solid var(--brand-line); border-inline-start: 1.2mm solid var(--brand); padding: 1.9mm 3mm 1.7mm; }
+  .theme-islamic .doc-title .en { font-size: 13.5px; letter-spacing: .16em; color: var(--brand-dark); }
+  .theme-islamic .doc-title .ar-title { display: block; margin-top: .5mm; color: var(--brand); font-family: var(--heading-font); font-size: 10.5px; font-weight: 600; letter-spacing: 0; }
   .theme-islamic .doc-title .meta { margin-top: .9mm; color: #46525f; }
   .theme-islamic .doc-title .meta b { color: var(--brand-dark); }
   .theme-islamic .block h2::before { content: ""; width: 1.8mm; height: 1.8mm; flex: none; background: var(--accent); transform: rotate(45deg); }
-  .theme-islamic .block h2::after { content: ""; flex: 1; border-top: .3mm solid var(--brand-line); }
+  .theme-islamic .block h2::after { content: ""; flex: 1; border-top: .25mm solid var(--brand-line); }
   .theme-islamic table.results th { border-bottom: .5mm solid var(--accent); }
-  .theme-islamic .promo-badge { border: .4mm double var(--brand-dark); color: var(--brand-dark); background: var(--brand-soft); font-family: var(--heading-font); }
-  .theme-islamic .foot { box-shadow: 0 .55mm 0 var(--accent-soft); }`;
+  .theme-islamic .promo-badge { border: .35mm double var(--brand-dark); color: var(--brand-dark); background: var(--brand-soft); font-family: var(--heading-font); }
+  .theme-islamic .foot { box-shadow: 0 .45mm 0 var(--accent-soft); }`;
   }
   return `  /* =======================================================================
-     THEME — WESTERN: modern navy academic design, reversed title bar,
-     left-aligned masthead, square accent markers, no Islamic ornament.
+     THEME — WESTERN: a clean academy transcript in navy and slate blue.
+     It uses a restrained rule system, square markers and a solid title bar;
+     no Islamic ornament or generated Arabic is emitted for this theme.
      ======================================================================= */
   .theme-western .masthead { gap: 3.6mm; }
   .theme-western .logo-fallback { background: var(--brand); color: #fff; border: 0; }
   .theme-western .masthead-id { display: flex; flex-direction: column; justify-content: center; text-align: start; border-inline-start: .8mm solid var(--brand); padding-inline-start: 3mm; }
   .theme-western .school-name { letter-spacing: .01em; }
-  .theme-western .motto { letter-spacing: .1em; text-transform: none; font-size: 9.2px; }
+  .theme-western .motto { letter-spacing: .08em; text-transform: none; font-size: 9.2px; }
   .theme-western .masthead-contact { flex: none; max-width: 60mm; text-align: end; }
   .theme-western .masthead-contact p { margin: 0 0 .7mm; font-size: 8.4px; color: var(--muted); line-height: 1.32; }
   .theme-western .masthead-contact p:last-child { margin-bottom: 0; }
   .theme-western .masthead-rule { height: .7mm; background: var(--brand); }
-  .theme-western .doc-title { display: flex; align-items: baseline; justify-content: space-between; gap: 4mm; background: var(--brand); color: #fff; padding: 1.5mm 3mm; }
-  .theme-western .doc-title .en { font-size: 12.5px; letter-spacing: .18em; color: #fff; }
-  .theme-western .doc-title .meta { color: rgba(255,255,255,.86); letter-spacing: .08em; }
+  .theme-western .doc-title { display: flex; align-items: center; justify-content: space-between; gap: 4mm; background: var(--brand); color: #fff; padding: 1.8mm 3.2mm; }
+  .theme-western .doc-title .en { font-size: 12.5px; letter-spacing: .12em; color: #fff; }
+  .theme-western .doc-title .ar-title { display: none; }
+  .theme-western .doc-title .meta { color: rgba(255,255,255,.86); letter-spacing: .06em; }
   .theme-western .doc-title .meta b { color: #fff; }
-  .theme-western .student-band { border: 0; border-top: .25mm solid var(--line); border-bottom: .25mm solid var(--line); background: #f5f7fa; }
+  .theme-western .student-band { border: .3mm solid var(--line); border-inline-start: 1.2mm solid var(--brand); background: #f7f9fb; }
   .theme-western .block h2 { letter-spacing: .1em; }
   .theme-western .block h2::before { content: ""; width: 1.4mm; height: 3.2mm; flex: none; background: var(--accent); }
   .theme-western .block h2::after { content: ""; flex: 1; border-top: .25mm solid #d5dbe3; }
@@ -1009,7 +1012,10 @@ function measureSheet(m, tier) {
   parts.rule = 1.5 + 2.2;
 
   /* title band -------------------------------------------------------------- */
-  parts.title = tier.titleH + tier.gap;
+  // Reserve a small second title line for the Islamic bilingual heading. The
+  // same budget is used by the Western transcript so both themes keep an
+  // identical, predictable page rhythm.
+  parts.title = tier.titleH + 3.5 + tier.gap;
 
   /* student information + photograph ---------------------------------------- */
   const infoRows = Math.ceil(m.infoFields.length / 2);
@@ -1183,9 +1189,13 @@ function normalizeRenderInput(data) {
 function reportModel(data, opts = {}) {
   data = normalizeRenderInput(data);
   const t = data.template;
-  const rtl = String(data.student.nameAr || "").length > 0;
-  const L = (en, arabic) => (rtl && arabic ? arabic : en);
   const theme = reportTheme(data);
+  // Western academy reports stay in the international/English presentation,
+  // even when a learner also has an Arabic name. Islamic reports may switch to
+  // RTL when Arabic student data is available; this keeps the two identities
+  // visually distinct and prevents a Western sheet from unexpectedly flipping.
+  const rtl = theme.islamic && Boolean(String(data.student.nameAr || "").trim());
+  const L = (en, arabic) => (rtl && arabic ? arabic : en);
   const orientation = resolveOrientation(t);
   const page = PAGE_SIZES[orientation] || PAGE_SIZES.portrait;
   const printableW = page.w - PAGE_MARGIN_MM * 2;
@@ -1196,7 +1206,7 @@ function reportModel(data, opts = {}) {
   const workingCopy = !opts.portal && !opts.publicCopy && nonFinal;
 
   /* school identity ---------------------------------------------------------- */
-  const motto = rtl && data.madrasa.mottoAr ? data.madrasa.mottoAr : (data.madrasa.mottoEn || data.madrasa.mottoAr);
+  const motto = rtl ? (data.madrasa.mottoAr || data.madrasa.mottoEn) : data.madrasa.mottoEn;
   const addressLine = [data.madrasa.address, data.madrasa.city, data.madrasa.stateName]
     .filter((x) => x && String(x).trim()).join(", ");
   const contactBits = [
@@ -1361,7 +1371,7 @@ function renderReportSheetHTML(data, opts = {}) {
     : `<div class="logo logo-fallback" aria-hidden="true">${esc(logoInitial)}</div>`;
 
   const mastheadId = `<div class="masthead-id">
-        <h1 class="school-name">${esc(d.madrasa.nameEn)}${d.madrasa.nameAr ? ` <span class="ar" dir="rtl">· ${esc(d.madrasa.nameAr)}</span>` : ""}</h1>
+        <h1 class="school-name">${esc(d.madrasa.nameEn)}${theme.islamic && d.madrasa.nameAr ? ` <span class="ar" dir="rtl">· ${esc(d.madrasa.nameAr)}</span>` : ""}</h1>
         ${m.motto ? `<p class="motto">${esc(m.motto)}</p>` : ""}
         ${theme.islamic ? m.contactLines.map((line) => `<p class="contact">${esc(line)}</p>`).join("") : ""}
       </div>`;
@@ -1379,8 +1389,12 @@ function renderReportSheetHTML(data, opts = {}) {
 
   /* ---------------- title band --------------------------------------------- */
   const termName = rtl ? (d.term.nameAr || d.term.nameEn) : (d.term.nameEn || d.term.nameAr);
+  const titleArabic = theme.islamic
+    ? `<span class="ar-title" dir="rtl">${esc(theme.titleText[1])}</span>`
+    : "";
   const docTitle = `<div class="doc-title">
-      <p class="en">${esc(L(theme.titleText[0], theme.titleText[1]))}</p>
+      <p class="en">${esc(theme.titleText[0])}</p>
+      ${titleArabic}
       <p class="meta"><span>${esc(L("Academic session", "العام الدراسي"))}: <b>${esc(d.session || "—")}</b></span><span class="sep" aria-hidden="true"></span><span>${esc(L("Term", "الفترة"))}: <b>${esc(termName || "—")}</b></span></p>
     </div>`;
 
@@ -1576,6 +1590,7 @@ function renderReportSheetHTML(data, opts = {}) {
     `--inner-h:${m.printableH}mm`,
     `--gap:${tier.gap}mm`,
     `--heading-h:${tier.headingH}mm`,
+    `--title-h:${tier.titleH}mm`,
     `--logo:${tier.logo}mm`,
     `--name-size:${nameSize}px`,
     `--photo-w:${tier.photoW}mm`,
@@ -1605,23 +1620,23 @@ function renderReportSheetHTML(data, opts = {}) {
     --brand-line: ${theme.brandLine};
     --accent: ${theme.accent};
     --accent-soft: ${theme.accentSoft};
-    --ink: #1a2230;
-    --muted: #5b6672;
-    --line: #c6cfd6;
+    --ink: #172033;
+    --muted: #667085;
+    --line: #d5dce5;
     --heading-font: ${theme.headingFont};
     --body-font: "Segoe UI", -apple-system, "Helvetica Neue", Arial, "Noto Naskh Arabic", Tahoma, sans-serif;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: #e7ebef; }
-  body { font-family: var(--body-font); color: var(--ink); padding: 16px 0 30px; }
+  html, body { margin: 0; padding: 0; background: #eef2f6; }
+  body { font-family: var(--body-font); color: var(--ink); padding: 18px 0 34px; }
 
   /* ---------- screen-only toolbar ---------- */
-  .noprint { position: sticky; top: 0; z-index: 50; background: #0f172a; color: #e2e8f0; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+  .noprint { position: sticky; top: 0; z-index: 50; background: #132238; color: #e8eef7; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; box-shadow: 0 2px 10px rgba(15,23,42,.14); }
   .noprint .tb-left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
   .noprint .note { font-size: 12px; color: #cbd5e1; }
-  .noprint .print-btn { background: var(--brand); color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .noprint .print-btn { background: var(--brand); color: #fff; border: 0; padding: 8px 18px; border-radius: 4px; font-size: 13px; font-weight: 700; cursor: pointer; }
   .noprint .print-btn:hover { background: var(--brand-dark); }
-  .status-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 3px 10px; border-radius: 999px; background: #475569; color: #fff; }
+  .status-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 4px 10px; border-radius: 3px; background: #475569; color: #fff; }
   .status-published, .status-approved, .status-locked { background: #15803d; }
   .status-draft, .status-returned { background: #b45309; }
   .status-submitted, .status-under_review { background: #1d4ed8; }
@@ -1629,9 +1644,10 @@ function renderReportSheetHTML(data, opts = {}) {
 
   /* ---------- the A4 page ---------- */
   .sheet {
-    position: relative; background: #fff; margin: 0 auto 16px;
+    position: relative; background: #fff; margin: 0 auto 18px;
     width: var(--sheet-w); min-height: var(--sheet-h); padding: var(--pad);
-    box-shadow: 0 1px 3px rgba(15,23,42,.15), 0 14px 34px rgba(15,23,42,.08);
+    border-top: 1.1mm solid var(--brand);
+    box-shadow: 0 1px 3px rgba(15,23,42,.12), 0 12px 30px rgba(15,23,42,.07);
     /* With @page margin 0 the sheet itself carries the printable margins.
        When a long report flows onto a second page, clone the box padding so
        the continuation page keeps its top/bottom margins too. */
@@ -1653,46 +1669,47 @@ function renderReportSheetHTML(data, opts = {}) {
   .draft-mark span { font-size: 11px; font-weight: 700; letter-spacing: .42em; text-transform: uppercase; color: #b91c1c; opacity: .34; }
 
   /* ---------- school header ---------- */
-  .masthead { display: flex; align-items: center; gap: 4.5mm; }
+  .masthead { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4.5mm; }
   .masthead .logo { width: var(--logo); height: var(--logo); object-fit: contain; flex: none; }
-  .logo-fallback { display: flex; align-items: center; justify-content: center; background: var(--brand-soft); color: var(--brand-dark); border: .4mm solid var(--brand-line); font-family: var(--heading-font); font-size: calc(var(--logo) * .5); font-weight: 700; }
-  .masthead-id { flex: 1; min-width: 0; }
-  .school-name { margin: 0; font-family: var(--heading-font); font-size: var(--name-size); font-weight: 700; color: var(--brand-dark); line-height: 1.16; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
-  .school-name .ar { font-size: .8em; letter-spacing: 0; }
-  .motto { margin: .8mm 0 0; font-size: 9px; color: var(--muted); letter-spacing: .14em; text-transform: uppercase; line-height: 1.3; }
+  .logo-fallback { display: flex; align-items: center; justify-content: center; background: var(--brand-soft); color: var(--brand-dark); border: .35mm solid var(--brand-line); border-radius: 1.5mm; font-family: var(--heading-font); font-size: calc(var(--logo) * .48); font-weight: 700; }
+  .masthead-id { min-width: 0; }
+  .school-name { margin: 0; font-family: var(--heading-font); font-size: var(--name-size); font-weight: 700; color: var(--brand-dark); line-height: 1.14; letter-spacing: .01em; text-wrap: balance; overflow-wrap: anywhere; }
+  .school-name .ar { font-size: .78em; letter-spacing: 0; white-space: nowrap; }
+  .motto { margin: .8mm 0 0; font-size: 8.8px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; line-height: 1.3; }
   .contact { margin: .6mm 0 0; font-size: 8.4px; color: var(--muted); line-height: 1.35; }
-  .masthead-rule { margin: 1.3mm 0 2.2mm; }
+  .masthead-rule { margin: 1.5mm 0 2.4mm; }
 
   /* ---------- report title ---------- */
-  .doc-title { margin: 0 0 var(--gap); }
+  .doc-title { margin: 0 0 var(--gap); min-height: var(--title-h); }
   .doc-title .en { margin: 0; font-family: var(--heading-font); font-weight: 700; text-transform: uppercase; line-height: 1.2; }
-  .doc-title .meta { margin: 0; font-size: 9.2px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; line-height: 1.3; }
+  .doc-title .ar-title { line-height: 1.25; }
+  .doc-title .meta { margin: 0; font-size: 9.1px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; line-height: 1.3; }
   .doc-title .meta .sep { display: inline-block; width: 4mm; }
 
   /* ---------- student information ---------- */
-  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4mm; border: .3mm solid var(--brand-line); background: var(--brand-tint); padding: 1.7mm 2.6mm; }
+  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4mm; border: .3mm solid var(--brand-line); background: var(--brand-tint); padding: 2mm 2.8mm; }
   .student-band.no-photo { grid-template-columns: 1fr; }
   .student-main { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1.2mm; }
   .student-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 6mm; margin: 0; }
   .student-grid .cell { display: flex; align-items: baseline; gap: 2mm; min-height: var(--info-row-h); border-bottom: .2mm dotted #b9c3cd; padding-top: 1mm; }
-  .student-grid dt { min-width: 24mm; flex: none; color: var(--muted); font-size: 8.4px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .student-grid dt { min-width: 24mm; flex: none; color: var(--muted); font-size: 8.2px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
   .student-grid dd { margin: 0; flex: 1; min-width: 0; font-size: 10.6px; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
-  .photo-slot { width: var(--photo-w); height: var(--photo-h); border: .3mm solid #b7c2cc; background: #fff; overflow: hidden; align-self: center; }
+  .photo-slot { width: var(--photo-w); height: var(--photo-h); border: .35mm solid #aeb9c5; background: #fff; overflow: hidden; align-self: center; }
   .photo-slot .photo { display: block; width: 100%; height: 100%; object-fit: cover; }
   .photo-slot.photo-empty { display: flex; align-items: center; justify-content: center; background: #f2f5f7; }
   .photo-slot.photo-empty svg { width: 12mm; height: 12mm; fill: #b6c2cd; }
 
   /* ---------- result status ---------- */
-  .status-line { margin: 0; display: flex; align-items: center; gap: 2mm; font-size: 9px; }
-  .status-line .k { color: var(--muted); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
-  .status-line .v { font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand-dark); border: .3mm solid var(--brand-line); background: #fff; padding: .5mm 2.4mm; }
+  .status-line { margin: 0; display: flex; align-items: center; gap: 2mm; font-size: 8.8px; }
+  .status-line .k { color: var(--muted); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+  .status-line .v { font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--brand-dark); border: .3mm solid var(--brand-line); background: #fff; padding: .5mm 2.4mm; border-radius: .7mm; }
   .status-notice { border: .3mm solid #d9a441; border-inline-start: 1.4mm solid #b45309; background: #fffaf0; padding: 1.2mm 2.4mm; break-inside: avoid; }
-  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #92400e; }
+  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #92400e; }
   .status-notice .notice-body { margin: .5mm 0 0; font-size: 9.2px; color: #7c4a12; line-height: 1.35; }
 
   /* ---------- sections ---------- */
   .block { margin-top: var(--gap); }
-  .block h2 { margin: 0 0 1.2mm; height: calc(var(--heading-h) - 1.2mm); font-family: var(--heading-font); font-size: 9.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: var(--brand-dark); display: flex; align-items: center; gap: 2mm; break-after: avoid; }
+  .block h2 { margin: 0 0 1.35mm; height: calc(var(--heading-h) - 1.2mm); font-family: var(--heading-font); font-size: 9.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--brand-dark); display: flex; align-items: center; gap: 2mm; break-after: avoid; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4mm; margin-top: var(--gap); align-items: start; }
   .pair.single { grid-template-columns: 1fr; }
   .pair .block { margin-top: 0; }
@@ -1705,17 +1722,18 @@ function renderReportSheetHTML(data, opts = {}) {
   table.results td.subj, table.results th.subj { text-align: start; padding-inline-start: 2mm; overflow-wrap: anywhere; }
   table.results td.subj .sn { display: inline-block; min-width: 4.4mm; color: var(--muted); font-size: .84em; font-variant-numeric: tabular-nums; }
   table.results td.num { font-variant-numeric: tabular-nums; }
-  table.results td.total { font-weight: 700; }
-  table.results td.grade { font-weight: 700; color: var(--brand-dark); }
+  table.results td.total { font-weight: 700; background: var(--brand-soft); }
+  table.results td.grade { font-weight: 800; color: var(--brand-dark); }
   table.results td.remark { text-align: start; color: #374151; }
   table.results tbody tr:nth-child(even) td { background: var(--brand-tint); }
+  table.results tbody tr:nth-child(even) td.total { background: var(--brand-soft); }
   table.results thead { display: table-header-group; }
   table.results tr { break-inside: avoid; page-break-inside: avoid; }
 
   /* ---------- performance summary ---------- */
   table.summary { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.summary th { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .9mm 1mm; font-size: 7.9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; line-height: 1.2; }
-  table.summary td { border: .25mm solid var(--line); padding: 1.1mm 1mm; text-align: center; font-size: 11px; font-weight: 700; color: var(--brand-dark); font-variant-numeric: tabular-nums; }
+  table.summary th { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .9mm 1mm; font-size: 7.8px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; line-height: 1.2; }
+  table.summary td { border: .25mm solid var(--line); padding: 1.2mm 1mm; text-align: center; font-size: 11px; font-weight: 800; color: var(--brand-dark); font-variant-numeric: tabular-nums; background: #fff; }
 
   /* ---------- grading scale ---------- */
   .legend-wrap { margin-top: 1.5mm; }
@@ -1738,14 +1756,14 @@ function renderReportSheetHTML(data, opts = {}) {
 
   /* ---------- comments ---------- */
   .comments-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
-  .comment-box { border: .25mm solid var(--line); min-width: 0; break-inside: avoid; }
-  .comment-label { margin: 0; background: var(--brand-soft); color: var(--brand-dark); font-size: 8.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 1mm 2mm; border-bottom: .25mm solid var(--line); }
+  .comment-box { border: .25mm solid var(--line); border-radius: .7mm; min-width: 0; break-inside: avoid; overflow: hidden; }
+  .comment-label { margin: 0; background: var(--brand-soft); color: var(--brand-dark); font-size: 8.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; padding: 1mm 2mm; border-bottom: .25mm solid var(--line); }
   .comment-text { margin: 0; padding: 1.6mm 2mm; font-size: 10px; color: var(--ink); min-height: var(--comment-min); line-height: 1.42; overflow-wrap: anywhere; }
 
   /* ---------- promotion ---------- */
-  .promo-strip { margin-top: var(--gap); display: flex; align-items: center; gap: 3mm; flex-wrap: wrap; border: .25mm solid var(--line); padding: 1.2mm 2.6mm; min-height: 8.4mm; }
-  .promo-k { font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
-  .promo-badge { font-weight: 700; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; padding: .9mm 3.4mm; }
+  .promo-strip { margin-top: var(--gap); display: flex; align-items: center; gap: 3mm; flex-wrap: wrap; border: .25mm solid var(--line); padding: 1.2mm 2.6mm; min-height: 8.4mm; background: #fbfcfd; }
+  .promo-k { font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .promo-badge { font-weight: 800; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: .9mm 3.4mm; border-radius: .6mm; }
   .next-term { margin-inline-start: auto; font-size: 9px; color: #374151; }
   .next-term b { color: var(--ink); }
 

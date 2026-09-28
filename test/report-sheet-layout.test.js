@@ -255,6 +255,15 @@ test("the Western theme is navy and modern with no Islamic styling", () => {
   assert.match(html, /Term Report/);
 });
 
+test("Western styling stays English even when a learner also has Arabic data", () => {
+  const html = reportSheet.renderReportSheetHTML(sheet(6, { category: "western", arabic: true }));
+  assert.ok(!/[\u0600-\u06FF]/.test(body(html)), "the Western report does not unexpectedly flip to RTL");
+  assert.ok(!body(html).includes("ar-title"), "the Western title remains English");
+
+  const islamic = reportSheet.renderReportSheetHTML(sheet(6, { category: "islamic", arabic: true }));
+  assert.match(body(islamic), /class="ar-title"/, "the Islamic report can show its bilingual title");
+});
+
 test("both themes share one engine, one data structure and the same sections", () => {
   const islamic = reportSheet.renderReportSheetHTML(sheet(12, { category: "islamic" }));
   const western = reportSheet.renderReportSheetHTML(sheet(12, { category: "western" }));

@@ -1,5 +1,30 @@
 # Term Report Sheet — Official A4 Redesign (Implementation Report)
 
+## Visual refinement pass
+
+The report sheet now follows a restrained, official school-record standard rather
+than a dashboard or a decorative card. The existing single rendering engine and
+A4/page-density contract are retained, while the visual system was refined for
+print clarity:
+
+- the masthead uses a clear school identity row with a real logo/monogram,
+  readable institution name, motto and contact information;
+- the title is an unmistakable report heading with session and term metadata;
+- student identity, approved results, summary figures, grading scale,
+  attendance, conduct, comments, promotion and signatures stay in the familiar
+  order used by school report forms;
+- the Islamic presentation uses forest green, old gold and a very faint
+  geometric hairline; the Western presentation uses navy, slate blue and a
+  clean sans-serif transcript treatment;
+- border, spacing, contrast and table emphasis were tuned for both screen
+  preview and black-and-white/colour A4 printing; no decorative treatment is
+  allowed to compete with marks or comments;
+- a Western report remains an English academy report even when a learner has an
+  Arabic name, while Islamic reports can use RTL learner/institution data.
+
+This is presentation-only: the result calculations, status workflow,
+permissions, tenant isolation and API contracts remain unchanged.
+
 Scope: **presentation only.** The report sheet's business logic — CA/exam/total
 arithmetic, percentages, grades, grade points, averages, positions, class
 averages, attendance figures, promotion decisions, the review/approval

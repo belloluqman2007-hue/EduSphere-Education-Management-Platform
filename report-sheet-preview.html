@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>بطاقة النتائج — Alpha One</title>
+<title>بطاقة النتائج — Aisha Ibrahim</title>
 <style>
   @page { size: A4 portrait; margin: 0; }
   :root {
@@ -14,23 +14,23 @@
     --brand-line: #95b2a1;
     --accent: #a87f2b;
     --accent-soft: #e7dbc4;
-    --ink: #1a2230;
-    --muted: #5b6672;
-    --line: #c6cfd6;
+    --ink: #172033;
+    --muted: #667085;
+    --line: #d5dce5;
     --heading-font: Georgia, "Times New Roman", "Noto Naskh Arabic", serif;
     --body-font: "Segoe UI", -apple-system, "Helvetica Neue", Arial, "Noto Naskh Arabic", Tahoma, sans-serif;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: #e7ebef; }
-  body { font-family: var(--body-font); color: var(--ink); padding: 16px 0 30px; }
+  html, body { margin: 0; padding: 0; background: #eef2f6; }
+  body { font-family: var(--body-font); color: var(--ink); padding: 18px 0 34px; }
 
   /* ---------- screen-only toolbar ---------- */
-  .noprint { position: sticky; top: 0; z-index: 50; background: #0f172a; color: #e2e8f0; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+  .noprint { position: sticky; top: 0; z-index: 50; background: #132238; color: #e8eef7; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; box-shadow: 0 2px 10px rgba(15,23,42,.14); }
   .noprint .tb-left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
   .noprint .note { font-size: 12px; color: #cbd5e1; }
-  .noprint .print-btn { background: var(--brand); color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .noprint .print-btn { background: var(--brand); color: #fff; border: 0; padding: 8px 18px; border-radius: 4px; font-size: 13px; font-weight: 700; cursor: pointer; }
   .noprint .print-btn:hover { background: var(--brand-dark); }
-  .status-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 3px 10px; border-radius: 999px; background: #475569; color: #fff; }
+  .status-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 4px 10px; border-radius: 3px; background: #475569; color: #fff; }
   .status-published, .status-approved, .status-locked { background: #15803d; }
   .status-draft, .status-returned { background: #b45309; }
   .status-submitted, .status-under_review { background: #1d4ed8; }
@@ -38,9 +38,10 @@
 
   /* ---------- the A4 page ---------- */
   .sheet {
-    position: relative; background: #fff; margin: 0 auto 16px;
+    position: relative; background: #fff; margin: 0 auto 18px;
     width: var(--sheet-w); min-height: var(--sheet-h); padding: var(--pad);
-    box-shadow: 0 1px 3px rgba(15,23,42,.15), 0 14px 34px rgba(15,23,42,.08);
+    border-top: 1.1mm solid var(--brand);
+    box-shadow: 0 1px 3px rgba(15,23,42,.12), 0 12px 30px rgba(15,23,42,.07);
     /* With @page margin 0 the sheet itself carries the printable margins.
        When a long report flows onto a second page, clone the box padding so
        the continuation page keeps its top/bottom margins too. */
@@ -62,46 +63,47 @@
   .draft-mark span { font-size: 11px; font-weight: 700; letter-spacing: .42em; text-transform: uppercase; color: #b91c1c; opacity: .34; }
 
   /* ---------- school header ---------- */
-  .masthead { display: flex; align-items: center; gap: 4.5mm; }
+  .masthead { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4.5mm; }
   .masthead .logo { width: var(--logo); height: var(--logo); object-fit: contain; flex: none; }
-  .logo-fallback { display: flex; align-items: center; justify-content: center; background: var(--brand-soft); color: var(--brand-dark); border: .4mm solid var(--brand-line); font-family: var(--heading-font); font-size: calc(var(--logo) * .5); font-weight: 700; }
-  .masthead-id { flex: 1; min-width: 0; }
-  .school-name { margin: 0; font-family: var(--heading-font); font-size: var(--name-size); font-weight: 700; color: var(--brand-dark); line-height: 1.16; letter-spacing: .02em; text-transform: uppercase; text-wrap: balance; }
-  .school-name .ar { font-size: .8em; letter-spacing: 0; }
-  .motto { margin: .8mm 0 0; font-size: 9px; color: var(--muted); letter-spacing: .14em; text-transform: uppercase; line-height: 1.3; }
+  .logo-fallback { display: flex; align-items: center; justify-content: center; background: var(--brand-soft); color: var(--brand-dark); border: .35mm solid var(--brand-line); border-radius: 1.5mm; font-family: var(--heading-font); font-size: calc(var(--logo) * .48); font-weight: 700; }
+  .masthead-id { min-width: 0; }
+  .school-name { margin: 0; font-family: var(--heading-font); font-size: var(--name-size); font-weight: 700; color: var(--brand-dark); line-height: 1.14; letter-spacing: .01em; text-wrap: balance; overflow-wrap: anywhere; }
+  .school-name .ar { font-size: .78em; letter-spacing: 0; white-space: nowrap; }
+  .motto { margin: .8mm 0 0; font-size: 8.8px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; line-height: 1.3; }
   .contact { margin: .6mm 0 0; font-size: 8.4px; color: var(--muted); line-height: 1.35; }
-  .masthead-rule { margin: 1.3mm 0 2.2mm; }
+  .masthead-rule { margin: 1.5mm 0 2.4mm; }
 
   /* ---------- report title ---------- */
-  .doc-title { margin: 0 0 var(--gap); }
+  .doc-title { margin: 0 0 var(--gap); min-height: var(--title-h); }
   .doc-title .en { margin: 0; font-family: var(--heading-font); font-weight: 700; text-transform: uppercase; line-height: 1.2; }
-  .doc-title .meta { margin: 0; font-size: 9.2px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; line-height: 1.3; }
+  .doc-title .ar-title { line-height: 1.25; }
+  .doc-title .meta { margin: 0; font-size: 9.1px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; line-height: 1.3; }
   .doc-title .meta .sep { display: inline-block; width: 4mm; }
 
   /* ---------- student information ---------- */
-  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4mm; border: .3mm solid var(--brand-line); background: var(--brand-tint); padding: 1.7mm 2.6mm; }
+  .student-band { display: grid; grid-template-columns: 1fr auto; gap: 0 4mm; border: .3mm solid var(--brand-line); background: var(--brand-tint); padding: 2mm 2.8mm; }
   .student-band.no-photo { grid-template-columns: 1fr; }
   .student-main { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1.2mm; }
   .student-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 6mm; margin: 0; }
   .student-grid .cell { display: flex; align-items: baseline; gap: 2mm; min-height: var(--info-row-h); border-bottom: .2mm dotted #b9c3cd; padding-top: 1mm; }
-  .student-grid dt { min-width: 24mm; flex: none; color: var(--muted); font-size: 8.4px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .student-grid dt { min-width: 24mm; flex: none; color: var(--muted); font-size: 8.2px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
   .student-grid dd { margin: 0; flex: 1; min-width: 0; font-size: 10.6px; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
-  .photo-slot { width: var(--photo-w); height: var(--photo-h); border: .3mm solid #b7c2cc; background: #fff; overflow: hidden; align-self: center; }
+  .photo-slot { width: var(--photo-w); height: var(--photo-h); border: .35mm solid #aeb9c5; background: #fff; overflow: hidden; align-self: center; }
   .photo-slot .photo { display: block; width: 100%; height: 100%; object-fit: cover; }
   .photo-slot.photo-empty { display: flex; align-items: center; justify-content: center; background: #f2f5f7; }
   .photo-slot.photo-empty svg { width: 12mm; height: 12mm; fill: #b6c2cd; }
 
   /* ---------- result status ---------- */
-  .status-line { margin: 0; display: flex; align-items: center; gap: 2mm; font-size: 9px; }
-  .status-line .k { color: var(--muted); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
-  .status-line .v { font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand-dark); border: .3mm solid var(--brand-line); background: #fff; padding: .5mm 2.4mm; }
+  .status-line { margin: 0; display: flex; align-items: center; gap: 2mm; font-size: 8.8px; }
+  .status-line .k { color: var(--muted); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+  .status-line .v { font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--brand-dark); border: .3mm solid var(--brand-line); background: #fff; padding: .5mm 2.4mm; border-radius: .7mm; }
   .status-notice { border: .3mm solid #d9a441; border-inline-start: 1.4mm solid #b45309; background: #fffaf0; padding: 1.2mm 2.4mm; break-inside: avoid; }
-  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #92400e; }
+  .status-notice .notice-title { margin: 0; font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #92400e; }
   .status-notice .notice-body { margin: .5mm 0 0; font-size: 9.2px; color: #7c4a12; line-height: 1.35; }
 
   /* ---------- sections ---------- */
   .block { margin-top: var(--gap); }
-  .block h2 { margin: 0 0 1.2mm; height: calc(var(--heading-h) - 1.2mm); font-family: var(--heading-font); font-size: 9.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: var(--brand-dark); display: flex; align-items: center; gap: 2mm; break-after: avoid; }
+  .block h2 { margin: 0 0 1.35mm; height: calc(var(--heading-h) - 1.2mm); font-family: var(--heading-font); font-size: 9.4px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--brand-dark); display: flex; align-items: center; gap: 2mm; break-after: avoid; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4mm; margin-top: var(--gap); align-items: start; }
   .pair.single { grid-template-columns: 1fr; }
   .pair .block { margin-top: 0; }
@@ -114,17 +116,18 @@
   table.results td.subj, table.results th.subj { text-align: start; padding-inline-start: 2mm; overflow-wrap: anywhere; }
   table.results td.subj .sn { display: inline-block; min-width: 4.4mm; color: var(--muted); font-size: .84em; font-variant-numeric: tabular-nums; }
   table.results td.num { font-variant-numeric: tabular-nums; }
-  table.results td.total { font-weight: 700; }
-  table.results td.grade { font-weight: 700; color: var(--brand-dark); }
+  table.results td.total { font-weight: 700; background: var(--brand-soft); }
+  table.results td.grade { font-weight: 800; color: var(--brand-dark); }
   table.results td.remark { text-align: start; color: #374151; }
   table.results tbody tr:nth-child(even) td { background: var(--brand-tint); }
+  table.results tbody tr:nth-child(even) td.total { background: var(--brand-soft); }
   table.results thead { display: table-header-group; }
   table.results tr { break-inside: avoid; page-break-inside: avoid; }
 
   /* ---------- performance summary ---------- */
   table.summary { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.summary th { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .9mm 1mm; font-size: 7.9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; line-height: 1.2; }
-  table.summary td { border: .25mm solid var(--line); padding: 1.1mm 1mm; text-align: center; font-size: 11px; font-weight: 700; color: var(--brand-dark); font-variant-numeric: tabular-nums; }
+  table.summary th { background: var(--brand-soft); color: var(--brand-dark); border: .25mm solid var(--line); padding: .9mm 1mm; font-size: 7.8px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; line-height: 1.2; }
+  table.summary td { border: .25mm solid var(--line); padding: 1.2mm 1mm; text-align: center; font-size: 11px; font-weight: 800; color: var(--brand-dark); font-variant-numeric: tabular-nums; background: #fff; }
 
   /* ---------- grading scale ---------- */
   .legend-wrap { margin-top: 1.5mm; }
@@ -147,14 +150,14 @@
 
   /* ---------- comments ---------- */
   .comments-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
-  .comment-box { border: .25mm solid var(--line); min-width: 0; break-inside: avoid; }
-  .comment-label { margin: 0; background: var(--brand-soft); color: var(--brand-dark); font-size: 8.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 1mm 2mm; border-bottom: .25mm solid var(--line); }
+  .comment-box { border: .25mm solid var(--line); border-radius: .7mm; min-width: 0; break-inside: avoid; overflow: hidden; }
+  .comment-label { margin: 0; background: var(--brand-soft); color: var(--brand-dark); font-size: 8.2px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; padding: 1mm 2mm; border-bottom: .25mm solid var(--line); }
   .comment-text { margin: 0; padding: 1.6mm 2mm; font-size: 10px; color: var(--ink); min-height: var(--comment-min); line-height: 1.42; overflow-wrap: anywhere; }
 
   /* ---------- promotion ---------- */
-  .promo-strip { margin-top: var(--gap); display: flex; align-items: center; gap: 3mm; flex-wrap: wrap; border: .25mm solid var(--line); padding: 1.2mm 2.6mm; min-height: 8.4mm; }
-  .promo-k { font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
-  .promo-badge { font-weight: 700; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; padding: .9mm 3.4mm; }
+  .promo-strip { margin-top: var(--gap); display: flex; align-items: center; gap: 3mm; flex-wrap: wrap; border: .25mm solid var(--line); padding: 1.2mm 2.6mm; min-height: 8.4mm; background: #fbfcfd; }
+  .promo-k { font-size: 8.6px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .promo-badge { font-weight: 800; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: .9mm 3.4mm; border-radius: .6mm; }
   .next-term { margin-inline-start: auto; font-size: 9px; color: #374151; }
   .next-term b { color: var(--ink); }
 
@@ -176,24 +179,25 @@
   .empty { font-size: 9.4px; color: var(--muted); margin: 0; font-style: italic; }
 
   /* =======================================================================
-     THEME — ISLAMIC: deep academic green, restrained gold, serif academic
-     typography, framed title carrying a faint geometric hairline.
+     THEME — ISLAMIC: a formal madrasa record in forest green and old gold.
+     Decoration is deliberately quiet; the marks frame the record instead of
+     competing with the marks and comments teachers need to read.
      ======================================================================= */
   .theme-islamic .masthead-id { text-align: center; }
   .theme-islamic .masthead-crest { width: var(--logo); flex: none; display: flex; align-items: center; justify-content: center; }
-  .theme-islamic .crest { width: calc(var(--logo) * .5); height: calc(var(--logo) * .5); border: .4mm solid var(--accent); transform: rotate(45deg); position: relative; }
-  .theme-islamic .crest::after { content: ""; position: absolute; inset: 1.1mm; border: .3mm solid var(--brand-line); }
-  .theme-islamic .masthead-rule { height: 1.5mm; border-top: .9mm solid var(--brand); border-bottom: .3mm solid var(--accent); }
-  .theme-islamic .doc-title { text-align: center; padding: 1.4mm 0 1.2mm; border-top: .25mm solid var(--brand-line); border-bottom: .25mm solid var(--brand-line); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg fill='none' stroke='%23a87f2b' stroke-width='1.1' opacity='0.45'%3E%3Crect x='12' y='12' width='24' height='24'/%3E%3Crect x='12' y='12' width='24' height='24' transform='rotate(45 24 24)'/%3E%3C/g%3E%3C/svg%3E"); background-size: 12mm 12mm; background-position: center; }
-  .theme-islamic .doc-title .en { font-size: 14px; letter-spacing: .3em; color: var(--brand-dark); }
-  .theme-islamic .doc-title .en::before, .theme-islamic .doc-title .en::after { content: "◆"; color: var(--accent); font-size: .5em; vertical-align: .24em; margin: 0 2.6mm; letter-spacing: 0; }
+  .theme-islamic .crest { width: calc(var(--logo) * .54); height: calc(var(--logo) * .54); border: .35mm solid var(--accent); transform: rotate(45deg); position: relative; }
+  .theme-islamic .crest::after { content: ""; position: absolute; inset: 1mm; border: .2mm solid var(--brand-line); }
+  .theme-islamic .masthead-rule { height: 1.3mm; border-top: .65mm solid var(--brand); border-bottom: .25mm solid var(--accent); }
+  .theme-islamic .doc-title { text-align: center; display: block; color: var(--brand-dark); background-color: #f5f8f5; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg fill='none' stroke='%23a87f2b' stroke-width='1.1' opacity='0.45'%3E%3Crect x='12' y='12' width='24' height='24'/%3E%3Crect x='12' y='12' width='24' height='24' transform='rotate(45 24 24)'/%3E%3C/g%3E%3C/svg%3E"); background-size: 13mm 13mm; background-position: center; border: .3mm solid var(--brand-line); border-inline-start: 1.2mm solid var(--brand); padding: 1.9mm 3mm 1.7mm; }
+  .theme-islamic .doc-title .en { font-size: 13.5px; letter-spacing: .16em; color: var(--brand-dark); }
+  .theme-islamic .doc-title .ar-title { display: block; margin-top: .5mm; color: var(--brand); font-family: var(--heading-font); font-size: 10.5px; font-weight: 600; letter-spacing: 0; }
   .theme-islamic .doc-title .meta { margin-top: .9mm; color: #46525f; }
   .theme-islamic .doc-title .meta b { color: var(--brand-dark); }
   .theme-islamic .block h2::before { content: ""; width: 1.8mm; height: 1.8mm; flex: none; background: var(--accent); transform: rotate(45deg); }
-  .theme-islamic .block h2::after { content: ""; flex: 1; border-top: .3mm solid var(--brand-line); }
+  .theme-islamic .block h2::after { content: ""; flex: 1; border-top: .25mm solid var(--brand-line); }
   .theme-islamic table.results th { border-bottom: .5mm solid var(--accent); }
-  .theme-islamic .promo-badge { border: .4mm double var(--brand-dark); color: var(--brand-dark); background: var(--brand-soft); font-family: var(--heading-font); }
-  .theme-islamic .foot { box-shadow: 0 .55mm 0 var(--accent-soft); }
+  .theme-islamic .promo-badge { border: .35mm double var(--brand-dark); color: var(--brand-dark); background: var(--brand-soft); font-family: var(--heading-font); }
+  .theme-islamic .foot { box-shadow: 0 .45mm 0 var(--accent-soft); }
 
   /* ---------- layout variants (template option, theme-independent) ---------- */
   .layout-modern .masthead { background: var(--brand-soft); margin: calc(-1 * var(--pad)) calc(-1 * var(--pad)) 0; padding: var(--pad) var(--pad) 2.4mm; }
@@ -219,33 +223,34 @@
 <body>
 <div class="noprint toolbar">
         <div class="tb-left">
-          <span class="status-pill status-approved">approved</span>
-          
-          
+          <span class="status-pill status-published">published</span>
+
+
         </div>
         <button type="button" class="print-btn" data-print onclick="window.print()">🖨 طباعة / حفظ PDF</button>
       </div>
-<div class="sheet layout-classic theme-islamic d-dense" style="--pad:9mm;--sheet-w:210mm;--sheet-h:297mm;--inner-h:279mm;--gap:2.2mm;--heading-h:4.5mm;--logo:17mm;--name-size:18px;--photo-w:30mm;--photo-h:35.5mm;--info-row-h:8.4mm;--row-h:5.2mm;--row-pad:1.05mm;--tbl-font:9.6px;--tbl-head:8.2px;--comment-min:19.1mm;--sig-space:13.8mm">
-  
-  
+<div class="sheet layout-classic theme-islamic d-dense" style="--pad:9mm;--sheet-w:210mm;--sheet-h:297mm;--inner-h:279mm;--gap:2.2mm;--heading-h:4.5mm;--title-h:9.8mm;--logo:17mm;--name-size:18px;--photo-w:30mm;--photo-h:35.5mm;--info-row-h:8.4mm;--row-h:5.2mm;--row-pad:1.05mm;--tbl-font:9.6px;--tbl-head:8.2px;--comment-min:16.3mm;--sig-space:12.5mm">
+
+
   <div class="inner">
     <header class="masthead">
-      <div class="logo logo-fallback" aria-hidden="true">T</div>
+      <div class="logo logo-fallback" aria-hidden="true">A</div>
       <div class="masthead-id">
-        <h1 class="school-name">Test Madrasa A <span class="ar" dir="rtl">· المدرسة الاختبارية أ</span></h1>
-        <p class="motto">Knowledge · Character · Service</p>
-        <p class="contact">14 Ring Road, Ibadan, Oyo</p><p class="contact">هاتف: +234 802 000 1122  ·  office@example.edu.ng  ·  www.example.edu.ng</p>
+        <h1 class="school-name">Al-Huda College of Knowledge <span class="ar" dir="rtl">· كلية الهدى للعلوم</span></h1>
+        <p class="motto">العلم · الخلق · الخدمة</p>
+        <p class="contact">1 Sample Avenue, Ijebu-Ode, Ogun</p><p class="contact">هاتف: +234 800 000 0000  ·  info@example.edu  ·  www.example.edu</p>
       </div>
       <div class="masthead-crest" aria-hidden="true"><span class="crest"></span></div>
     </header>
     <div class="masthead-rule" aria-hidden="true"></div>
     <div class="doc-title">
-      <p class="en">التقرير الفصلي</p>
+      <p class="en">Term Report Sheet</p>
+      <span class="ar-title" dir="rtl">التقرير الفصلي</span>
       <p class="meta"><span>العام الدراسي: <b>2026/2027</b></span><span class="sep" aria-hidden="true"></span><span>الفترة: <b>الفترة الأولى</b></span></p>
     </div>
     <section class="student-band" aria-label="بيانات الطالب">
       <div class="student-main">
-        <dl class="student-grid"><div class="cell"><dt>اسم الطالب</dt><dd>ألف واحد</dd></div><div class="cell"><dt>الرقم التعريفي</dt><dd>TTA0001</dd></div><div class="cell"><dt>الفصل</dt><dd>قسم أ1</dd></div><div class="cell"><dt>الجنس</dt><dd>ذكر</dd></div></dl>
+        <dl class="student-grid"><div class="cell"><dt>اسم الطالب</dt><dd>عائشة إبراهيم</dd></div><div class="cell"><dt>الرقم التعريفي</dt><dd>SAMPLE-0001</dd></div><div class="cell"><dt>الفصل</dt><dd>الابتدائية ٥</dd></div><div class="cell"><dt>الجنس</dt><dd>أنثى</dd></div></dl>
         <p class="status-line"><span class="k">حالة النتيجة</span><span class="v">معتمدة</span></p>
       </div>
       <div class="photo-slot photo-empty" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>
@@ -254,53 +259,53 @@
       <h2>الأداء الأكاديمي</h2>
       <table class="results"><colgroup><col style="width:96mm"><col style="width:14mm"><col style="width:16mm"><col style="width:14mm"><col style="width:13mm"><col style="width:13mm"><col style="width:26mm"></colgroup>
         <thead><tr><th class="subj" scope="col">المادة</th><th scope="col">CA</th><th scope="col">Exam</th><th scope="col">المجموع</th><th scope="col">%</th><th scope="col">الدرجة</th><th scope="col">ملاحظة</th></tr></thead>
-        <tbody><tr><td class="subj"><span class="sn">1</span>العلوم الزراعية</td><td class="num">30</td><td class="num">40</td><td class="num total">70</td><td class="num">70%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr><tr><td class="subj"><span class="sn">2</span>العلوم والتكنولوجيا</td><td class="num">32</td><td class="num">46</td><td class="num total">78</td><td class="num">78%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">3</span>التربية المدنية</td><td class="num">25</td><td class="num">33</td><td class="num total">58</td><td class="num">58%</td><td class="grade">C</td><td class="remark">جيد</td></tr><tr><td class="subj"><span class="sn">4</span>الحاسوب</td><td class="num">35</td><td class="num">47</td><td class="num total">82</td><td class="num">82%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">5</span>اللغة الإنجليزية</td><td class="num">35</td><td class="num">60</td><td class="num total">95</td><td class="num">95%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">6</span>اللغة الإنجليزية</td><td class="num">27</td><td class="num">39</td><td class="num total">66</td><td class="num">66%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr><tr><td class="subj"><span class="sn">7</span>الفقه</td><td class="num">30</td><td class="num">50</td><td class="num total">80</td><td class="num">80%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">8</span>الرياضيات</td><td class="num">22</td><td class="num">32</td><td class="num total">54</td><td class="num">54%</td><td class="grade">D</td><td class="remark">مقبول</td></tr><tr><td class="subj"><span class="sn">9</span>التربية البدنية</td><td class="num">23</td><td class="num">54</td><td class="num total">77</td><td class="num">77%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">10</span>حفظ القرآن</td><td class="num">28</td><td class="num">34</td><td class="num total">62</td><td class="num">62%</td><td class="grade">C</td><td class="remark">جيد</td></tr><tr><td class="subj"><span class="sn">11</span>الدراسات الاجتماعية</td><td class="num">37</td><td class="num">53</td><td class="num total">90</td><td class="num">90%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">12</span>التجويد</td><td class="num">33</td><td class="num">41</td><td class="num total">74</td><td class="num">74%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr></tbody>
+        <tbody><tr><td class="subj"><span class="sn">1</span>الرياضيات</td><td class="num">30</td><td class="num">45</td><td class="num total">75</td><td class="num">75%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">2</span>اللغة الإنجليزية</td><td class="num">31</td><td class="num">49</td><td class="num total">80</td><td class="num">80%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">3</span>العلوم</td><td class="num">32</td><td class="num">53</td><td class="num total">85</td><td class="num">85%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">4</span>الدراسات الاجتماعية</td><td class="num">33</td><td class="num">45</td><td class="num total">78</td><td class="num">78%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">5</span>الدراسات الإسلامية</td><td class="num">34</td><td class="num">49</td><td class="num total">83</td><td class="num">83%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">6</span>اللغة العربية</td><td class="num">35</td><td class="num">53</td><td class="num total">88</td><td class="num">88%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">7</span>تلاوة القرآن</td><td class="num">27</td><td class="num">43</td><td class="num total">70</td><td class="num">70%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr><tr><td class="subj"><span class="sn">8</span>اللغة العربية</td><td class="num">28</td><td class="num">46</td><td class="num total">74</td><td class="num">74%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr><tr><td class="subj"><span class="sn">9</span>الدراسات الإسلامية</td><td class="num">29</td><td class="num">49</td><td class="num total">78</td><td class="num">78%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">10</span>الرياضيات</td><td class="num">30</td><td class="num">52</td><td class="num total">82</td><td class="num">82%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr><tr><td class="subj"><span class="sn">11</span>العلوم الأساسية</td><td class="num">31</td><td class="num">43</td><td class="num total">74</td><td class="num">74%</td><td class="grade">B</td><td class="remark">جيد جداً</td></tr><tr><td class="subj"><span class="sn">12</span>الدراسات الاجتماعية</td><td class="num">32</td><td class="num">46</td><td class="num total">78</td><td class="num">78%</td><td class="grade">A</td><td class="remark">ممتاز</td></tr></tbody>
       </table>
     </section>
     <section class="block">
         <h2>ملخص الأداء</h2>
         <table class="summary">
           <thead><tr><th scope="col">عدد المواد</th><th scope="col">مجموع الدرجات</th><th scope="col">المعدل</th><th scope="col">الدرجة العامة</th><th scope="col">الترتيب</th><th scope="col">عدد الطلاب</th><th scope="col">معدل الفصل</th></tr></thead>
-          <tbody><tr><td>12</td><td>886</td><td>73.8%</td><td>B</td><td>1st من 2</td><td>2</td><td>68%</td></tr></tbody>
+          <tbody><tr><td>12</td><td>945</td><td>78.8%</td><td>A</td><td>3rd من 28</td><td>28</td><td>71.4%</td></tr></tbody>
         </table>
         <div class="legend-wrap"><table class="legend-table"><tbody><tr><th class="legend-head" scope="row">سلم الدرجات</th><td><b>A</b>75+ · ممتاز</td><td><b>B</b>65+ · جيد جداً</td><td><b>C</b>55+ · جيد</td><td><b>D</b>45+ · مقبول</td><td><b>E</b>40+ · ضعيف</td><td><b>F</b>0+ · راسب</td></tr></tbody></table></div>
       </section>
     <div class="pair"><section class="block">
         <h2>الحضور</h2>
-        <table class="mini att"><thead><tr><th scope="col">أيام مسجلة</th><th scope="col">حاضر</th><th scope="col">غائب</th><th scope="col">متأخر</th><th scope="col">نسبة الحضور</th></tr></thead><tbody><tr><td>1</td><td>1</td><td>0</td><td>0</td><td>100%</td></tr></tbody></table>
+        <table class="mini att"><thead><tr><th scope="col">أيام مسجلة</th><th scope="col">حاضر</th><th scope="col">غائب</th><th scope="col">متأخر</th><th scope="col">نسبة الحضور</th></tr></thead><tbody><tr><td>98</td><td>92</td><td>3</td><td>2</td><td>94%</td></tr></tbody></table>
       </section><section class="block">
         <h2>السلوك والمواظبة</h2>
-        <p class="empty">لا توجد تقييمات سلوك لهذه الفترة.</p>
+        <div class="behaviour"><span class="beh-cell"><span class="k">الالتزام بالمواعيد</span><span class="v">5/5 <i>Excellent</i></span></span><span class="beh-cell"><span class="k">النظافة</span><span class="v">4/5 <i>Very Good</i></span></span><span class="beh-cell"><span class="k">الانضباط</span><span class="v">3/5 <i>Good</i></span></span><span class="beh-cell"><span class="k">المشاركة</span><span class="v">5/5 <i>Excellent</i></span></span><span class="beh-cell"><span class="k">التعاون</span><span class="v">4/5 <i>Very Good</i></span></span><span class="beh-cell"><span class="k">الاحترام</span><span class="v">3/5 <i>Good</i></span></span><span class="beh-cell"><span class="k">السلوك العام</span><span class="v">5/5 <i>Excellent</i></span></span></div>
       </section></div>
     <section class="block">
         <h2>الملاحظات</h2>
         <div class="comments-grid">
-          <div class="comment-box"><p class="comment-label">تعليق معلم الفصل</p><p class="comment-text">A focused and productive term. Written work is neat and contributions in class are thoughtful.</p></div>
-          <div class="comment-box"><p class="comment-label">تعليق رئيس المؤسسة</p><p class="comment-text">A pleasing set of results. Keep up the steady effort next term.</p></div>
+          <div class="comment-box"><p class="comment-label">تعليق معلم الفصل</p><p class="comment-text">A consistently hard-working and courteous learner. Keep it up.</p></div>
+          <div class="comment-box"><p class="comment-label">تعليق رئيس المؤسسة</p><p class="comment-text">An excellent term&#39;s work. Promoted with merit.</p></div>
         </div>
       </section>
     <div class="promo-strip">
         <span class="promo-k">قرار الترقية</span>
         <span class="promo-badge">نُقل إلى الصف الأعلى</span>
-        <span class="next-term">تبدأ الفترة القادمة: <b>01/09/2026</b> — تنتهي <b>19/12/2026</b></span>
+        <span class="next-term">تبدأ الفترة القادمة: <b>08/01/2027</b> — تنتهي <b>02/04/2027</b></span>
       </div>
     <div class="signatures"><div class="sig">
         <div class="sig-space"></div>
         <div class="sig-rule"></div>
         <p class="sig-who">مُعلّم الفصل</p>
-        
+
         <p class="sig-date">التاريخ: ____________________</p>
       </div><div class="sig">
         <div class="sig-space"></div>
         <div class="sig-rule"></div>
         <p class="sig-who">رئيس المؤسسة</p>
-        
+
         <p class="sig-date">التاريخ: ____________________</p>
       </div></div>
     <footer class="foot">
       <span class="credit">Powered by EduSphere</span>
-      <span class="ref">المرجع: EDU-20262027-CLASSA1-TTA0001</span>
-      
+      <span class="ref">المرجع: EDU-2026-2027-JSS2-SAMPLE-ISLAMIC</span>
+
     </footer>
   </div>
 </div>
