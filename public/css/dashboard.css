@@ -911,3 +911,168 @@ body.dash-western .dash-western-insight { border-color:#cdeaff; }
   /* Touch targets stay at least ~44px tall. */
   .dash-btn, .dash-attention-row, .dash-search-item { min-height:42px; }
 }
+
+/* ==========================================================================
+   RESULTS & REPORT CARDS — in-app report console
+   --------------------------------------------------------------------------
+   The staff Results and Report Cards screens are the in-app counterpart of the
+   printable report sheet (server/services/report-sheet.js). They deliberately
+   echo the official document: a branded masthead, a clear class/term selector,
+   a strong result table, status pills that mirror the review workflow and a
+   toolbar whose actions (review, comments, preview, print, publish) are kept
+   visually distinct.
+
+   The console re-themes to match the PRINTED report — forest green + gold for
+   Islamic institutions, navy + slate blue for Western ones — regardless of the
+   surrounding dashboard palette, so what staff see on screen matches what the
+   family receives on paper. Everything is scoped under .report-console, so no
+   other dashboard screen is affected. Presentation only: not one figure,
+   status or action is computed here.
+   ========================================================================== */
+.report-console {
+  --rc-brand: var(--d-primary-800);
+  --rc-brand-dark: var(--d-primary-950);
+  --rc-accent: var(--d-accent);
+  --rc-tint: var(--d-surface-2);
+  --rc-on-brand: #ffffff;
+}
+body.dash-islamic .report-console {
+  --rc-brand: #14532d;
+  --rc-brand-dark: #0b3a1f;
+  --rc-accent: #a87f2b;
+  --rc-tint: #eef4f0;
+  --rc-on-brand: #ffffff;
+}
+body.dash-western .report-console {
+  --rc-brand: #0a2342;
+  --rc-brand-dark: #061729;
+  --rc-accent: #3f6fa6;
+  --rc-tint: #eef3f9;
+  --rc-on-brand: #ffffff;
+}
+
+/* ---- masthead (mirrors the printable report title band) ---- */
+.rc-masthead {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  background: linear-gradient(135deg, var(--rc-brand), var(--rc-brand-dark));
+  color: var(--rc-on-brand); border-radius: var(--d-radius-lg);
+  padding: 18px 22px; box-shadow: var(--d-shadow); position: relative; overflow: hidden;
+  border-bottom: 3px solid var(--rc-accent);
+}
+.rc-crest {
+  width: 46px; height: 46px; flex: 0 0 auto; border-radius: 12px; display: grid; place-items: center;
+  background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.28);
+}
+.rc-crest svg { width: 24px; height: 24px; }
+.rc-masthead-id { min-width: 0; flex: 1; }
+.rc-masthead-id .rc-crumb { font-size: .68rem; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; color: var(--rc-accent); }
+.rc-masthead-id h2 { margin: 2px 0 3px; font-size: 1.3rem; font-weight: 850; letter-spacing: -.01em; color: #fff; }
+.rc-masthead-id p { margin: 0; font-size: .82rem; color: rgba(255,255,255,.82); max-width: 620px; }
+.rc-masthead .rc-masthead-actions { display: flex; gap: 9px; flex-wrap: wrap; }
+.rc-masthead .dash-btn.dash-btn-ghost {
+  background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.32);
+}
+.rc-masthead .dash-btn.dash-btn-ghost:hover { background: rgba(255,255,255,.22); }
+
+/* ---- selection bar ---- */
+.rc-selector { margin-top: 16px; }
+.rc-selector .dash-card-pad { padding: 18px 20px; }
+.rc-selector-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; align-items: end; }
+.rc-selector .dash-field label { display: flex; align-items: center; gap: 6px; }
+.rc-selector .dash-field label::before {
+  content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--rc-accent); flex: 0 0 auto;
+}
+
+/* ---- context / stat strip ---- */
+.rc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; }
+.rc-stat {
+  background: var(--d-surface); border: 1px solid var(--d-line); border-left: 4px solid var(--rc-brand);
+  border-radius: var(--d-radius); padding: 13px 16px; box-shadow: var(--d-shadow);
+}
+.rc-stat .rc-stat-value { font-size: 1.4rem; font-weight: 850; letter-spacing: -.02em; color: var(--rc-brand); line-height: 1.05; }
+body.dash-islamic .rc-stat .rc-stat-value,
+body.dash-western .rc-stat .rc-stat-value { color: var(--rc-brand); }
+.rc-stat .rc-stat-label { margin-top: 4px; font-size: .74rem; font-weight: 650; color: var(--d-muted); text-transform: uppercase; letter-spacing: .04em; }
+
+/* ---- action toolbar (separate, grouped actions) ---- */
+.rc-toolbar {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 12px 16px; margin-bottom: 14px; background: var(--rc-tint);
+  border: 1px solid var(--d-line); border-radius: var(--d-radius);
+}
+.rc-toolbar-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rc-toolbar-group + .rc-toolbar-group { position: relative; padding-left: 16px; }
+.rc-toolbar-group + .rc-toolbar-group::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 1px; height: 24px; background: var(--d-line);
+}
+.rc-toolbar-label { font-size: .68rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: var(--d-muted); margin-right: 2px; }
+.rc-toolbar .dash-btn.rc-brand-btn { background: linear-gradient(135deg, var(--rc-brand), var(--rc-brand-dark)); color: #fff; }
+.rc-toolbar .dash-btn.rc-brand-btn svg { color: #fff; }
+
+/* ---- result table (echoes the printed subject/summary tables) ---- */
+.rc-table-card { overflow: hidden; }
+.report-console .rc-table { font-size: .84rem; }
+.report-console .rc-table thead th {
+  background: var(--rc-brand); color: var(--rc-on-brand);
+  border-bottom: 2px solid var(--rc-accent); letter-spacing: .05em;
+}
+.report-console .rc-table tbody td { border-bottom: 1px solid var(--d-line-soft); }
+.report-console .rc-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--rc-tint) 55%, transparent); }
+.report-console .rc-table tbody tr:hover td { background: var(--rc-tint); }
+.report-console .rc-table .rc-num { text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
+.report-console .rc-table .rc-total { font-weight: 800; color: var(--rc-brand); }
+.report-console .rc-table .rc-grade { font-weight: 850; color: var(--rc-brand); text-align: center; }
+.rc-student-cell { display: flex; flex-direction: column; }
+.rc-student-cell.rc-student-photo { flex-direction: row; align-items: center; gap: 10px; }
+.rc-student-cell.rc-student-photo img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid var(--rc-accent); flex: none; }
+.rc-student-cell strong { font-weight: 750; }
+.rc-student-cell small { color: var(--d-muted); font-size: .74rem; }
+.report-console .rc-table input[type="number"] {
+  width: 74px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--d-line);
+  background: var(--d-surface); font-size: .84rem; font-weight: 650; text-align: center;
+}
+.report-console .rc-table input.remark-input { width: 100%; min-width: 130px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--d-line); background: var(--d-surface); font-size: .82rem; text-align: left; }
+.report-console .rc-table input:focus { border-color: var(--rc-accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--rc-accent) 30%, transparent); }
+.rc-modal-subhead { margin: 18px 0 8px; font-size: .82rem; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--rc-brand, var(--d-primary-700)); }
+.rc-modal-subhead small { font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--d-muted); }
+
+/* ---- per-row actions & the prominent "open report sheet" button ---- */
+.rc-rowactions { display: flex; gap: 7px; justify-content: flex-end; flex-wrap: wrap; }
+.rc-preview-btn {
+  background: linear-gradient(135deg, var(--rc-brand), var(--rc-brand-dark)) !important;
+  color: #fff !important; border: none !important;
+}
+.rc-preview-btn svg { color: #fff; }
+.rc-preview-btn:hover { box-shadow: 0 8px 18px color-mix(in srgb, var(--rc-brand) 40%, transparent); }
+
+/* ---- status pills mirroring the workflow on the printed sheet ---- */
+.rc-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.rc-status.published, .rc-status.approved, .rc-status.locked { background: rgba(20,104,72,.14); color: #146848; }
+.rc-status.draft, .rc-status.returned, .rc-status.unpublished, .rc-status.not_entered { background: rgba(138,90,18,.16); color: #8a5a12; }
+.rc-status.submitted, .rc-status.under_review, .rc-status.pending { background: rgba(36,92,120,.14); color: #245c78; }
+.rc-status.incomplete, .rc-status.missing { background: #fdecea; color: #a5352d; }
+.rc-status.complete { background: rgba(20,104,72,.14); color: #146848; }
+
+/* ---- notices ---- */
+.rc-notice {
+  display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; margin-bottom: 14px;
+  border-radius: var(--d-radius); border: 1px solid var(--d-line); border-left: 4px solid var(--rc-accent);
+  background: var(--rc-tint); font-size: .84rem;
+}
+.rc-notice.warn { border-left-color: #b45309; background: #fffaf0; color: #7c4a12; }
+.rc-notice svg { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 1px; }
+.rc-hint { color: var(--d-muted); font-size: .86rem; padding: 8px 2px; }
+
+/* ---- legend echoing the printed grading scale ---- */
+.rc-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.rc-legend span { font-size: .74rem; color: var(--d-muted); background: var(--d-surface-2); border: 1px solid var(--d-line); border-radius: 999px; padding: 3px 10px; }
+.rc-legend b { color: var(--rc-brand); }
+
+@media (max-width: 720px) {
+  .rc-masthead { padding: 15px 16px; }
+  .rc-masthead-id h2 { font-size: 1.12rem; }
+  .rc-toolbar-group + .rc-toolbar-group { padding-left: 0; }
+  .rc-toolbar-group + .rc-toolbar-group::before { display: none; }
+  .rc-rowactions { justify-content: flex-start; }
+}
