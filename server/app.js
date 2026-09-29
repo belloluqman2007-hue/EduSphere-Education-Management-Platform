@@ -45,6 +45,10 @@ const extrasRouter = require("./routes/extras");
 const backupsRouter = require("./routes/backups").router;
 const calendarRouter = require("./routes/calendar");
 const supportRouter = require("./routes/support").router;
+// Chat & Support — threaded conversations between an authenticated
+// institution user and the Super Admin / EduSphere support desk. One shared
+// architecture for Islamic and Western institutions.
+const { router: supportChatRouter, platformRouter: supportChatAdminRouter } = require("./routes/support-chat");
 const quranProgressRouter = require("./routes/quran-progress");
 const academicRouter = require("./routes/academic");
 const libraryRouter = require("./routes/library");
@@ -266,6 +270,10 @@ function createApp() {
   // through the same session/tenant guards.
   api.use("/admin", adminRouter);
   api.use("/platform", platformRouter);
+  // Super Admin half of Chat & Support. Mounted behind the same
+  // requireSuperAdmin guard the rest of the platform API uses, so an
+  // institution administrator can never reach the platform-wide queue.
+  api.use("/platform/conversations", requireSuperAdmin, supportChatAdminRouter);
   api.use("/madrasa", madrasaRouter);
   api.use("/classes", classesRouter);
   api.use(madrasaRootRouter); // /api/subjects, /api/sessions, /api/grading + legacy class fallback
@@ -320,6 +328,9 @@ function createApp() {
   api.use("/calendar", calendarRouter);
   // Platform support tickets — the institution's half. The super admin's
   // queue lives under /api/platform/tickets in platform.js.
+  // Chat & Support (institution side) sits beside the older ticket queue
+  // under the same /api/support prefix — one support area, two mounts.
+  api.use("/support/chat", supportChatRouter);
   api.use("/support", supportRouter);
   api.use("/exports", exportsRouter);
   // Server-rendered ID cards and certificates. This mount remains inside the
