@@ -200,7 +200,13 @@
         // The institution's channel to the platform operator — tenants raise
         // tickets from here and follow the operator's replies.
         key: "support", label: "Platform Support", icon: "shield",
-        items: [["Support Tickets", "support/tickets"], ["New Ticket", "support/new"]],
+        items: [
+          // Chat & Support is the live conversation with the EduSphere team;
+          // the ticket screens below remain exactly as they were.
+          ["Chat & Support", "support/chat", "supportChat"],
+          ["Support Tickets", "support/tickets"],
+          ["New Ticket", "support/new"],
+        ],
       },
     ];
 
@@ -218,6 +224,7 @@
       { key: "madaris", label: "Madrasas & Academies", icon: "building", route: "platform/madaris" },
       { key: "registrations", label: "Registrations", icon: "admissions", route: "platform/registrations" },
       { key: "plans", label: "Subscription Plans", icon: "money", route: "platform/plans" },
+      { key: "conversations", label: "Chat & Support", icon: "chat", route: "platform/conversations", badge: "supportChat" },
       { key: "tickets", label: "Support Tickets", icon: "shield", route: "platform/tickets" },
       { key: "analytics", label: "Platform Analytics", icon: "chart", route: "platform/analytics" },
       { key: "activity", label: "Activity Log", icon: "activity", route: "platform/activity" },
@@ -245,6 +252,9 @@
     // Every one of these permissions is independently enforced on the server.
     permissions: new Set(),
     cache: {},           // generic per-route data cache
+    // Live counters painted onto sidebar items (currently the unread
+    // Chat & Support badge). Always supplied by the backend.
+    navBadges: { supportChat: 0 },
   };
 
   /** True when the signed-in user holds this granular permission. */
@@ -323,7 +333,55 @@
       path === "/forgot-password" || path === "/reset-password";
   }
 
+  /* --------------------------------------------------------------------
+     Chat & Support unread badge.
+
+     The count is computed by the backend (it is a security boundary, not a
+     display preference) and painted onto the existing sidebar item. It is
+     refreshed on a slow timer while the tab is visible, and immediately
+     whenever the Chat & Support page reports a change.
+     -------------------------------------------------------------------- */
+  let supportUnreadTimer = null;
+
+  function setSupportBadge(count) {
+    state.navBadges.supportChat = Math.max(0, Number(count) || 0);
+    const n = state.navBadges.supportChat;
+    document.querySelectorAll('[data-nav-badge="supportChat"]').forEach((el) => {
+      el.textContent = n > 99 ? "99+" : String(n);
+      el.hidden = n === 0;
+    });
+  }
+
+  async function refreshSupportUnread() {
+    if (!state.me) return;
+    const path = state.superAdmin
+      ? "/platform/conversations/unread-count"
+      : "/support/chat/conversations/unread-count";
+    try {
+      const data = await window.API.get(path);
+      setSupportBadge(data && data.unread);
+    } catch (e) { /* a badge must never interrupt the workspace */ }
+  }
+
+  function startSupportUnreadWatch() {
+    stopSupportUnreadWatch();
+    refreshSupportUnread();
+    supportUnreadTimer = window.setInterval(() => {
+      if (!document.hidden) refreshSupportUnread();
+    }, 60000);
+  }
+  function stopSupportUnreadWatch() {
+    if (supportUnreadTimer) { window.clearInterval(supportUnreadTimer); supportUnreadTimer = null; }
+  }
+
+  window.addEventListener("edusphere:support-unread", (e) => {
+    if (e && e.detail) setSupportBadge(e.detail.count);
+  });
+
   function resetSessionState() {
+    stopSupportUnreadWatch();
+    if (window.EduSphereSupportChat && window.EduSphereSupportChat.stopPolling) window.EduSphereSupportChat.stopPolling();
+    state.navBadges.supportChat = 0;
     state.me = null;
     state.permissions = new Set();
     state.superAdmin = false;
@@ -816,6 +874,7 @@
         "platform/madaris": "Madrasas & Academies",
         "platform/registrations": "Registrations",
         "platform/plans": "Subscription Plans",
+        "platform/conversations": "Chat & Support",
         "platform/tickets": "Support Tickets",
         "platform/analytics": "Platform Analytics",
         "platform/activity": "Activity Log",
@@ -834,6 +893,7 @@
       academic: "Academic", admissions: "Admissions", documents: "Documents",
       communication: "Communication", finance: "Finance", payroll: "Payroll", hr: "Staff Leave", website: "Website", settings: "Settings",
     };
+    if (route === "support/chat") return "Chat & Support";
     if (route === "academic/subjects") return "Curriculum & Subjects";
     if (route.startsWith("quran/")) return "Hifz Progress Tracker";
     return map[top] || "Dashboard";
@@ -916,6 +976,7 @@
       window.location.replace("/");
     });
     bindGlobalSearch(root);
+    startSupportUnreadWatch();
     root.querySelector("#dashBurger").addEventListener("click", () => setSidebarOpen(root, true));
     root.querySelector("#dashOverlay").addEventListener("click", () => setSidebarOpen(root, false));
 
@@ -1050,7 +1111,7 @@
     payroll: ["payroll.view", "payslips.view"],
     hr: ["staff_leave.view"],
     settings: ["institution.settings", "users.manage", "roles.manage", "audit.view"],
-    support: ["support.view", "support.create"],
+    support: ["support.view", "support.create", "support.chat"],
   };
 
   function filterSchemaByPermission(schema) {
@@ -1065,11 +1126,19 @@
     });
   }
 
+  /** Unread counter rendered beside a sidebar item (hidden when zero). The
+      value always comes from the server, never from a client-side guess. */
+  function navBadge(key) {
+    if (!key) return "";
+    const n = Number(state.navBadges[key] || 0);
+    return `<span class="dash-nav-badge" data-nav-badge="${esc(key)}"${n ? "" : " hidden"}>${n > 99 ? "99+" : n}</span>`;
+  }
+
   function renderNav(schema) {
     return schema.map((sec) => {
       if (sec.route) {
         const active = state.route === sec.route;
-        return `<button class="dash-nav-link${active ? " top-active" : ""}" data-nav-route="${esc(sec.route)}">${I[sec.icon] || ""}<span>${esc(sec.label)}</span></button>`;
+        return `<button class="dash-nav-link${active ? " top-active" : ""}" data-nav-route="${esc(sec.route)}">${I[sec.icon] || ""}<span>${esc(sec.label)}</span>${navBadge(sec.badge)}</button>`;
       }
       const open = state.openGroups.has(sec.key) || (sec.items && sec.items.some((item) => {
         if (Array.isArray(item)) return state.route === item[1];
@@ -1085,9 +1154,9 @@
           return `<div class="dash-nav-subgroup-title">${esc(item.subgroup)}</div>${subRows}`;
         }
         if (Array.isArray(item)) {
-          const [label, r] = item;
+          const [label, r, badgeKey] = item;
           const active = state.route === r;
-          return `<button class="${active ? "active" : ""}" data-nav-route="${esc(r)}">${esc(label)}</button>`;
+          return `<button class="${active ? "active" : ""}" data-nav-route="${esc(r)}">${esc(label)}${navBadge(badgeKey)}</button>`;
         }
         return "";
       }).join("");
@@ -1109,6 +1178,13 @@
      -------------------------------------------------------------------- */
   function institutionContext() {
     return { I, esc, T, go, toast, openModal, closeModal, statCard, fmtDate, state };
+  }
+
+  /* Helpers handed to the Chat & Support module (public/js/support-chat.js).
+     It borrows the dashboard's own primitives so the screen stays inside this
+     design system instead of inventing a second one. */
+  function supportChatContext() {
+    return { I, esc, T, go, toast, openModal, closeModal, statCard, fmtDate, pillFor, emptyRow, state };
   }
 
   /* --------------------------------------------------------------------
@@ -1273,6 +1349,10 @@
       if (route === "settings/roles") return await pageRoles(content);
       if (route === "settings/audit") return await pageAuditLog(content);
       if (route === "settings/notifications") return await pageNotificationSettings(content);
+      // Chat & Support — the live conversation with the EduSphere team.
+      if (window.EduSphereSupportChat && window.EduSphereSupportChat.handles(route)) {
+        return await window.EduSphereSupportChat.render(supportChatContext(), content, route);
+      }
       // Platform support — the institution's ticket queue with the operator.
       if (route === "support/tickets" || route === "support/new") return await pageSupportTickets(content, route);
       return pageComingSoon(content, "Dashboard", route);
@@ -3187,6 +3267,9 @@
     if (route.startsWith("platform/madaris/")) return await pageSuperMadarisDetail(content, decodeURIComponent(route.slice("platform/madaris/".length)));
     if (route === "platform/registrations") return await pageSuperRegistrations(content);
     if (route === "platform/plans") return await pageSuperPlans(content);
+    if (window.EduSphereSupportChat && window.EduSphereSupportChat.handles(route)) {
+      return await window.EduSphereSupportChat.render(supportChatContext(), content, route);
+    }
     if (route === "platform/tickets") return await pageSuperTickets(content);
     if (route.startsWith("platform/tickets/")) return await pageSuperTicketDetail(content, decodeURIComponent(route.slice("platform/tickets/".length)));
     if (route === "platform/analytics") return await pageSuperAnalytics(content);

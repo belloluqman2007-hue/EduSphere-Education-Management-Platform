@@ -112,6 +112,7 @@ const CATALOGUE = [
   { key: "support", label: "Platform Support", permissions: [
     ["support.view", "View this institution's support tickets"],
     ["support.create", "Raise support tickets with the platform"],
+    ["support.chat", "Use Chat & Support with the EduSphere team"],
   ] },
   { key: "website", label: "Institution website", permissions: [
     ["website.view", "View website settings"],
@@ -185,6 +186,10 @@ const TEACHER_DEFAULTS = [
   "report_cards.view",
   "library.view", "library.issue", "library.return",
   "communication.view",
+  // Chat & Support is the institution's channel to the EduSphere team. A
+  // teacher may hold a conversation of their own there; the older ticket
+  // permissions (support.view / support.create) stay administrator-only.
+  "support.chat",
   "staff_leave.view", "staff_leave.create",
   "payslips.view",
 ];
