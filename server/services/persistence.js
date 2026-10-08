@@ -21,36 +21,19 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const config = require("../config");
+const { findMountFor, durabilityOf, REAL_DEVICE } = require("./mounts");
 
 const MARKER_NAME = ".platform-state.json";
 /* The tables "did I lose data?" is really about. An empty one of these with a
    non-empty snapshot on disk is an accident, not a fresh install. */
 const COUNTED_TABLES = ["madaris", "users", "students", "results"];
-const REAL_DEVICE = /^\/dev\/(sd[a-z]|nvme|vd[a-z]|xvd[a-z]|disk\/|mapper\/|md)/;
-const EPHEMERAL_FS = new Set(["overlay", "tmpfs", "ramfs", "devtmpfs", "9p", "squashfs", "fuse-overlayfs"]);
 
-/** Longest mount point in /proc/mounts that covers `target` (Linux; null elsewhere). */
-function findMountFor(target) {
-  let mounts;
-  try {
-    mounts = fs.readFileSync("/proc/mounts", "utf8");
-  } catch (e) {
-    return null; // non-Linux (local macOS dev) — no opinion
-  }
-  let best = null;
-  for (const line of mounts.split("\n")) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 4) continue;
-    const [device, mountPoint, fstype] = parts;
-    if (!mountPoint) continue;
-    const resolved = path.resolve(mountPoint);
-    const covers = resolved === "/" || target === resolved || target.startsWith(resolved + path.sep);
-    if (!covers) continue;
-    if (!best || resolved.length > best.mountPoint.length) {
-      best = { device, mountPoint: resolved, fstype, root: resolved !== "/" };
-    }
-  }
-  return best;
+/* Where the Render disk is missing, the storage warnings name the fix. */
+function renderDiskHint() {
+  return config.IS_RENDER
+    ? " On Render: Dashboard → this service → Disks → add a disk with mount path " +
+      config.PERSISTENT_VOLUME_DIR + ", then redeploy."
+    : "";
 }
 
 /**
@@ -92,7 +75,7 @@ function describeStorage(dir) {
     // plain VPS, not a throwaway container. Overlay/tmpfs/9p at / is the case
     // that eats people's databases.
     out.onRealDevice = REAL_DEVICE.test(String(mount.device || ""));
-    out.onPersistentVolume = out.onRealDevice ? true : (mount.root && !EPHEMERAL_FS.has(mount.fstype));
+    out.onPersistentVolume = durabilityOf(mount);
     if (!out.onPersistentVolume) {
       if (!mount.root) out.checks.push("directory is on the container root filesystem (/) — wiped on every deploy");
       else out.checks.push("mounted filesystem type '" + mount.fstype + "' is ephemeral");
@@ -279,11 +262,11 @@ async function report(db) {
     // separately even with DATABASE_URL configured.
     if (uploads.onPersistentVolume === false) {
       if (level === "ok") level = "warn";
-      warnings.push({ code: "EPHEMERAL_UPLOADS", message: "Uploads (" + config.UPLOAD_DIR + ") are on an ephemeral filesystem — logos and student photos vanish on redeploy. Keep UPLOAD_DIR inside the persistent volume." });
+      warnings.push({ code: "EPHEMERAL_UPLOADS", message: "Uploads (" + config.UPLOAD_DIR + ") are on an ephemeral filesystem — logos and student photos vanish on redeploy. Keep UPLOAD_DIR inside the persistent volume." + renderDiskHint() });
     }
     if (backups.onPersistentVolume === false) {
       if (level === "ok") level = "warn";
-      warnings.push({ code: "EPHEMERAL_BACKUPS", message: "Backup directory (" + config.BACKUP_DIR + ") is on an ephemeral filesystem — download every backup you care about; use Platform → Backups." });
+      warnings.push({ code: "EPHEMERAL_BACKUPS", message: "Backup directory (" + config.BACKUP_DIR + ") is on an ephemeral filesystem — download every backup you care about; use Platform → Backups." + renderDiskHint() });
     }
   }
 

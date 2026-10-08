@@ -7,6 +7,10 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+// Dependency-free helpers (they must not require this file): the Render disk
+// check for the default data directory, and the DATABASE_URL ssl-mode split.
+const { pickDefaultDataDir } = require("./services/mounts");
+const { splitUrlSslMode } = require("./services/mysql-url");
 
 require("dotenv").config();
 
@@ -32,6 +36,10 @@ if (!["sqlite", "mysql"].includes(DATABASE_DRIVER)) {
 let DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 // Accept mysql://, mysql2:// and mariadb:// schemes uniformly.
 DATABASE_URL = DATABASE_URL.replace(/^mysql2:\/\//, "mysql://").replace(/^mariadb:\/\//, "mysql://");
+// mysql2 logs an "invalid configuration option" warning for ssl-mode, so it is
+// removed from the URL here and remembered for the boot log (services/mysql-url.js).
+const DATABASE_URL_SSL = splitUrlSslMode(DATABASE_URL);
+DATABASE_URL = DATABASE_URL_SSL.url;
 
 /* ---------------------------------------------------------------------------
    DATA / BACKUPS
@@ -43,10 +51,15 @@ DATABASE_URL = DATABASE_URL.replace(/^mysql2:\/\//, "mysql://").replace(/^mariad
    and later it was gone" happen. PERSISTENT_VOLUME_DIR points at the mounted
    volume so the app can tell the operator, loudly, when it is writing to a
    throwaway directory. See docs/PERSISTENCE.md.
+   On Render, when DATA_DIR is not set but the disk at PERSISTENT_VOLUME_DIR is
+   really mounted, DATA_DIR defaults to that disk (services/mounts.js).
 --------------------------------------------------------------------------- */
-const DATA_DIR = path.resolve(process.cwd(), String(process.env.DATA_DIR || "./data"));
-const BACKUP_DIR = path.resolve(process.cwd(), String(process.env.BACKUP_DIR || path.join(DATA_DIR, "backups")));
 const PERSISTENT_VOLUME_DIR = path.resolve(String(process.env.PERSISTENT_VOLUME_DIR || "/var/data"));
+const DATA_DIR = path.resolve(
+  process.cwd(),
+  String(process.env.DATA_DIR || pickDefaultDataDir({ isRender: IS_RENDER, persistentVolumeDir: PERSISTENT_VOLUME_DIR })),
+);
+const BACKUP_DIR = path.resolve(process.cwd(), String(process.env.BACKUP_DIR || path.join(DATA_DIR, "backups")));
 // How often (minutes) a JSON snapshot of the whole database is written to
 // BACKUP_DIR. 0 disables the timer. `npm run backup` writes one on demand.
 const BACKUP_INTERVAL_MINUTES = Number(process.env.BACKUP_INTERVAL_MINUTES || 360);
@@ -154,6 +167,9 @@ const SQLITE_DB = resolveSqliteDatabaseFile();
 const DB_CONFIG = {
   driver: DATABASE_DRIVER,
   url: DATABASE_URL,
+  // The ssl-mode a DATABASE_URL asked for ("REQUIRED", …; null when it did not).
+  // It is reported at boot, not applied: TLS is switched on by DB_SSL only.
+  sslModeInUrl: DATABASE_URL_SSL.sslMode,
   // An explicit DATABASE_FILE keeps its historic meaning: absolute paths stay
   // absolute, relative ones resolve against the working directory. When unset,
   // the database lives inside DATA_DIR — under ONE name for every environment.
@@ -566,6 +582,7 @@ module.exports = {
   SQLITE_DB,
   resolveSqliteDatabaseFile,
   isUnder,
+  splitUrlSslMode,
   sqlitePersistenceError,
   persistenceWarnings,
   newestSnapshotFile,

@@ -68,16 +68,27 @@ created by hand, check its Dashboard configuration before deploying this
 release — do not assume the file has already attached a disk to it:
 
 1. **Disk:** the service must show a persistent disk mounted at `/var/data`
-   (named `bello-data` in this Blueprint, at least 1 GB).
+   (named `bello-data` in this Blueprint, at least 1 GB). If it does not, add
+   one from the service's **Disks** page in the Render Dashboard, with mount
+   path `/var/data`. Render redeploys after you save. A disk means one instance,
+   and each deploy has a short outage, because Render stops the old instance
+   before it starts the new one.
 2. **Database environment:** `DATABASE_DRIVER` must be `mysql` and
    `DATABASE_URL` must be set to the intended database. Render masks the URL;
-   confirm it is present, never paste it into source or logs.
+   confirm it is present, never paste it into source or logs. This Blueprint
+   does not set `DB_SSL`, so the connection is not encrypted; see
+   [DATABASE.md → TLS](DATABASE.md#tls-encrypting-the-mysql-connection) before
+   you turn it on.
 3. **Filesystem environment:** `DATA_DIR=/var/data`,
    `UPLOAD_DIR=/var/data/uploads`, `BACKUP_DIR=/var/data/backups`, and
-   `PERSISTENT_VOLUME_DIR=/var/data` must all be set exactly as shown.
+   `PERSISTENT_VOLUME_DIR=/var/data` must all be set exactly as shown. If
+   `DATA_DIR` is missing but the disk is mounted, the app still uses `/var/data`
+   on Render, so uploads and backups stay on the disk. The first boot line
+   shows the directory that was chosen.
 4. Redeploy and read the first boot lines. The target is `driver: mysql` and a
    `Storage: ok` line with `data=/var/data`. There must be no
    `EPHEMERAL_DATA_DIR`, `EPHEMERAL_UPLOADS`, or `EPHEMERAL_BACKUPS` warning.
+   An `Ignoring invalid configuration option` line from mysql2 must not appear.
 
 For safety, this release **refuses to boot on Render in production** when
 SQLite resolves to a filesystem that is not actually a persistent mount. That

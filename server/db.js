@@ -86,6 +86,15 @@ function normalizeSqliteParams(params) {
 async function connectMysql() {
   const mysql = require("mysql2/promise");
   const ssl = config.DB_CONFIG.ssl ? { rejectUnauthorized: false } : undefined;
+  // ssl-mode was removed from DATABASE_URL before the driver saw it (see
+  // services/mysql-url.js). Say what that means for the connection, once.
+  const urlSslMode = config.DB_CONFIG.sslModeInUrl;
+  if (urlSslMode && !ssl && urlSslMode !== "DISABLED" && urlSslMode !== "DISABLE") {
+    console.log(
+      "Database: DATABASE_URL asks for ssl-mode=" + urlSslMode + ". mysql2 has no such option, so it was removed " +
+      "and the connection is NOT encrypted (DB_SSL is off). Set DB_SSL=true to encrypt it; the server must accept TLS.",
+    );
+  }
   // Pool sizing comes from config (MYSQL_POOL_SIZE & friends) so production
   // can tune connections against MySQL's max_connections without a code
   // change. One Node process must never hold one MySQL connection per user:
