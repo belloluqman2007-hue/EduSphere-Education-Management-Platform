@@ -5,62 +5,146 @@
    radius and shadow is one of the existing dashboard.css custom properties, so
    the screen inherits the Islamic, Western and Super Admin themes exactly like
    every other admin page.
+
+   DESIGN MODEL
+   The chat is an app inside the dashboard: it claims the viewport height that
+   is left under the sticky header and gives that height to the message list, so
+   the CONVERSATION scrolls — never the whole page. That single decision is what
+   keeps the composer on screen on a phone (no scrolling past it, nothing hidden
+   behind the keyboard) and what makes the three panes line up on a desktop.
+
+   MOBILE CONTRACT (read before adding an overlay)
+   • Every overlay is state-gated. An author `display` declaration beats the
+     user-agent `[hidden] { display: none }` rule, so a full-screen sheet that
+     declares `display: block` inside a media query will cover the page and
+     swallow EVERY tap even while it is marked `hidden` — that is exactly the
+     "works on PC, nothing is pressable on a phone" bug this file once shipped.
+     Every rule below therefore pairs its visible state with an explicit
+     `[hidden]` guard, and closed sheets are also `visibility: hidden` so they
+     cannot be tapped, tabbed into or read by a screen reader.
+   • Every control a thumb has to hit is at least 44×44 CSS px.
+   • Every field the keyboard focuses is at least 16px, or iOS Safari zooms the
+     page on focus and the layout jumps away from the finger.
+   • Insets honour `env(safe-area-inset-*)` (index.html sets viewport-fit=cover).
    ========================================================================== */
+
+/* Local rhythm tokens only — spacing and radii. No colours are invented here. */
+.sc-page {
+  /* Vertical space .dash-content pads the chat by: 24px × 2, and 16px × 2
+     under 720px. The sticky header's own height is subtracted separately. */
+  --sc-chrome-pad: 48px;
+  /* Raised by support-chat.js when the on-screen keyboard covers the viewport
+     (iOS does not resize the layout viewport when the keyboard opens). */
+  --sc-keyboard: 0px;
+  --sc-gap: 16px;
+  --sc-bubble: 16px;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--d-header-h, 68px) - var(--sc-chrome-pad) - var(--sc-keyboard));
+  height: calc(100dvh - var(--d-header-h, 68px) - var(--sc-chrome-pad) - var(--sc-keyboard));
+  /* Never taller than the space that actually exists — on a landscape phone a
+     fixed 420px floor would push the composer below the fold, which is the one
+     thing this layout exists to prevent. */
+  min-height: 320px;
+  min-height: min(420px, calc(100dvh - var(--d-header-h, 68px) - var(--sc-chrome-pad)));
+}
+
+/* Thumbs: no grey flash, no double-tap zoom delay on chat controls. */
+.sc-page button,
+.sc-page a,
+.sc-page input,
+.sc-page select,
+.sc-page textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
 .sc-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(260px, 320px);
-  gap: 16px;
+  grid-template-columns: minmax(300px, 350px) minmax(0, 1fr) minmax(280px, 330px);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--sc-gap);
   align-items: stretch;
-  min-height: min(72vh, 720px);
+  flex: 1 1 auto;
+  min-height: 0; /* lets the panes shrink instead of pushing the page taller */
 }
-.sc-layout > .dash-card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.sc-layout > .dash-card {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
+}
 
 /* ------------------------------ list pane ------------------------------- */
-.sc-list-head { padding: 14px 14px 10px; border-bottom: 1px solid var(--d-line); }
+.sc-list-head {
+  padding: 14px 14px 12px; border-bottom: 1px solid var(--d-line);
+  background: var(--d-surface); flex: none;
+}
+.sc-list-count { margin: 10px 2px 0; font-size: .7rem; font-weight: 700; color: var(--d-muted); letter-spacing: .02em; }
 .sc-filters { display: grid; gap: 9px; }
 .sc-search { position: relative; }
 .sc-search-icon {
-  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  position: absolute; inset-inline-start: 11px; top: 50%; transform: translateY(-50%);
   display: grid; place-items: center; color: var(--d-muted); pointer-events: none;
 }
 .sc-search-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; }
 .sc-search input {
-  width: 100%; padding: 9px 12px 9px 34px; border-radius: 10px;
-  border: 1px solid var(--d-line); background: var(--d-surface); color: var(--d-text); font-size: .86rem;
+  width: 100%; min-height: 40px; padding: 9px 34px 9px 34px; border-radius: 12px;
+  border: 1px solid var(--d-line); background: var(--d-bg); color: var(--d-text); font-size: .86rem;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
+.sc-search input:focus { background: var(--d-surface); border-color: var(--d-focus); }
+.sc-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
 .sc-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .sc-filter-row select {
-  flex: 1 1 120px; min-width: 0; padding: 8px 10px; border-radius: 10px;
+  flex: 1 1 120px; min-width: 0; min-height: 38px; padding: 8px 10px; border-radius: 11px;
   border: 1px solid var(--d-line); background: var(--d-surface); color: var(--d-text); font-size: .8rem;
+  font-weight: 600; cursor: pointer;
 }
 .sc-search input:focus-visible,
 .sc-filter-row select:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 1px; }
 
-.sc-list { overflow-y: auto; flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.sc-list {
+  overflow-y: auto; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0;
+  padding: 8px; display: flex; flex-direction: column; gap: 4px;
+  scrollbar-width: thin; scrollbar-color: var(--d-line) transparent;
+}
+.sc-list::-webkit-scrollbar { width: 8px; }
+.sc-list::-webkit-scrollbar-thumb { background: var(--d-line); border-radius: 8px; border: 2px solid var(--d-surface); }
 .sc-item {
-  display: flex; gap: 11px; text-align: left; width: 100%; padding: 11px;
+  position: relative; display: flex; gap: 11px; text-align: left; width: 100%; padding: 11px 12px;
   border: 1px solid transparent; border-radius: var(--d-radius); background: transparent;
   cursor: pointer; color: inherit; font: inherit;
+  transition: background .14s ease, border-color .14s ease;
 }
 .sc-item:hover { background: var(--d-surface-2); }
+.sc-item:active { background: var(--d-surface-2); }
 .sc-item.is-active { background: var(--d-surface-2); border-color: var(--d-line); }
+/* The same "active" language the sidebar uses: an accent bar on the inline
+   start edge, so the selected conversation reads at a glance. */
+.sc-item.is-active::before {
+  content: ""; position: absolute; inset-block: 10px; inset-inline-start: 0;
+  width: 3px; border-radius: 0 3px 3px 0; background: var(--d-accent);
+}
 .sc-item.is-unread .sc-item-subject { font-weight: 800; }
+.sc-item.is-unread .sc-item-preview { color: var(--d-text); }
 .sc-item:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 1px; }
 .sc-item-avatar {
-  flex: 0 0 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
-  background: var(--d-primary-700); color: #fff; font-weight: 800; font-size: .76rem;
+  position: relative; flex: 0 0 40px; height: 40px; border-radius: 13px; display: grid; place-items: center;
+  background: linear-gradient(140deg, var(--d-primary-700), var(--d-primary-900));
+  color: #fff; font-weight: 800; font-size: .76rem; letter-spacing: .02em;
+  box-shadow: 0 4px 10px rgba(14, 10, 20, .14);
+}
+.sc-item.is-unread .sc-item-avatar::after {
+  content: ""; position: absolute; inset-block-start: -2px; inset-inline-end: -2px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--d-danger); border: 2px solid var(--d-surface);
 }
 .sc-item-body { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .sc-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.sc-code { font-size: .7rem; font-weight: 800; color: var(--d-primary-700); letter-spacing: .02em; }
-.sc-when { font-size: .68rem; color: var(--d-muted); white-space: nowrap; }
+.sc-code { font-size: .7rem; font-weight: 800; color: var(--d-primary-600); letter-spacing: .02em; }
+.sc-when { font-size: .68rem; color: var(--d-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sc-item.is-unread .sc-when { color: var(--d-primary-600); font-weight: 700; }
 .sc-item-subject { font-size: .88rem; font-weight: 700; color: var(--d-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-item-inst { font-size: .72rem; color: var(--d-primary-600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-item-preview { font-size: .76rem; color: var(--d-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sc-item-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.sc-item-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
 .sc-unread {
-  margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  margin-inline-start: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
   background: var(--d-danger); color: #fff; font-size: .68rem; font-weight: 800;
   display: inline-grid; place-items: center;
 }
@@ -68,150 +152,399 @@
 /* ----------------------------- thread pane ------------------------------ */
 .sc-thread-pane { position: relative; }
 .sc-thread-head {
-  display: flex; align-items: center; gap: 10px; padding: 13px 16px;
-  border-bottom: 1px solid var(--d-line); flex-wrap: wrap;
+  display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+  border-bottom: 1px solid var(--d-line); flex-wrap: wrap; flex: none;
+  background: var(--d-surface);
 }
-.sc-thread-title { min-width: 0; flex: 1; }
-.sc-thread-title h3 { margin: 0; font-size: .98rem; font-weight: 800; }
-.sc-thread-title p { margin: 2px 0 0; font-size: .74rem; color: var(--d-muted); }
+.sc-thread-avatar {
+  flex: none; width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
+  background: linear-gradient(140deg, var(--d-primary-700), var(--d-primary-900));
+  color: #fff; font-size: .74rem; font-weight: 800;
+}
+.sc-thread-title { min-width: 0; flex: 1 1 160px; }
+.sc-thread-title h3 { margin: 0; font-size: .98rem; font-weight: 800; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-thread-title p { margin: 2px 0 0; font-size: .74rem; color: var(--d-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-thread-pills { display: flex; gap: 6px; flex-wrap: wrap; }
-.sc-back { display: none; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; color: var(--d-primary-700); font-weight: 700; font-size: .8rem; }
+.sc-back {
+  display: none; align-items: center; gap: 4px; background: none; border: none; cursor: pointer;
+  color: var(--d-primary-700); font-weight: 700; font-size: .8rem; padding: 8px 6px; margin: -8px -6px -8px -8px;
+  border-radius: 10px; flex: none;
+}
+.sc-back:active { background: var(--d-surface-2); }
 .sc-back svg { width: 16px; height: 16px; transform: rotate(180deg); fill: none; stroke: currentColor; stroke-width: 2; }
 .sc-details-toggle { display: none; }
 
 .sc-thread-meta {
-  display: flex; flex-wrap: wrap; gap: 14px; padding: 10px 16px;
+  display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 9px 16px;
   border-bottom: 1px solid var(--d-line-soft); font-size: .75rem; color: var(--d-muted);
+  background: var(--d-surface); flex: none;
 }
-.sc-thread-meta b { color: var(--d-text); font-weight: 700; margin-right: 4px; }
+.sc-thread-meta b { color: var(--d-text); font-weight: 700; margin-inline-end: 4px; }
 
-.sc-admin-controls { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--d-line-soft); }
+.sc-admin-controls {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 9px 16px;
+  border-bottom: 1px solid var(--d-line-soft); background: var(--d-surface); flex: none;
+}
 .sc-admin-controls select {
-  padding: 7px 10px; border-radius: 9px; border: 1px solid var(--d-line);
-  background: var(--d-surface); color: var(--d-text); font-size: .78rem;
+  min-height: 36px; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--d-line);
+  background: var(--d-surface); color: var(--d-text); font-size: .78rem; font-weight: 600; cursor: pointer;
+}
+.sc-admin-controls select:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 1px; }
+
+/* ------------------------------ message log ----------------------------- */
+/* The log and its floating "jump to latest" control live in their own flex
+   box, so the button can hang over the bottom of the SCROLLING log instead of
+   scrolling away with it (or sitting on top of the composer). */
+.sc-thread-body { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.sc-messages {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 16px 16px 10px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--d-bg); scrollbar-width: thin; scrollbar-color: var(--d-line) transparent;
+}
+.sc-messages::-webkit-scrollbar { width: 9px; }
+.sc-messages::-webkit-scrollbar-thumb { background: var(--d-line); border-radius: 9px; border: 2px solid var(--d-bg); }
+.sc-messages:focus-visible { outline: 2px solid var(--d-focus); outline-offset: -2px; }
+@media (prefers-reduced-motion: no-preference) { .sc-messages { scroll-behavior: smooth; } }
+
+/* Day divider: "Today" / "Yesterday" / the date, on a rule. */
+.sc-day { display: flex; align-items: center; gap: 10px; margin: 4px 0 -2px; }
+.sc-day::before, .sc-day::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--d-line); }
+.sc-day span {
+  flex: none; padding: 3px 11px; border-radius: 999px; background: var(--d-surface);
+  border: 1px solid var(--d-line); color: var(--d-muted);
+  font-size: .68rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
 }
 
-.sc-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; background: var(--d-bg); }
-.sc-messages:focus-visible { outline: 2px solid var(--d-focus); outline-offset: -2px; }
-.sc-load-more { align-self: center; }
-.sc-msg { display: flex; gap: 9px; max-width: 88%; }
-.sc-msg.is-mine { margin-left: auto; flex-direction: row-reverse; }
+.sc-load-more { align-self: center; flex: none; }
+.sc-msg { display: flex; gap: 9px; align-items: flex-end; max-width: min(80%, 660px); }
+.sc-msg.is-mine { margin-inline-start: auto; flex-direction: row-reverse; }
+/* Consecutive messages from the same sender close up and drop the repeated
+   name — the avatar is only painted on the last one of the run. */
+.sc-msg.is-grouped { margin-block-start: -8px; }
 .sc-msg-avatar {
   flex: 0 0 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
-  background: var(--d-surface-2); color: var(--d-primary-700); font-size: .68rem; font-weight: 800;
+  background: var(--d-surface-2); color: var(--d-primary-700); font-size: .66rem; font-weight: 800;
+  border: 1px solid var(--d-line-soft);
 }
+/* The slot is always 30px wide so bubbles line up; it is only PAINTED on the
+   last message of a run. */
+.sc-msg-avatar:empty { visibility: hidden; }
 .sc-msg-bubble {
-  background: var(--d-surface); border: 1px solid var(--d-line); border-radius: var(--d-radius);
-  padding: 10px 13px; box-shadow: var(--d-shadow); min-width: 0;
+  min-width: 0; padding: 8px 13px 7px; background: var(--d-surface);
+  border: 1px solid var(--d-line); box-shadow: 0 1px 2px rgba(14, 10, 20, .05);
+  border-radius: var(--sc-bubble); border-start-start-radius: 6px;
 }
-.sc-msg.is-mine .sc-msg-bubble { background: var(--d-primary-700); border-color: var(--d-primary-700); color: #fff; }
-.sc-msg-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; }
-.sc-msg-head strong { font-size: .8rem; }
-.sc-msg-role { font-size: .66rem; text-transform: uppercase; letter-spacing: .04em; color: var(--d-muted); }
-.sc-msg.is-mine .sc-msg-role { color: rgba(255,255,255,.78); }
-.sc-msg-body { margin: 0; font-size: .86rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
-.sc-msg-foot { display: flex; gap: 10px; margin-top: 6px; font-size: .66rem; color: var(--d-muted); }
-.sc-msg.is-mine .sc-msg-foot { color: rgba(255,255,255,.75); }
+.sc-msg.is-mine .sc-msg-bubble {
+  background: linear-gradient(135deg, var(--d-primary-700), var(--d-primary-900));
+  border-color: transparent; color: #fff; box-shadow: 0 6px 16px rgba(14, 10, 20, .16);
+  border-radius: var(--sc-bubble); border-start-end-radius: 6px;
+}
+.sc-msg-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 3px; }
+.sc-msg-head strong { font-size: .8rem; font-weight: 800; }
+.sc-msg-role { font-size: .64rem; text-transform: uppercase; letter-spacing: .05em; color: var(--d-muted); font-weight: 700; }
+.sc-msg.is-mine .sc-msg-role { color: rgba(255, 255, 255, .78); }
+.sc-msg-body { margin: 0; font-size: .875rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sc-msg-foot {
+  display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+  margin-top: 5px; font-size: .66rem; color: var(--d-muted); font-variant-numeric: tabular-nums;
+}
+.sc-msg.is-mine .sc-msg-foot { color: rgba(255, 255, 255, .78); }
+.sc-msg-foot time { margin-inline-end: auto; }
+.sc-msg.is-mine .sc-msg-foot time { margin-inline-end: 0; }
+.sc-ticks { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; white-space: nowrap; }
+.sc-ticks svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; flex: none; }
+.sc-ticks.is-read { color: var(--d-accent-light); }
+
+/* Attachments ride inside the bubble that sent them. */
 .sc-attachment {
-  display: inline-flex; align-items: center; gap: 7px; margin-top: 7px; padding: 7px 10px;
-  border-radius: 10px; background: var(--d-surface-2); color: var(--d-primary-700);
-  font-size: .76rem; font-weight: 700; text-decoration: none; max-width: 100%;
+  display: flex; align-items: center; gap: 9px; margin-top: 8px; padding: 8px 11px;
+  border-radius: 12px; background: var(--d-bg); color: var(--d-primary-700);
+  border: 1px solid var(--d-line); font-size: .76rem; font-weight: 700;
+  text-decoration: none; max-width: 100%; min-width: 0;
+  transition: background .14s ease, border-color .14s ease;
 }
-.sc-attachment svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; flex: none; }
-.sc-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sc-attachment-size { color: var(--d-muted); font-weight: 600; }
-.sc-msg.is-mine .sc-attachment { background: rgba(255,255,255,.16); color: #fff; }
-.sc-msg.is-mine .sc-attachment-size { color: rgba(255,255,255,.8); }
+.sc-attachment:hover { border-color: var(--d-primary-600); }
+.sc-attachment:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 1px; }
+.sc-attachment-icon { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--d-surface-2); color: var(--d-primary-700); }
+.sc-attachment-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
+.sc-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.sc-attachment-size { color: var(--d-muted); font-weight: 600; flex: none; font-size: .7rem; }
+.sc-attachment-download { flex: none; display: grid; place-items: center; color: var(--d-muted); }
+.sc-attachment-download svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; }
+.sc-msg.is-mine .sc-attachment { background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .22); color: #fff; }
+.sc-msg.is-mine .sc-attachment-icon { background: rgba(255, 255, 255, .18); color: #fff; }
+.sc-msg.is-mine .sc-attachment-size,
+.sc-msg.is-mine .sc-attachment-download { color: rgba(255, 255, 255, .8); }
+
+/* "Jump to latest" — appears only once the reader has scrolled away from it. */
+.sc-jump {
+  position: absolute; inset-inline-end: 18px; bottom: 14px; z-index: 6;
+  display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 7px 14px;
+  border-radius: 999px; border: 1px solid var(--d-line); background: var(--d-surface);
+  color: var(--d-primary-700); font-size: .76rem; font-weight: 800; cursor: pointer;
+  box-shadow: var(--d-shadow);
+}
+.sc-jump:hover { background: var(--d-surface-2); }
+.sc-jump:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 2px; }
+.sc-jump svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.2; }
+.sc-jump-count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; display: inline-grid;
+  place-items: center; background: var(--d-danger); color: #fff; font-size: .64rem; font-weight: 800;
+}
+.sc-jump[hidden] { display: none; }
+
+/* A message that just arrived eases into place; nothing animates for a reader
+   who asked the OS for reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .sc-msg.is-new { animation: sc-in .22s ease-out both; }
+  @keyframes sc-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+}
 
 /* ------------------------------- composer ------------------------------- */
+.sc-composer-wrap {
+  flex: none; border-top: 1px solid var(--d-line); background: var(--d-surface);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
 .sc-composer {
-  display: flex; align-items: flex-end; gap: 9px; padding: 12px 16px;
-  border-top: 1px solid var(--d-line); background: var(--d-surface);
+  display: flex; align-items: flex-end; gap: 9px; flex: none;
+  padding: 11px 14px;
 }
-.sc-composer textarea {
-  flex: 1; resize: none; min-height: 40px; max-height: 140px; padding: 10px 12px;
-  border-radius: 12px; border: 1px solid var(--d-line); background: var(--d-surface);
-  color: var(--d-text); font: inherit; font-size: .86rem; line-height: 1.5;
+.sc-composer-box {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: flex-end; gap: 4px;
+  padding: 4px 4px 4px 6px; border: 1px solid var(--d-line); border-radius: 22px;
+  background: var(--d-bg); transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
-.sc-composer textarea:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 1px; }
-.sc-composer-closed { justify-content: center; }
-.sc-composer-closed .hint { margin: 0; font-size: .8rem; }
+.sc-composer-box:focus-within {
+  background: var(--d-surface); border-color: var(--d-focus);
+  /* The textarea's own outline is suppressed in favour of this ring around the
+     whole pill, so the focus indicator is at least as strong as the dashboard's
+     `outline: 3px solid var(--d-focus)` — and drawn from the same tokens. */
+  box-shadow: 0 0 0 3px var(--d-accent-light);
+}
+.sc-composer-box textarea {
+  flex: 1 1 auto; min-width: 0; resize: none; border: none; background: none;
+  min-height: 36px; max-height: 140px; padding: 8px 4px; color: var(--d-text);
+  font: inherit; font-size: .875rem; line-height: 1.45; overflow-y: auto;
+}
+.sc-composer-box textarea:focus { outline: none; }
+.sc-composer-box textarea::placeholder { color: var(--d-muted); }
+.sc-composer-closed { justify-content: center; padding-block: 18px; }
+.sc-composer-closed .hint { margin: 0; font-size: .8rem; text-align: center; }
+.sc-composer-side { flex: none; display: grid; gap: 6px; justify-items: end; padding-bottom: 2px; }
+.sc-count { font-size: .64rem; font-weight: 700; color: var(--d-muted); font-variant-numeric: tabular-nums; }
+.sc-count.is-near { color: var(--d-warn); }
+.sc-count.is-over { color: var(--d-danger); }
+.sc-count[hidden] { display: none; }
+.sc-composer-hint { display: none; }
+/* Nothing to send yet: muted, but still pressable — it focuses the field
+   rather than looking broken. (A `disabled` submit button also blocks
+   Enter-to-send, which is why the idle state is presentational.) */
+.sc-send.is-idle { opacity: .5; box-shadow: none; }
+
 .sc-icon-btn {
-  width: 38px; height: 38px; flex: none; border-radius: 11px; border: 1px solid var(--d-line);
-  background: var(--d-surface); color: var(--d-primary-700); cursor: pointer; display: grid; place-items: center;
+  width: 38px; height: 38px; flex: none; border-radius: 12px; border: 1px solid transparent;
+  background: transparent; color: var(--d-primary-700); cursor: pointer; display: grid; place-items: center;
+  transition: background .14s ease;
 }
 .sc-icon-btn:hover { background: var(--d-surface-2); }
+.sc-icon-btn:active { background: var(--d-surface-2); }
 .sc-icon-btn:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 1px; }
-.sc-icon-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; }
-.sc-send[disabled] { opacity: .6; cursor: progress; }
+.sc-icon-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
+.sc-icon-btn.sc-details-toggle { border-color: var(--d-line); background: var(--d-surface); }
+
+.sc-send { width: 44px; height: 44px; padding: 0; border-radius: 14px; display: grid; place-items: center; flex: none; }
+.sc-send svg { width: 18px; height: 18px; }
+.sc-send-label { display: none; }
+.sc-send[disabled] { opacity: .55; cursor: progress; box-shadow: none; }
+.sc-send.is-busy svg { animation: sc-spin .9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .sc-send.is-busy svg { animation: none; } }
+@keyframes sc-spin { to { transform: rotate(360deg); } }
+
+/* The pending attachment, with a thumbnail only for an image the user has just
+   picked on their own device. Server attachments stay downloads: the API
+   deliberately serves them as `attachment`, never inline. */
 .sc-file-chip {
-  display: flex; align-items: center; gap: 8px; margin: 0 16px 12px; padding: 7px 11px;
-  border-radius: 10px; background: var(--d-surface-2); font-size: .76rem; color: var(--d-text);
+  display: flex; align-items: center; gap: 10px; flex: none;
+  margin: 10px 14px -2px; padding: 8px 10px; border-radius: 13px;
+  background: var(--d-surface-2); border: 1px solid var(--d-line);
+  font-size: .76rem; color: var(--d-text);
 }
-.sc-file-chip svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
-.sc-chip-remove { margin-left: auto; border: none; background: none; cursor: pointer; color: var(--d-muted); display: grid; place-items: center; }
-.sc-chip-remove svg { width: 14px; height: 14px; }
+.sc-file-chip[hidden] { display: none; }
+.sc-file-chip > svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; flex: none; }
+.sc-file-thumb { flex: none; width: 34px; height: 34px; border-radius: 9px; object-fit: cover; background: var(--d-surface); border: 1px solid var(--d-line); }
+.sc-file-meta { min-width: 0; flex: 1 1 auto; display: grid; gap: 1px; }
+.sc-file-meta strong { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-file-meta span { font-size: .68rem; color: var(--d-muted); font-weight: 600; }
+.sc-chip-remove {
+  margin-inline-start: auto; flex: none; width: 30px; height: 30px; border: none; border-radius: 9px;
+  background: none; cursor: pointer; color: var(--d-muted); display: grid; place-items: center;
+}
+.sc-chip-remove:hover { background: var(--d-surface); color: var(--d-danger); }
+.sc-chip-remove:focus-visible { outline: 2px solid var(--d-focus); outline-offset: 1px; }
+.sc-chip-remove svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; }
 
 /* ----------------------------- details pane ----------------------------- */
-.sc-details-pane { overflow-y: auto; }
+.sc-details-pane { overflow-y: auto; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; }
 .sc-details-empty { padding: 22px 18px; font-size: .8rem; }
-.sc-details-list { margin: 0; display: grid; gap: 11px; }
-.sc-detail dt { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--d-muted); font-weight: 700; }
+.sc-details-list { margin: 0; display: grid; gap: 12px; }
+.sc-detail dt { font-size: .66rem; text-transform: uppercase; letter-spacing: .06em; color: var(--d-muted); font-weight: 800; }
 .sc-detail dd { margin: 3px 0 0; font-size: .84rem; color: var(--d-text); overflow-wrap: anywhere; }
-.sc-details-sub { margin: 18px 0 8px; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--d-muted); }
+.sc-details-sub {
+  margin: 20px 0 9px; padding-top: 14px; border-top: 1px solid var(--d-line-soft);
+  font-size: .7rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--d-muted);
+}
 .sc-details-attachments { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
 .sc-details-attachments a {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px;
-  background: var(--d-surface-2); color: var(--d-primary-700); text-decoration: none; font-size: .78rem; font-weight: 700;
+  display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-radius: 12px;
+  background: var(--d-bg); border: 1px solid var(--d-line); color: var(--d-primary-700);
+  text-decoration: none; font-size: .78rem; font-weight: 700; min-width: 0;
 }
-.sc-details-attachments small { margin-left: auto; color: var(--d-muted); font-weight: 600; }
-.sc-details-attachments svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
+.sc-details-attachments a:hover { border-color: var(--d-primary-600); }
+.sc-details-attachments span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.sc-details-attachments small { margin-inline-start: auto; color: var(--d-muted); font-weight: 600; flex: none; }
+.sc-details-attachments svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; flex: none; }
 .sc-details-close { display: none; }
 
 /* --------------------------- states & feedback -------------------------- */
-.sc-empty { text-align: center; padding: 34px 20px; color: var(--d-muted); margin: auto; }
-.sc-empty h3 { margin: 12px 0 6px; color: var(--d-text); font-size: .98rem; }
-.sc-empty p { margin: 0 auto 14px; max-width: 320px; font-size: .82rem; line-height: 1.6; }
-.sc-form-error { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: #fdecea; color: var(--d-danger); font-size: .8rem; font-weight: 600; }
+.sc-empty { text-align: center; padding: 34px 20px; color: var(--d-muted); margin: auto; max-width: 420px; }
+.sc-empty h3 { margin: 14px 0 6px; color: var(--d-text); font-size: 1rem; font-weight: 800; }
+.sc-empty p { margin: 0 auto 16px; max-width: 330px; font-size: .83rem; line-height: 1.65; }
+.sc-empty .dash-btn { margin-inline: auto; }
+.sc-form-error {
+  margin: 12px 0 0; padding: 10px 12px; border-radius: 11px;
+  background: #fdecea; color: var(--d-danger); font-size: .8rem; font-weight: 600;
+}
+.sc-form-error[hidden] { display: none; }
 .sc-thread-loading { padding: 16px; }
 .sc-skeleton-row { display: flex; gap: 11px; padding: 11px; align-items: center; }
 .sc-skeleton-lines { display: grid; gap: 7px; flex: 1; }
 .sc-skeleton { display: block; height: 11px; border-radius: 6px; background: var(--d-surface-2); animation: sc-pulse 1.4s ease-in-out infinite; }
 .sc-skeleton.short { width: 55%; }
-.sc-skeleton-avatar { width: 38px; height: 38px; border-radius: 12px; flex: none; }
+.sc-skeleton-avatar { width: 40px; height: 40px; border-radius: 13px; flex: none; }
 @keyframes sc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 @media (prefers-reduced-motion: reduce) { .sc-skeleton { animation: none; } }
 
+/* ------------------------------- overlays -------------------------------
+   The backdrop exists ONLY while the details sheet is open. Three independent
+   guarantees, because a stray overlay is what makes a phone unusable:
+     1. the base rule is `display: none`;
+     2. the visible rule is qualified with `:not([hidden])`, so the attribute
+        the JS sets can never be out-voted by an author `display`;
+     3. an explicit `[hidden]` guard repeats it at the same specificity, later.
+   The sheet itself is `visibility: hidden` when closed, so it cannot be
+   tapped, tabbed to or announced while it is off-screen.                    */
 .sc-drawer-backdrop { display: none; }
+.sc-drawer-backdrop[hidden] { display: none; }
 
 /* ------------------------------ responsive ------------------------------ */
 @media (max-width: 1180px) {
-  .sc-layout { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); }
+  .sc-layout { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr); }
   .sc-details-pane {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(340px, 90vw); z-index: 420;
-    transform: translateX(105%); transition: transform .2s ease; border-radius: 0; overflow-y: auto;
+    position: fixed; inset-block: 0; inset-inline-end: 0; width: min(360px, 92vw); z-index: 420;
+    transform: translateX(102%); visibility: hidden; border-radius: 0;
+    border-inline: 1px solid var(--d-line); box-shadow: var(--d-shadow-lg);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    transition: transform .24s ease, visibility .24s ease;
   }
-  .sc-layout.details-open .sc-details-pane { transform: translateX(0); }
+  [dir="rtl"] .sc-details-pane { transform: translateX(-102%); }
+  .sc-page.details-open .sc-details-pane,
+  .sc-layout.details-open .sc-details-pane { transform: translateX(0); visibility: visible; }
+  [dir="rtl"] .sc-page.details-open .sc-details-pane,
+  [dir="rtl"] .sc-layout.details-open .sc-details-pane { transform: translateX(0); }
   .sc-details-close, .sc-details-toggle { display: grid; }
-  .sc-drawer-backdrop { display: block; position: fixed; inset: 0; background: rgba(10, 8, 14, .45); z-index: 410; }
+  .sc-drawer-backdrop:not([hidden]) {
+    display: block; position: fixed; inset: 0; z-index: 410;
+    background: rgba(10, 8, 14, .45); backdrop-filter: blur(2px);
+  }
 }
 @media (prefers-reduced-motion: reduce) { .sc-details-pane { transition: none; } }
 
+/* Tablet / small laptop: the third pane is a sheet, so give the two remaining
+   panes the room. */
+@media (max-width: 1000px) {
+  .sc-layout { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); gap: 12px; }
+  .sc-msg { max-width: min(86%, 620px); }
+}
+
+/* ------------------------------- phone ----------------------------------
+   One pane at a time, full height, composer pinned above the home indicator.
+   In thread view the page head and the admin stat cards step aside: the thread
+   header already carries the subject, the status and the way back.           */
 @media (max-width: 820px) {
-  .sc-layout { grid-template-columns: minmax(0, 1fr); min-height: auto; }
+  .sc-page { gap: 0; }
+  .sc-page > .dash-page-head { margin-bottom: 12px; }
+  .sc-page[data-view="thread"] > .dash-page-head,
+  .sc-page[data-view="thread"] > .dash-stats-grid { display: none; }
+  .sc-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .sc-layout[data-view="list"] .sc-thread-pane { display: none; }
   .sc-layout[data-view="thread"] .sc-list-pane { display: none; }
+  .sc-layout > .dash-card { border-radius: var(--d-radius-lg); }
   .sc-back { display: inline-flex; }
-  .sc-list { max-height: 68vh; }
-  .sc-messages { max-height: 58vh; }
-  .sc-msg { max-width: 94%; }
+  .sc-list-head { padding: 12px 12px 10px; }
+  .sc-filter-row select { flex: 1 1 100%; }
+  .sc-messages { padding: 14px 12px 8px; gap: 10px; }
+  .sc-msg { max-width: 92%; }
+  .sc-thread-head { padding: 10px 12px; gap: 8px; }
+  /* Status and priority get their own row instead of squeezing the subject. */
+  .sc-thread-pills { flex: 1 1 100%; }
+  .sc-thread-meta { padding: 8px 12px; gap: 6px 12px; font-size: .72rem; }
+  .sc-admin-controls { padding: 8px 12px; }
+  .sc-composer { padding: 9px 10px; gap: 8px; }
+  .sc-file-chip { margin: 9px 10px -2px; }
+  .sc-jump { inset-inline-end: 12px; }
+  .sc-details-pane { width: min(360px, 100vw); }
+}
+
+/* On a narrow phone the meta row repeats what the pills and the details sheet
+   already say, and every row it takes comes straight out of the message list. */
+@media (max-width: 600px) {
+  .sc-thread-meta { display: none; }
+}
+
+/* .dash-content drops to 16px of padding at 720px — the chat's height maths
+   has to follow it exactly, or the composer slips below the fold. */
+@media (max-width: 720px) {
+  .sc-page { --sc-chrome-pad: 32px; }
+}
+
+/* 16px or iOS Safari zooms the page the moment a field is focused — after
+   which the field under the finger is no longer where the finger is. */
+@media (max-width: 820px) {
+  .sc-search input,
+  .sc-filter-row select,
+  .sc-admin-controls select,
+  .sc-composer-box textarea { font-size: 16px; }
+}
+
+/* Thumbs need bigger targets than a mouse does. */
+@media (pointer: coarse) {
+  .sc-item { padding: 13px 12px; }
+  .sc-icon-btn { width: 44px; height: 44px; }
+  .sc-send { width: 48px; height: 48px; }
+  .sc-back { min-height: 44px; padding-inline: 8px; }
+  .sc-chip-remove { width: 38px; height: 38px; }
+  .sc-filter-row select { min-height: 44px; }
+  .sc-search input { min-height: 44px; }
+  .sc-admin-controls select { min-height: 42px; }
+  .sc-admin-controls .dash-btn-sm { min-height: 42px; padding-inline: 14px; }
+  .sc-jump { min-height: 44px; }
+}
+
+/* Narrow phones: the send button keeps its icon only, and the label moves to a
+   hint above the composer on screens that have room for it. */
+@media (min-width: 900px) {
+  .sc-send { width: auto; height: 42px; padding: 0 18px; display: inline-flex; align-items: center; gap: 8px; border-radius: 13px; }
+  .sc-send-label { display: inline; }
+  .sc-composer { padding-bottom: 5px; }
+  .sc-composer-hint { display: block; padding: 0 16px 9px; font-size: .68rem; color: var(--d-muted); }
 }
 
 /* ------------------------- sidebar unread badge -------------------------
    Lives on the EXISTING sidebar items (no new navigation, no new colours) —
    it simply adds a count beside "Chat & Support" when replies are waiting. */
 .dash-nav-badge {
-  margin-left: auto;
+  margin-inline-start: auto;
   min-width: 20px; height: 20px; padding: 0 6px;
   border-radius: 999px; background: var(--d-danger); color: #fff;
   font-size: .66rem; font-weight: 800; line-height: 1;

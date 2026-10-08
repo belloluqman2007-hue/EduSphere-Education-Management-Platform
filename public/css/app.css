@@ -34,6 +34,15 @@ a { color: inherit; text-decoration: none; }
 img { display: block; max-width: 100%; }
 svg { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
+/* `hidden` MUST always win. The user-agent rule is only `[hidden] { display:
+   none }`, so ANY author declaration of `display` on that element — including
+   one buried in a media query — out-ranks it and leaves the element on screen.
+   For a `position: fixed; inset: 0` overlay that means an invisible wall over
+   the whole viewport: the page still looks fine on a desktop and nothing is
+   tappable on a phone. Every component here already guards its own
+   `[hidden]`; this is the one place that guarantees it app-wide. */
+[hidden] { display: none !important; }
+
 .skip-link { position: fixed; z-index: 200; top: 10px; left: 10px; padding: 10px 14px; border-radius: 8px; background: var(--paper); color: var(--forest-900); box-shadow: var(--shadow); transform: translateY(-150%); transition: transform .2s ease; }
 .skip-link:focus { transform: translateY(0); outline: 3px solid var(--gold); }
 .container { width: min(calc(100% - 48px), var(--container)); margin-inline: auto; }
