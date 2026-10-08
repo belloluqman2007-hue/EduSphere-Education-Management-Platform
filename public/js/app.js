@@ -35,7 +35,23 @@
     shieldCheck: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5.4c0 4.2-2.8 7.8-7 9.6-4.2-1.8-7-5.4-7-9.6V6l7-3Z"/><path d="m8.5 12 2.2 2.2 4.7-4.7"/></svg>`,
     rocket: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4.2c2.7-.7 4.5-.2 5.3.5.7.7 1.2 2.5.5 5.3-.7 2.7-2.4 5.5-5.1 8.2l-3.1-3.1c-1.3-1.3-2.3-2.8-3.1-4.4 2.7-2.7 5.5-4.4 8.2-5.1Z"/><path d="m9 10.7-4.2.4-1.8 1.8 4.2 1.4M13.3 15l-.4 4.2-1.8 1.8-1.4-4.2M12.5 7.2h.01"/><path d="m9.5 14.5-4 4"/></svg>`,
     building: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5l8-2v18M20 21V9l-8-2M8 7h1M8 11h1M8 15h1M14 11h1M18 11h1M14 15h1M18 15h1M2 21h20"/></svg>`,
-    filter: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>`
+    filter: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>`,
+    /* Icons used by the individual school websites (public/js/app.js →
+       renderSchoolPublic). Kept in this one shared map so no module needs a
+       second icon set. */
+    chev: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
+    chevLeft: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>`,
+    chevRight: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`,
+    phone: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 3h2.2l1.6 4-2 1.3a11 11 0 0 0 5.3 5.3l1.3-2 4 1.6v2.2A2.6 2.6 0 0 1 16.4 18C9.9 17.6 4.4 12.1 4 5.6A2.6 2.6 0 0 1 6.6 3Z"/></svg>`,
+    mail: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7 8 6 8-6"/></svg>`,
+    chat: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12.4c0 4-3.9 7.2-8.7 7.2a10 10 0 0 1-2.6-.3L4 21l1.3-3.6A6.9 6.9 0 0 1 3.3 12.4C3.3 8.4 7.2 5 12 5s8 3.4 8 7.4Z"/></svg>`,
+    clock: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.3 2"/></svg>`,
+    calendar: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3.5v3M16 3.5v3"/></svg>`,
+    play: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 7.8 17 12l-7.5 4.2V7.8Z"/></svg>`,
+    image: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="8.6" cy="9.8" r="1.6"/><path d="m4 17 5-4.6 3.6 3.2L16 12l4 4.5"/></svg>`,
+    youtube: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="3.4"/><path d="m10.5 9.6 4.8 2.4-4.8 2.4V9.6Z" fill="currentColor" stroke="none"/></svg>`,
+    twitter: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4l7 8.4L4.4 20h2.3l5.4-6 4.8 6H21l-7.2-9L20 4h-2.3l-4.8 5.4L8.6 4H4Z"/></svg>`,
+    tiktok: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.2 3.5c.4 2 1.7 3.4 3.8 3.7v2.5c-1.4.1-2.7-.3-3.9-1.1v5.6a5.2 5.2 0 1 1-5.2-5.2c.4 0 .7 0 1 .1v2.6a2.6 2.6 0 1 0 1.8 2.5V3.5h2.5Z"/></svg>`
   };
 
   let scrollHandler = null;
@@ -774,65 +790,782 @@
       body: pages[`website_${key}_content`] || fallbackBody || "",
     };
   }
-  function schoolHeaderMarkup(m) {
+
+  /* ------------------------------------------------------------------ *
+     TENANT PUBLIC WEBSITE — helpers
+     ------------------------------------------------------------------
+     Every school gets its own complete website on /schools/:slug. The
+     building blocks below keep the renderer readable: colour safety,
+     readable dates, statistics, and the shared page furniture (header,
+     sub-navigation, footer, floating action dock).
+     ------------------------------------------------------------------ */
+
+  /** Only accept a real hex colour; anything else falls back. */
+  function schoolHex(value, fallback) {
+    const v = String(value || "").trim();
+    return /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(v) ? v : fallback;
+  }
+
+  /* Font stacks are written with SINGLE quotes around family names: they are
+     injected into a double-quoted style="" attribute, so a double quote here
+     would end the attribute early and silently drop every variable after it. */
+  const SCHOOL_FONTS = {
+    system: "Inter, ui-sans-serif, system-ui, 'Segoe UI', Roboto, Arial, sans-serif",
+    serif: "Georgia, 'Times New Roman', 'Iowan Old Style', serif",
+    rounded: "'Trebuchet MS', 'Segoe UI', ui-rounded, system-ui, sans-serif",
+    humanist: "Optima, Candara, 'Segoe UI', system-ui, sans-serif",
+  };
+
+  /** First letters of a school name, for logo-less crests. */
+  function schoolInitials(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "S";
+    return (parts[0][0] + (parts.length > 1 ? parts[1][0] : "")).toUpperCase();
+  }
+
+  function schoolDate(value, withYear) {
+    if (!value) return "";
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleDateString("en-GB", {
+      day: "numeric", month: "short", ...(withYear === false ? {} : { year: "numeric" }),
+    });
+  }
+
+  function schoolDateParts(value) {
+    const d = new Date(value || "");
+    if (isNaN(d.getTime())) return null;
+    return {
+      day: d.toLocaleDateString("en-GB", { day: "numeric" }),
+      month: d.toLocaleDateString("en-GB", { month: "short" }),
+      year: d.toLocaleDateString("en-GB", { year: "numeric" }),
+    };
+  }
+
+  /** Headline numbers the school actually has. Zero-value rows are dropped. */
+  function schoolStats(m) {
+    const rows = [
+      { label: "Students", value: Number(m.students) || 0 },
+      { label: "Teachers", value: Number(m.teachers) || 0 },
+      { label: "Classes", value: Number(m.classes) || 0 },
+      { label: "Subjects", value: Number(m.subjects) || 0 },
+    ].filter((row) => row.value > 0);
+    return rows;
+  }
+
+  /** Social profiles the school published, as icon buttons. */
+  function schoolSocials(contact) {
+    const socials = (contact && contact.socials) || {};
+    return Object.entries(socials)
+      .filter(([, url]) => Boolean(url))
+      .map(([key, url]) => {
+        const icon = icons[key] || icons.globe;
+        return `<a class="ss-social" href="${safe(url)}" target="_blank" rel="noopener" aria-label="${safe(key)}">${icon}</a>`;
+      })
+      .join("");
+  }
+
+  /** Sub-navigation + sticky section links, fed by the sections that exist. */
+  function schoolSubnav(nav) {
+    if (nav.length < 3) return "";
+    return `<nav class="ss-subnav" id="school-subnav" aria-label="Page sections">
+      <div class="ss-shell ss-subnav__inner">
+        ${nav.map((item, index) => `<a class="ss-subnav__link${index === 0 ? " is-active" : ""}" href="#${safe(item.id)}" data-school-link="${safe(item.id)}">${safe(item.label)}</a>`).join("")}
+      </div>
+    </nav>`;
+  }
+
+  /** Site header: brand, published page menu, sign-in and the apply CTA. */
+  function schoolHeaderMarkup(m, look, nav, customPages) {
     const name = safe(m.nameEn || "Institution");
     const logo = m.logoPath
       ? `<img src="${safe(m.logoPath)}" alt="${name} logo">`
-      : `<span class="school-site-mark">${safe((m.nameEn || "I").slice(0, 1))}</span>`;
-    return `<header class="school-site-header" id="school-top">
-      <div class="container school-site-header-inner">
-        <a class="school-site-brand" href="#home" aria-label="${name} home">${logo}<span><strong>${name}</strong>${m.mottoEn ? `<small>${safe(m.mottoEn)}</small>` : ""}</span></a>
-        <button class="school-menu-toggle" type="button" aria-expanded="false" aria-controls="school-menu" aria-label="Open institution menu">${icons.menu}</button>
-        <nav class="school-site-menu" id="school-menu" aria-label="Institution website navigation">
-          <a href="#home">Home</a><a href="#about">About</a><a href="#programs">Programs</a><a href="#teachers">Teachers</a><a href="#admissions">Admissions</a><a href="#gallery">Gallery</a><a href="#news-events">News &amp; Events</a><a href="#contact">Contact</a><a href="/login">Login</a>
-          ${m.canApply ? `<a class="school-site-apply" href="#admissions">Apply Now <span>${icons.arrow}</span></a>` : ""}
+      : safe(schoolInitials(m.nameEn));
+    const coreLinks = nav.slice(0, 6);
+    const moreLinks = customPages.filter((p) => p.inNavigation !== false);
+    return `<header class="ss-header school-site-header" id="school-top" data-header="${safe(look.header_style || "solid")}">
+      <div class="ss-shell ss-header__inner">
+        <a class="ss-brand school-site-brand" href="#home" aria-label="${name} home">
+          <span class="ss-brand__mark school-site-mark">${logo}</span>
+          <span class="ss-brand__text"><strong>${name}</strong>${m.tagline ? `<small>${safe(m.tagline)}</small>` : m.mottoEn ? `<small>${safe(m.mottoEn)}</small>` : `<small>${safe(m.institutionType || "School website")}</small>`}</span>
+        </a>
+        <nav class="ss-nav school-site-menu" id="school-menu" aria-label="Institution website navigation">
+          <div class="ss-nav__links">
+          ${coreLinks.map((item) => `<a class="ss-nav__link" href="#${safe(item.id)}" data-school-link="${safe(item.id)}">${safe(item.label)}</a>`).join("")}
+          ${moreLinks.length ? `<div class="ss-more">
+            <button class="ss-more__btn" type="button" id="schoolMoreBtn" aria-expanded="false" aria-controls="schoolMoreMenu">More${icons.chev}</button>
+            <div class="ss-more__menu" id="schoolMoreMenu">
+              ${moreLinks.map((p) => `<a href="#${safe(p.id)}" data-school-link="${safe(p.id)}">${safe(p.title)}</a>`).join("")}
+            </div>
+          </div>` : ""}
+          </div>
+          <div class="ss-nav__cta">
+            <a class="ss-nav__login" href="${safe(m.loginUrl || "/login")}">Sign in</a>
+            ${m.canApply && m.admissionsOpen ? `<a class="ss-btn" href="#admissions" data-school-link="admissions">Apply now ${icons.arrow}</a>` : ""}
+          </div>
         </nav>
+        <button class="ss-burger school-menu-toggle" type="button" id="schoolMenuToggle" aria-expanded="false" aria-controls="schoolDrawer" aria-label="Open institution menu">
+          <span class="ss-burger__open">${icons.menu}</span>
+        </button>
       </div>
     </header>`;
   }
 
-  function schoolFooterMarkup(m) {
-    const name = safe(m.nameEn || "Institution");
-    const logo = m.logoPath ? `<img src="${safe(m.logoPath)}" alt="${name} logo">` : `<span class="school-site-mark">${safe((m.nameEn || "I").slice(0, 1))}</span>`;
-    return `<footer class="school-site-footer"><div class="container school-site-footer-grid">
-      <div class="school-footer-identity"><a class="school-site-brand" href="#home">${logo}<span><strong>${name}</strong><small>${safe(m.tagline || m.mottoEn || "Education with purpose")}</small></span></a><p>${safe(m.shortDescription || m.descriptionEn || "")}</p></div>
-      <div><h3>Explore</h3><a href="#about">About</a><a href="#programs">Programs</a><a href="#teachers">Teachers</a><a href="#gallery">Gallery</a></div>
-      <div><h3>Connect</h3><a href="#admissions">Admissions</a><a href="#news-events">News &amp; Events</a><a href="#contact">Contact</a>${m.contact && m.contact.socials && Object.entries(m.contact.socials).filter(([, value]) => value).map(([key, value]) => `<a href="${safe(value)}" target="_blank" rel="noopener">${safe(key.charAt(0).toUpperCase() + key.slice(1))}</a>`).join("")}</div>
-      <div class="school-footer-contact"><h3>Contact</h3>${m.address ? `<p>${safe(m.address)}${m.city ? `<br>${safe(m.city)}${m.state ? `, ${safe(m.state)}` : ""}` : ""}</p>` : ""}${m.phone ? `<a href="tel:${safe(m.phone)}">${safe(m.phone)}</a>` : ""}${m.email ? `<a href="mailto:${safe(m.email)}">${safe(m.email)}</a>` : ""}</div>
-    </div><div class="container school-footer-bottom"><span>© ${new Date().getFullYear()} ${name}. All rights reserved.</span><span><a href="#privacy">Privacy Policy</a> · <a href="#terms">Terms &amp; Conditions</a> · <a href="/" data-route="/">Powered by EduSphere</a></span></div></footer>`;
+  /** Slide-in drawer for narrow screens — same links, thumb friendly. */
+  function schoolDrawerMarkup(m, nav, customPages) {
+    return `<div class="ss-drawer" id="schoolDrawer" hidden>
+      <div class="ss-drawer__panel" role="dialog" aria-modal="true" aria-label="Institution menu">
+        <div class="ss-drawer__head">
+          <strong>${safe(m.nameEn || "Menu")}</strong>
+          <button class="ss-drawer__close" type="button" id="schoolDrawerClose" aria-label="Close menu">${icons.close}</button>
+        </div>
+        <div class="ss-drawer__links">
+          ${nav.map((item) => `<a href="#${safe(item.id)}" data-school-link="${safe(item.id)}">${safe(item.label)}</a>`).join("")}
+          ${customPages.filter((p) => p.inNavigation !== false).map((p) => `<a href="#${safe(p.id)}" data-school-link="${safe(p.id)}">${safe(p.title)}</a>`).join("")}
+        </div>
+        <div class="ss-drawer__foot">
+          ${m.canApply && m.admissionsOpen ? `<a class="ss-btn ss-btn--block" href="#admissions" data-school-link="admissions">Apply now ${icons.arrow}</a>` : ""}
+          <a class="ss-btn ss-btn--ghost ss-btn--block" href="${safe(m.loginUrl || "/login")}">School sign in</a>
+        </div>
+      </div>
+    </div>`;
   }
 
+  /** Floating dock: the two actions visitors actually came for. */
+  function schoolDockMarkup(m) {
+    const call = m.phone ? `<a class="ss-dock__btn ss-dock__btn--ghost" href="tel:${safe(m.phone)}">${icons.phone}<span>Call</span></a>` : "";
+    const whatsapp = m.whatsapp
+      ? `<a class="ss-dock__btn ss-dock__btn--ghost" href="https://wa.me/${safe(String(m.whatsapp).replace(/[^\d]/g, ""))}" target="_blank" rel="noopener">${icons.chat}<span>WhatsApp</span></a>`
+      : "";
+    return `<div class="ss-dock" aria-label="Quick actions">
+      ${call}${whatsapp}
+      ${m.canApply && m.admissionsOpen ? `<a class="ss-dock__btn ss-dock__btn--accent" href="#admissions" data-school-link="admissions">${icons.pen}<span>Apply now</span></a>` : ""}
+      <button class="ss-totop" type="button" id="schoolToTop" aria-label="Back to top"><span>${icons.arrowUp}</span></button>
+    </div>`;
+  }
+
+  /** Footer — detailed / simple / minimal, always credited to EduSphere. */
+  function schoolFooterMarkup(m, look, nav, customPages) {
+    const name = safe(m.nameEn || "Institution");
+    const logo = m.logoPath
+      ? `<img src="${safe(m.logoPath)}" alt="${name} logo">`
+      : safe(schoolInitials(m.nameEn));
+    const legalSlugs = ["privacy", "terms", "policies"];
+    const legal = customPages.filter((p) => legalSlugs.includes(String(p.slug).toLowerCase()));
+    const contactLines = [
+      m.address ? `<span>${safe(m.address)}${m.city ? `, ${safe(m.city)}` : ""}${m.state ? `, ${safe(m.state)}` : ""}</span>` : "",
+      m.phone ? `<a href="tel:${safe(m.phone)}">${safe(m.phone)}</a>` : "",
+      m.email ? `<a href="mailto:${safe(m.email)}">${safe(m.email)}</a>` : "",
+      m.website ? `<a href="${safe(m.website)}" target="_blank" rel="noopener">${safe(String(m.website).replace(/^https?:\/\//, ""))}</a>` : "",
+    ].filter(Boolean);
+    const style = String(look.footer_style || "detailed");
+    return `<footer class="ss-footer school-site-footer ss-footer--${safe(style)}">
+      <div class="ss-shell ss-footer__grid">
+        <div>
+          <a class="ss-footer__brand school-site-brand" href="#home">
+            <span class="ss-brand__mark school-site-mark">${logo}</span>
+            <span class="ss-brand__text"><strong>${name}</strong><small>${safe(m.mottoEn || m.tagline || m.institutionType || "Our school")}</small></span>
+          </a>
+          <p style="margin-top:16px;max-width:360px;">${safe(m.shortDescription || m.descriptionEn || "")}</p>
+          <div class="ss-footer__badges">
+            ${m.foundedYear ? `<span>Established ${safe(m.foundedYear)}</span>` : ""}
+            ${m.institutionType ? `<span>${safe(m.institutionType)}</span>` : ""}
+            ${m.currentSession ? `<span>Session ${safe(m.currentSession)}</span>` : ""}
+            ${m.city ? `<span>${safe(m.city)}${m.state ? `, ${safe(m.state)}` : ""}</span>` : ""}
+          </div>
+          ${schoolSocials(m.contact) ? `<div class="ss-socials">${schoolSocials(m.contact)}</div>` : ""}
+        </div>
+        <div>
+          <h3>Explore</h3>
+          <div class="ss-footer__links">
+            ${nav.slice(0, 6).map((item) => `<a href="#${safe(item.id)}" data-school-link="${safe(item.id)}">${safe(item.label)}</a>`).join("")}
+          </div>
+        </div>
+        ${style === "minimal" ? "" : `<div>
+          <h3>School life</h3>
+          <div class="ss-footer__links">
+            ${nav.slice(6).map((item) => `<a href="#${safe(item.id)}" data-school-link="${safe(item.id)}">${safe(item.label)}</a>`).join("")}
+            ${customPages.map((p) => `<a href="#${safe(p.id)}" data-school-link="${safe(p.id)}">${safe(p.title)}</a>`).join("")}
+            <a href="${safe(m.loginUrl || "/login")}">School sign in</a>
+          </div>
+        </div>`}
+        <div>
+          <h3>Contact</h3>
+          <div class="ss-footer__contact">
+            ${contactLines.map((line) => line).join("")}
+          </div>
+        </div>
+      </div>
+      <div class="ss-shell ss-footer__bottom">
+        <span>© ${new Date().getFullYear()} ${name}. All rights reserved.</span>
+        <span class="ss-footer__bottom-links">
+          ${legal.map((p) => `<a href="#${safe(p.id)}" data-school-link="${safe(p.id)}">${safe(p.title)}</a>`).join('<i aria-hidden="true">·</i>')}
+          <a class="ss-footer__powered" href="/" data-route="/"><img src="/assets/edusphere-logo.png" alt="">Powered by EduSphere</a>
+        </span>
+      </div>
+    </footer>`;
+  }
+
+  /* ------------------------------------------------------------------ *
+     TENANT PUBLIC WEBSITE — renderer
+     ------------------------------------------------------------------ */
+
   async function renderSchoolPublic(slug) {
-    document.body.classList.remove("western-experience", "western-menu-open", "islamic-experience");
-    app.innerHTML = `<main id="main-content" class="school-public"><div class="school-public-loading">Loading institution website…</div></main>`;
+    document.body.classList.remove("western-experience", "western-menu-open", "islamic-experience", "menu-open");
+    document.body.classList.add("school-site-active");
+    app.innerHTML = `<main id="main-content" class="school-public"><div class="school-public-loading">Loading the school website…</div></main>`;
     try {
       const data = await window.API.public.get(`/schools/${encodeURIComponent(slug)}`);
       const m = data.madrasa || {};
       const look = m.appearance || {};
-      const hex = (v, fb) => (/^#[0-9a-fA-F]{3,8}$/.test(String(v || "")) ? v : fb);
-      const brand = hex(look.brand_color || m.brandColor, m.category === "western" ? "#0A2342" : "#200A3D");
-      const secondary = hex(look.secondary_color, m.category === "western" ? "#39A5E7" : "#C8952C");
-      const islamicAccent = hex(look.islamic_color, "#200A3D");
-      const westernAccent = hex(look.western_color, "#0A2342");
-      const FONTS = { system: 'Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif', serif: 'Georgia, "Times New Roman", serif', rounded: '"Trebuchet MS", "Segoe UI", system-ui, sans-serif', humanist: 'Optima, Candara, "Segoe UI", system-ui, sans-serif' };
-      const styleVars = [`--school-brand:${safe(brand)}`, `--school-secondary:${safe(secondary)}`, `--school-islamic:${safe(islamicAccent)}`, `--school-western:${safe(westernAccent)}`, `--school-btn-radius:${look.button_style === "pill" ? "999px" : look.button_style === "square" ? "4px" : "12px"}`, FONTS[look.font_family] ? `--school-font:${FONTS[look.font_family]}` : "", hex(look.text_color, "") ? `--school-ink:${safe(look.text_color)}` : "", hex(look.background_color, "") ? `--school-paper:${safe(look.background_color)}` : ""].filter(Boolean).join(";");
-      const info = m.information || {}; const profile = m.profile || {}; const contact = m.contact || {};
-      const streams = [{ key: "islamic", title: "Islamic Education", body: info.islamicEducation, accent: "school-stream-islamic" }, { key: "western", title: "Western Education", body: info.westernEducation, accent: "school-stream-western" }].filter((stream) => stream.body);
-      const programs = data.programs || []; const teachers = data.teachers || []; const news = data.news || data.notices || []; const events = data.events || [];
-      const gallery = data.gallery || { media: [], albums: [] }; const achievements = data.achievements || []; const admissions = data.admissions || {};
-      const safeDate = (value) => value ? safe(new Date(value).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })) : "";
-      const programGroups = ["islamic", "western", "both"].map((track) => ({ track, title: track === "islamic" ? "Islamic Education" : track === "western" ? "Western Education" : "Featured Programs", items: programs.filter((p) => p.educationTrack === track) })).filter((group) => group.items.length);
-      const programMarkup = programGroups.length ? programGroups.map((group) => `<div class="school-program-group ${group.track !== "both" ? `school-program-${group.track}` : ""}"><div class="school-program-heading"><span>${group.track === "islamic" ? icons.book : group.track === "western" ? icons.school : icons.spark}</span><h3>${safe(group.title)}</h3></div><div class="school-program-grid">${group.items.map((program) => `<article class="school-program-card${program.featured ? " is-featured" : ""}">${program.imagePath ? `<img src="${safe(program.imagePath)}" alt="" loading="lazy">` : ""}<div><h4>${safe(program.title)}</h4>${program.category ? `<small>${safe(program.category)}</small>` : ""}${program.level || program.duration ? `<p class="school-program-meta">${safe([program.level, program.duration].filter(Boolean).join(" · "))}</p>` : ""}<p>${safe(program.description)}</p></div></article>`).join("")}</div></div>`).join("") : `<p class="school-empty">Programs and courses will be published here by the institution.</p>`;
-      const teacherMarkup = teachers.length ? `<div class="school-teacher-grid">${teachers.map((teacher) => `<article class="school-teacher-card">${teacher.photoPath ? `<img src="${safe(teacher.photoPath)}" alt="${safe(teacher.name)}" loading="lazy">` : `<span class="school-teacher-avatar">${safe((teacher.name || "T").slice(0, 1))}</span>`}<div><h3>${safe(teacher.name)}</h3>${teacher.position ? `<p class="school-teacher-role">${safe(teacher.position)}</p>` : ""}${teacher.qualification ? `<p><strong>Qualification:</strong> ${safe(teacher.qualification)}</p>` : ""}${teacher.specialization ? `<p><strong>Specialization:</strong> ${safe(teacher.specialization)}</p>` : ""}${teacher.subjects ? `<p><strong>Subjects:</strong> ${safe(teacher.subjects)}</p>` : ""}${teacher.biography ? `<p>${safe(teacher.biography)}</p>` : ""}</div></article>`).join("")}</div>` : `<p class="school-empty">Our approved public teacher profiles will be published here soon.</p>`;
-      const newsMarkup = news.length ? news.slice(0, 6).map((item) => `<article class="school-news-card">${item.image_path ? `<img src="${safe(item.image_path)}" alt="" loading="lazy">` : ""}<small>${safeDate(item.created_at)}${item.category ? ` · ${safe(item.category)}` : ""}</small><h3>${safe(item.title)}</h3><p>${safe(item.body)}</p>${item.author_name ? `<span>By ${safe(item.author_name)}</span>` : ""}</article>`).join("") : `<p class="school-empty">News and announcements will appear here when published.</p>`;
-      const eventMarkup = events.length ? events.slice(0, 6).map((event) => `<article class="school-event-card"><span class="school-event-date">${safeDate(event.event_date || event.created_at)}</span><h3>${safe(event.title)}</h3><p>${safe(event.body)}</p>${event.event_location ? `<small>${safe(event.event_location)}</small>` : ""}</article>`).join("") : `<p class="school-empty">Upcoming events will appear here when published.</p>`;
-      const galleryMarkup = gallery.media.length ? gallery.media.slice(0, 6).map((item) => item.type === "video" && item.videoUrl ? `<a class="school-gallery-item" href="${safe(item.videoUrl)}" target="_blank" rel="noopener">${item.path ? `<img src="${safe(item.path)}" alt="${safe(item.caption || "Video")}" loading="lazy">` : `<span class="school-gallery-blank"></span>`}<span class="school-play">▶</span>${item.caption ? `<figcaption>${safe(item.caption)}</figcaption>` : ""}</a>` : `<figure class="school-gallery-item"><img src="${safe(item.path)}" alt="${safe(item.caption || "Gallery image")}" loading="lazy">${item.caption ? `<figcaption>${safe(item.caption)}</figcaption>` : ""}</figure>`).join("") : `<p class="school-empty">Gallery highlights will be added by the institution.</p>`;
-      const achievementsMarkup = achievements.length ? `<div class="school-achievement-grid">${achievements.slice(0, 6).map((item) => `<article>${item.imagePath ? `<img src="${safe(item.imagePath)}" alt="" loading="lazy">` : ""}<div><small>${safeDate(item.date)}</small><h3>${safe(item.title)}</h3><p>${safe(item.description)}</p></div></article>`).join("")}</div>` : "";
-      const availablePrograms = admissions.availablePrograms || [];
-      const admissionIntro = admissions.process || publicPageCopy(data.pages || {}, "admissions", "Admissions", "Begin your application with our admissions team.").body;
-      const navMarkup = `<nav class="school-page-nav" aria-label="${safe(m.nameEn)} website navigation"><div class="container school-page-nav-inner"><a href="#home">Home</a><a href="#about">About</a><a href="#programs">Programs</a><a href="#teachers">Teachers</a><a href="#admissions">Admissions</a><a href="#gallery">Gallery</a><a href="#news-events">News &amp; Events</a><a href="#contact">Contact</a></div></nav>`;
-      const contactForm = contact.formEnabled ? `<form id="schoolContactForm" class="school-form"><div class="school-form-grid"><label>Name *<input name="name" required></label><label>Email *<input name="email" type="email" required></label><label>Phone<input name="phone"></label><label>Subject<input name="subject"></label><label class="full">Message *<textarea name="message" required></textarea></label><label class="school-honeypot" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off"></label></div><button class="button button-primary" type="submit">Send message <span>${icons.arrow}</span></button><p id="schoolContactOutput" class="school-form-result" aria-live="polite"></p></form>` : `<p class="school-empty">Please contact the institution directly using the details below.</p>`;
-      const seoTitle = `${m.seo && m.seo.title ? m.seo.title : (m.nameEn || "Institution")}${m.mottoEn ? ` — ${m.mottoEn}` : ""}`;
+      const profile = m.profile || {};
+      const info = m.information || {};
+      const contact = m.contact || {};
+      const pages = data.pages || {};
+      const admissions = data.admissions || {};
+      const classes = data.classes || [];
+      const programs = data.programs || [];
+      const teachers = data.teachers || [];
+      const achievements = data.achievements || [];
+      const news = data.news || data.notices || [];
+      const events = data.events || [];
+      const gallery = data.gallery || { albums: [], media: [] };
+      const publishedPage = (slugPart) => (data.sitePages || []).find((p) => String(p.slug).toLowerCase() === slugPart) || null;
+
+      /* ---- identity, theme and behaviour flags --------------------------- */
+      const isWestern = String(m.category || "islamic") === "western";
+      const brand = schoolHex(look.brand_color || m.brandColor, isWestern ? "#0A2342" : "#200A3D");
+      const accent = schoolHex(look.secondary_color, isWestern ? "#39A5E7" : "#C8952C");
+      const islamicAccent = schoolHex(look.islamic_color, "#200A3D");
+      const westernAccent = schoolHex(look.western_color, "#0A2342");
+      const paper = schoolHex(look.background_color, "");
+      const ink = schoolHex(look.text_color, "");
+      const theme = ["light", "warm", "dark"].includes(String(look.website_theme)) ? String(look.website_theme) : "light";
+      const layout = ["hero-stats", "hero-split", "classic"].includes(String(look.homepage_layout)) ? String(look.homepage_layout) : "hero-stats";
+      const cardStyle = ["elevated", "outlined", "flat"].includes(String(look.card_style)) ? String(look.card_style) : "elevated";
+      const btnRadius = look.button_style === "pill" ? "999px" : look.button_style === "square" ? "6px" : "12px";
+      const radius = cardStyle === "flat" ? "14px" : "20px";
+      const styleVars = [
+        `--ss-brand:${safe(brand)}`,
+        `--ss-accent:${safe(accent)}`,
+        `--ss-islamic:${safe(islamicAccent)}`,
+        `--ss-western:${safe(westernAccent)}`,
+        `--ss-font:${SCHOOL_FONTS[look.font_family] || SCHOOL_FONTS.system}`,
+        `--ss-btn-radius:${btnRadius}`,
+        `--ss-radius:${radius}`,
+        `--ss-radius-sm:${cardStyle === "flat" ? "12px" : "14px"}`,
+        paper ? `--ss-bg:${safe(paper)}` : "",
+        ink ? `--ss-ink:${safe(ink)}` : "",
+        /* Legacy variables: keep the older template variables resolving too. */
+        `--school-brand:${safe(brand)}`, `--school-secondary:${safe(accent)}`,
+        `--school-islamic:${safe(islamicAccent)}`, `--school-western:${safe(westernAccent)}`,
+        `--school-btn-radius:${btnRadius}`,
+        `--school-ink:${safe(ink || "#25202c")}`,
+      ].filter(Boolean).join(";");
+
+      const isoDate = (value) => (/^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "");
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const windowOpen = (() => {
+        const opens = isoDate(admissions.startDate);
+        const closes = isoDate(admissions.closingDate);
+        if (opens && todayIso < opens) return false;
+        if (closes && todayIso > closes) return false;
+        return admissions.open !== false;
+      })();
+      const admissionsClosed = String(admissions.status || "").toLowerCase() === "closed" || String(info.admissionStatus || "").toLowerCase() === "closed";
+      // The public site takes applications only when the school, the platform
+      // switch AND the published dates all allow it — the same rule the API
+      // enforces, so a visitor never fills a form that will be rejected.
+      m.admissionsOpen = Boolean(m.canApply) && !admissionsClosed && windowOpen;
+      m.loginUrl = data.loginUrl || "/login";
+      const stats = schoolStats(m);
+
+      /* ---- published Website Pages: copy for the core sections ----------- */
+      const pageCopy = (slugPart, fallbackTitle, fallbackBody) => {
+        const page = publishedPage(slugPart);
+        if (page) return { title: page.title || fallbackTitle, body: page.body || fallbackBody || "" };
+        return publicPageCopy(pages, slugPart === "about-us" ? "about" : slugPart, fallbackTitle, fallbackBody);
+      };
+      const aboutCopy = pageCopy("about-us", "About our school", "");
+      const programmesCopy = pageCopy("programs", "Programmes & courses", "");
+      const admissionsCopy = pageCopy("admissions", "Admissions", "Begin your application with our admissions team.");
+
+      /* ---- sections that are rendered + the navigation they feed --------- */
+      const nav = [{ id: "home", label: "Home" }];
+      const blocks = [];
+
+      /* ================================ HERO ============================= */
+      const heroImage = m.heroImagePath || (gallery.media.find((item) => item.type !== "video" && item.path) || {}).path || "";
+      const crest = m.logoPath
+        ? `<img src="${safe(m.logoPath)}" alt="${safe(m.nameEn || "School")} logo">`
+        : `<span>${safe(schoolInitials(m.nameEn))}</span>`;
+      const heroChips = [
+        m.city || m.state ? `<span class="ss-chip">${icons.pin}${safe([m.city, m.state].filter(Boolean).join(", "))}</span>` : "",
+        m.institutionType ? `<span class="ss-chip">${icons.school}${safe(m.institutionType)}</span>` : "",
+        info.boardingStatus ? `<span class="ss-chip">${safe(info.boardingStatus)}</span>` : "",
+        m.foundedYear ? `<span class="ss-chip">Since ${safe(m.foundedYear)}</span>` : "",
+        m.admissionsOpen ? `<span class="ss-chip ss-chip--live">Admissions open</span>` : "",
+      ].filter(Boolean).join("");
+      const heroActions = [
+        m.admissionsOpen ? `<a class="ss-btn ss-btn--accent ss-btn--lg" href="#admissions" data-school-link="admissions">Apply now ${icons.arrow}</a>` : "",
+        programs.length ? `<a class="ss-btn ss-btn--outline ss-btn--lg" href="#programs" data-school-link="programs">Explore programmes</a>` : "",
+        m.canCheckResults && Number(data.publishedTermCount) > 0 ? `<a class="ss-btn ss-btn--outline ss-btn--lg" href="#results" data-school-link="results">Check results</a>` : "",
+        !m.admissionsOpen || (!programs.length && !(m.canCheckResults && Number(data.publishedTermCount) > 0)) ? `<a class="ss-btn ss-btn--outline ss-btn--lg" href="#contact" data-school-link="contact">Contact the school</a>` : "",
+      ].filter(Boolean).join("");
+      const statsMarkup = stats.length
+        ? `<div class="ss-stats${layout !== "hero-stats" ? " ss-stats--paper" : ""}" role="list">
+            ${stats.map((row) => `<div class="ss-stat" role="listitem"><strong data-school-count="${row.value}">${row.value}</strong><span>${safe(row.label)}</span></div>`).join("")}
+          </div>`
+        : "";
+      const heroMedia = `<div class="ss-hero__media">
+          <div class="ss-hero__frame${heroImage ? "" : " ss-hero__frame--crest"}">
+            ${heroImage ? `<img src="${safe(heroImage)}" alt="${safe(m.nameEn || "School")}" loading="lazy">` : `${crest}<strong>${safe(m.nameEn || "")}</strong><small>${safe(m.mottoEn || m.institutionType || "Welcome")}</small>`}
+          </div>
+          ${m.foundedYear ? `<div class="ss-hero__float"><strong>${safe(m.foundedYear)}</strong><small>Established</small></div>` : (stats[0] ? `<div class="ss-hero__float"><strong>${safe(stats[0].value)}</strong><small>${safe(stats[0].label)}</small></div>` : "")}
+        </div>`;
+      blocks.push(`<section class="ss-hero school-hero" id="home" data-layout="${safe(layout)}" style="${styleVars}">
+        ${heroImage ? `<div class="ss-hero__bg school-hero-image"><img src="${safe(heroImage)}" alt="" aria-hidden="true"></div>` : ""}
+        <div class="ss-hero__scrim school-hero-overlay"></div>
+        <div class="ss-hero__pattern" aria-hidden="true"></div>
+        <div class="ss-shell ss-hero__inner">
+          <div class="ss-hero__copy">
+            ${m.logoPath ? `<div class="ss-hero__badge school-logo"><img src="${safe(m.logoPath)}" alt=""><div><strong>${safe(m.nameEn || "Our school")}</strong><small>${safe(m.mottoEn || m.institutionType || "Welcome")}</small></div></div>` : ""}
+            <div class="ss-hero__meta school-kicker">${heroChips || `<span class="ss-chip">${safe(m.institutionType || "School website")}</span>`}</div>
+            <h1 class="ss-hero__title">${safe(m.nameEn || "Welcome to our school")}</h1>
+            ${m.nameAr ? `<p class="ss-hero__ar ss-ar school-ar" lang="ar" dir="rtl">${safe(m.nameAr)}</p>` : ""}
+            ${m.mottoEn ? `<p class="ss-hero__motto school-motto">${safe(m.mottoEn)}</p>` : ""}
+            <p class="ss-hero__lead school-lead">${safe(m.shortDescription || m.descriptionEn || (m.tagline || "Welcome to our school."))}</p>
+            <div class="ss-hero__actions school-actions">${heroActions}</div>
+          </div>
+          ${layout === "hero-split" ? heroMedia : ""}
+        </div>
+        ${layout === "hero-stats" && statsMarkup ? `<div class="ss-shell ss-hero__stats">${statsMarkup}</div>` : ""}
+      </section>`);
+      if (layout !== "hero-stats" && statsMarkup) {
+        // hero-split and classic keep the hero clean and let the numbers sit
+        // on paper just underneath it.
+        blocks.push(`<section class="ss-section ss-section--tight ss-stats-band" aria-label="Key numbers"><div class="ss-shell">${statsMarkup}</div></section>`);
+      }
+
+      /* =============================== ABOUT ============================= */
+      nav.push({ id: "about", label: "About" });
+      const aboutBody = [m.descriptionEn || "", profile.history || "", aboutCopy.body && aboutCopy.body !== m.descriptionEn ? aboutCopy.body : ""].filter(Boolean);
+      const values = [
+        profile.mission ? { title: "Our mission", body: profile.mission } : null,
+        profile.vision ? { title: "Our vision", body: profile.vision } : null,
+        profile.coreValues ? { title: "Core values", body: profile.coreValues } : null,
+        profile.philosophy ? { title: "Our philosophy", body: profile.philosophy } : null,
+        info.islamicEducation ? { title: "Islamic education", body: info.islamicEducation } : null,
+        info.westernEducation ? { title: "Western education", body: info.westernEducation } : null,
+      ].filter(Boolean);
+      const facts = [
+        profile.ownershipType ? { icon: "building", label: "Ownership", value: profile.ownershipType } : null,
+        profile.registrationNo ? { icon: "book", label: "Registration", value: profile.registrationNo } : null,
+        profile.accreditationBody ? { icon: "shieldCheck", label: "Accreditation", value: profile.accreditationBody } : null,
+        info.levelsOffered ? { icon: "graduation", label: "Levels offered", value: info.levelsOffered } : null,
+        info.languages ? { icon: "languages", label: "Languages", value: info.languages } : null,
+        info.studentCapacity ? { icon: "users", label: "Capacity", value: `${info.studentCapacity} students` } : null,
+        info.boardingStatus ? { icon: "pin", label: "Boarding", value: info.boardingStatus } : null,
+        m.currentSession ? { icon: "calendar", label: "Session", value: m.currentSession } : null,
+      ].filter(Boolean);
+      const headCard = profile.headName
+        ? `<aside class="ss-head-card school-principal-card">
+            <div class="ss-head-card__avatar">${safe(schoolInitials(profile.headName))}</div>
+            <small>${safe(profile.headTitle || "Head of school")}</small>
+            <h3>${safe(profile.headName)}</h3>
+            ${profile.accreditationDetails ? `<p>${safe(profile.accreditationDetails)}</p>` : `<p>Meet the leadership of ${safe(m.nameEn || "our school")}.</p>`}
+          </aside>`
+        : `<aside class="ss-head-card school-principal-card">
+            <div class="ss-head-card__avatar">${safe(schoolInitials(m.nameEn))}</div>
+            <small>Our commitment</small>
+            <h3>Learning with purpose. Growing with confidence.</h3>
+            <p>${safe([m.city, m.state].filter(Boolean).join(", ") || "Every learner is known, guided and challenged.")}</p>
+          </aside>`;
+      blocks.push(`<section class="ss-section school-section school-welcome" id="about">
+        <div class="ss-shell">
+          <div class="ss-about school-two-col">
+            <div class="school-reveal">
+              <p class="ss-eyebrow section-kicker">Welcome to ${safe(m.nameEn || "our school")}</p>
+              <h2 class="ss-title school-title">${safe(aboutCopy.title || "About our school")}</h2>
+              <div class="ss-rule"></div>
+              ${aboutBody.map((paragraph) => `<p class="ss-copy school-copy">${safe(paragraph)}</p>`).join("")}
+              ${facts.length ? `<div class="ss-facts">${facts.map((fact) => `<div class="ss-fact">${icons[fact.icon] || icons.compass}<div><strong>${safe(fact.label)}</strong><small>Verified by the school</small></div><span>${safe(fact.value)}</span></div>`).join("")}</div>` : ""}
+            </div>
+            <div style="display:grid;gap:18px" class="school-reveal" data-school-delay="120">${headCard}</div>
+          </div>
+          ${values.length ? `<div class="ss-grid ss-grid--3 school-values-grid" style="margin-top:44px">${values.map((value, index) => `<article class="ss-value school-reveal" data-school-delay="${index * 70}"><h3><span>${String(index + 1).padStart(2, "0")}</span>${safe(value.title)}</h3><p>${safe(value.body)}</p></article>`).join("")}</div>` : ""}
+        </div>
+      </section>`);
+
+      /* ============================= PROGRAMMES ========================== */
+      if (programs.length) {
+        nav.push({ id: "programs", label: "Programmes" });
+        const groups = ["islamic", "western", "both"].map((track) => ({
+          track,
+          title: track === "islamic" ? "Islamic education" : track === "western" ? "Western education" : "Programmes for every learner",
+          blurb: track === "islamic" ? "Qur'an, Arabic and Islamic sciences" : track === "western" ? "The academic curriculum, taught with care" : "Open to all our students",
+          items: programs.filter((p) => (p.educationTrack || "both") === track),
+        })).filter((group) => group.items.length);
+        blocks.push(`<section class="ss-section ss-section--alt school-section school-section-muted" id="programs">
+          <div class="ss-shell">
+            <div class="ss-head school-reveal">
+              <p class="ss-eyebrow section-kicker">What we offer</p>
+              <h2 class="ss-title">${safe(programmesCopy.title || "Programmes & courses")}</h2>
+              <div class="ss-rule"></div>
+              ${programmesCopy.body ? `<p class="ss-lead">${safe(programmesCopy.body)}</p>` : `<p class="ss-lead">Every programme is taught by qualified staff and reviewed each session.</p>`}
+            </div>
+            <div class="ss-programs" style="margin-top:34px">
+              ${groups.map((group) => `
+                <div class="ss-program${group.track !== "both" ? ` ss-program--${group.track}` : ""}">
+                  <div class="ss-program-head school-reveal">
+                    <span>${group.track === "islamic" ? icons.book : group.track === "western" ? icons.school : icons.spark}</span>
+                    <div><h3>${safe(group.title)}</h3><small>${safe(group.blurb)}</small></div>
+                  </div>
+                  <div class="ss-grid ss-grid--3 school-program-grid">
+                    ${group.items.map((program, index) => `
+                      <article class="ss-card ss-card--hover ss-program-card school-program-card${program.featured ? " ss-program-card--featured is-featured" : ""} school-reveal" data-school-delay="${index * 70}">
+                        ${program.imagePath ? `<img src="${safe(program.imagePath)}" alt="" loading="lazy">` : ""}
+                        <div class="ss-program-card__body">
+                          <h4>${safe(program.title)}</h4>
+                          <div class="ss-program-card__tags">
+                            ${program.category ? `<span class="ss-tag">${safe(program.category)}</span>` : ""}
+                            ${program.level ? `<span class="ss-tag ss-tag--accent">${safe(program.level)}</span>` : ""}
+                            ${program.duration ? `<span class="ss-tag">${safe(program.duration)}</span>` : ""}
+                          </div>
+                          ${program.description ? `<p>${safe(program.description)}</p>` : ""}
+                        </div>
+                      </article>`).join("")}
+                  </div>
+                </div>`).join("")}
+            </div>
+            ${admissions.availablePrograms && admissions.availablePrograms.length ? `<div class="ss-pillrow" style="margin-top:30px">${admissions.availablePrograms.map((item) => `<span class="ss-pill">${icons.check}${safe(item)}</span>`).join("")}</div>` : ""}
+          </div>
+        </section>`);
+      }
+
+      /* ============================== TEACHERS =========================== */
+      if (teachers.length) {
+        nav.push({ id: "teachers", label: "Teachers" });
+        blocks.push(`<section class="ss-section school-section" id="teachers">
+          <div class="ss-shell">
+            <div class="ss-head ss-head--center school-reveal">
+              <p class="ss-eyebrow section-kicker">Meet our educators</p>
+              <h2 class="ss-title">The people who teach your child</h2>
+              <div class="ss-rule"></div>
+              <p class="ss-lead">Only staff profiles the school approved for publication appear here — never private records.</p>
+            </div>
+            <div class="ss-teachers school-teacher-grid" style="margin-top:34px">
+              ${teachers.map((teacher, index) => `
+                <article class="ss-card ss-card--hover ss-teacher school-teacher-card school-reveal" data-school-delay="${index * 60}">
+                  ${teacher.photoPath
+                    ? `<img class="ss-teacher__photo" src="${safe(teacher.photoPath)}" alt="${safe(teacher.name)}" loading="lazy">`
+                    : `<span class="ss-teacher__initials school-teacher-avatar">${safe(schoolInitials(teacher.name))}</span>`}
+                  <div>
+                    <h3>${safe(teacher.name)}</h3>
+                    ${teacher.position ? `<p class="ss-teacher__role school-teacher-role">${safe(teacher.position)}</p>` : ""}
+                  </div>
+                  ${teacher.qualification || teacher.specialization || teacher.subjects || teacher.department ? `<div class="ss-teacher__meta">
+                    ${teacher.qualification ? `<div><strong>Qualification:</strong> ${safe(teacher.qualification)}</div>` : ""}
+                    ${teacher.specialization ? `<div><strong>Specialises in:</strong> ${safe(teacher.specialization)}</div>` : ""}
+                    ${teacher.subjects ? `<div><strong>Subjects:</strong> ${safe(teacher.subjects)}</div>` : ""}
+                    ${teacher.department ? `<div><strong>Department:</strong> ${safe(teacher.department)}</div>` : ""}
+                  </div>` : ""}
+                  ${teacher.biography ? `<p>${safe(teacher.biography)}</p>` : ""}
+                </article>`).join("")}
+            </div>
+          </div>
+        </section>`);
+      }
+
+      /* ============================ ACHIEVEMENTS ========================= */
+      if (achievements.length) {
+        nav.push({ id: "achievements", label: "Achievements" });
+        blocks.push(`<section class="ss-section ss-section--alt school-section" id="achievements">
+          <div class="ss-shell">
+            <div class="ss-head school-reveal">
+              <p class="ss-eyebrow section-kicker">Celebrating progress</p>
+              <h2 class="ss-title">Achievements</h2>
+              <div class="ss-rule"></div>
+            </div>
+            <div class="ss-achievements school-achievement-grid" style="margin-top:30px">
+              ${achievements.map((item, index) => `
+                <article class="ss-card ss-card--hover ss-achievement school-reveal" data-school-delay="${index * 70}">
+                  ${item.imagePath ? `<img src="${safe(item.imagePath)}" alt="" loading="lazy">` : ""}
+                  <div class="ss-achievement__body">
+                    ${item.date ? `<small>${safe(schoolDate(item.date))}</small>` : ""}
+                    <h3>${safe(item.title)}</h3>
+                    ${item.description ? `<p>${safe(item.description)}</p>` : ""}
+                  </div>
+                </article>`).join("")}
+            </div>
+          </div>
+        </section>`);
+      }
+
+      /* ============================= ADMISSIONS ========================== */
+      nav.push({ id: "admissions", label: "Admissions" });
+      const processText = admissions.process || admissionsCopy.body || "";
+      const processSteps = String(processText).split(/\n+/).map((line) => line.replace(/^\s*(?:\d+[.)]|[-•*])\s*/, "").trim()).filter(Boolean).slice(0, 6);
+      const faqs = String(admissions.faqs || "").split(/\n{2,}/).map((block) => {
+        const [question, ...rest] = block.split("\n");
+        return { question: String(question || "").replace(/^\s*(?:Q[:.]|FAQ[:.])\s*/i, "").trim(), answer: rest.join(" ").trim() };
+      }).filter((item) => item.question && item.answer).slice(0, 6);
+      const applyForm = m.admissionsOpen ? `
+        <form id="publicApplicationForm" class="ss-form school-form" novalidate>
+          <h3>Apply online</h3>
+          <p style="margin:-4px 0 8px" class="ss-form__note">Two minutes is all it takes — the school receives the application immediately.</p>
+          <div class="ss-form__grid school-form-grid">
+            <div class="ss-field"><label for="paFirst">Student first name <span class="req">*</span></label><input id="paFirst" name="first_name" required maxlength="100"></div>
+            <div class="ss-field"><label for="paLast">Last name</label><input id="paLast" name="last_name" maxlength="100"></div>
+            <div class="ss-field"><label for="paParent">Parent / guardian <span class="req">*</span></label><input id="paParent" name="parent_name" required maxlength="150"></div>
+            <div class="ss-field"><label for="paPhone">Phone <span class="req">*</span></label><input id="paPhone" name="parent_phone" type="tel" required maxlength="40"></div>
+            <div class="ss-field"><label for="paEmail">Email</label><input id="paEmail" name="parent_email" type="email" maxlength="150"></div>
+            <div class="ss-field"><label for="paProgram">Preferred programme</label><input id="paProgram" name="program" maxlength="120" list="schoolProgramList"></div>
+            ${admissions.availablePrograms && admissions.availablePrograms.length ? `<datalist id="schoolProgramList">${admissions.availablePrograms.map((item) => `<option value="${safe(item)}"></option>`).join("")}</datalist>` : ""}
+            <div class="ss-field full"><label for="paMessage">Anything we should know?</label><textarea id="paMessage" name="message" rows="3"></textarea></div>
+            <label class="ss-honeypot school-honeypot" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off"></label>
+          </div>
+          <div class="ss-actions"><button class="ss-btn ss-btn--lg" type="submit">Submit application ${icons.arrow}</button></div>
+          <p class="ss-form__note">You will receive a reference number to track this application. No payment is taken online.</p>
+          <p id="publicApplicationOutput" class="ss-result school-form-result" aria-live="polite"></p>
+        </form>` : `
+        <div class="ss-form-card">
+          <h3>${admissionsClosed ? "Admissions are closed" : isoDate(admissions.startDate) && todayIso < isoDate(admissions.startDate) ? "Online applications open soon" : "Start your application"}</h3>
+          <p>${(() => {
+            if (admissionsClosed) return `Applications for the next session will open soon.${admissions.closingDate ? ` The last cycle closed on ${safe(schoolDate(admissions.closingDate))}.` : ""}`;
+            const opens = isoDate(admissions.startDate);
+            const closes = isoDate(admissions.closingDate);
+            if (opens && todayIso < opens) return `Online applications for ${safe(admissions.session || "the coming session")} open on ${safe(schoolDate(opens))}. Contact the admissions office for guidance in the meantime.`;
+            if (closes && todayIso > closes) return `The application window closed on ${safe(schoolDate(closes))}. Contact the admissions office about late or waiting-list places.`;
+            return "Contact the admissions office for guidance, requirements and important dates.";
+          })()}</p>
+          <div class="ss-actions">
+            ${m.email ? `<a class="ss-btn" href="mailto:${safe(m.email)}">Email admissions ${icons.arrow}</a>` : ""}
+            ${m.phone ? `<a class="ss-btn ss-btn--ghost" href="tel:${safe(m.phone)}">Call the school</a>` : ""}
+          </div>
+        </div>`;
+      blocks.push(`<section class="ss-section ss-section--alt school-section school-section-muted" id="admissions">
+        <div class="ss-shell">
+          <div class="ss-admissions school-two-col">
+            <div class="school-reveal">
+              <p class="ss-eyebrow section-kicker">Join our community</p>
+              <h2 class="ss-title">${safe(admissionsCopy.title || "Admissions")}</h2>
+              <div class="ss-rule"></div>
+              ${String(admissions.process || "").trim() ? "" : `<p class="ss-copy school-copy">${safe(admissionsCopy.body || "Begin your application with our admissions team.")}</p>`}
+              <div class="ss-dates">
+                ${admissions.session ? `<div class="ss-date-chip ss-admission-meta"><small>Current session</small><strong>${safe(admissions.session)}</strong></div>` : ""}
+                ${admissions.startDate ? `<div class="ss-date-chip ss-admission-meta"><small>Applications open</small><strong>${safe(schoolDate(admissions.startDate))}</strong></div>` : ""}
+                ${admissions.closingDate ? `<div class="ss-date-chip ss-admission-meta"><small>Applications close</small><strong>${safe(schoolDate(admissions.closingDate))}</strong></div>` : ""}
+                ${admissions.applicationFee ? `<div class="ss-date-chip ss-admission-meta"><small>Application fee</small><strong>${safe(admissions.applicationFee)}</strong></div>` : ""}
+              </div>
+              ${processSteps.length > 1 ? `<div class="ss-steps">${processSteps.map((step, index) => `<div class="ss-step"><span>${index + 1}</span><div><strong>Step ${index + 1}</strong><p>${safe(step)}</p></div></div>`).join("")}</div>` : ""}
+              ${admissions.requirements ? `<h3 class="ss-title ss-title--sm" style="margin-top:30px">What you will need</h3><p class="ss-copy school-copy">${safe(admissions.requirements)}</p>` : ""}
+              ${admissions.availablePrograms && admissions.availablePrograms.length ? `<div class="ss-pillrow">${admissions.availablePrograms.map((item) => `<span class="ss-pill">${icons.check}${safe(item)}</span>`).join("")}</div>` : ""}
+              ${faqs.length ? `<div class="ss-steps" style="margin-top:26px">${faqs.map((faq) => `<details class="ss-step" style="display:block"><summary style="font-weight:800;cursor:pointer">${safe(faq.question)}</summary><p>${safe(faq.answer)}</p></details>`).join("")}</div>` : ""}
+            </div>
+            ${m.admissionsOpen ? `<div class="ss-form-card school-reveal" id="apply" data-school-delay="120">${applyForm}</div>` : applyForm}
+          </div>
+        </div>
+      </section>`);
+
+      /* ============================== GALLERY ============================ */
+      if (gallery.media.length) {
+        nav.push({ id: "gallery", label: "Gallery" });
+        const albums = gallery.albums || [];
+        blocks.push(`<section class="ss-section school-section" id="gallery">
+          <div class="ss-shell">
+            <div class="ss-head school-reveal">
+              <p class="ss-eyebrow section-kicker">Campus life</p>
+              <h2 class="ss-title">Life at ${safe(m.nameEn || "our school")}</h2>
+              <div class="ss-rule"></div>
+              <p class="ss-lead">Classrooms, assemblies, competitions and the everyday moments that make this school what it is.</p>
+            </div>
+            ${albums.length ? `<div class="ss-albums" id="schoolAlbums" style="margin-top:24px">
+              <button class="ss-album is-active" type="button" data-album="all">All photos <span>${gallery.media.length}</span></button>
+              ${albums.map((album) => `<button class="ss-album" type="button" data-album="${safe(album.id)}">${safe(album.title)} <span>${gallery.media.filter((item) => String(item.albumId) === String(album.id)).length}</span></button>`).join("")}
+            </div>` : ""}
+            <div class="ss-gallery school-gallery-item" id="schoolGallery" style="margin-top:24px">
+              ${gallery.media.slice(0, 12).map((item, index) => {
+                const isVideo = item.type === "video" && item.videoUrl;
+                return `<figure class="ss-shot school-reveal${index % 5 === 0 ? " ss-shot--wide" : ""}" data-album="${safe(item.albumId || "all")}" data-school-delay="${(index % 4) * 60}" data-media-index="${index}" ${isVideo ? `data-video="${safe(item.videoUrl)}"` : `data-src="${safe(item.path)}"`} tabindex="0" role="button" aria-label="${safe(item.caption || (isVideo ? "Play video" : "View photo"))}">
+                  ${item.path ? `<img src="${safe(item.path)}" alt="${safe(item.caption || "")}" loading="lazy">` : ""}
+                  ${isVideo ? `<span class="ss-shot__play">${icons.play}</span>` : ""}
+                  ${item.caption ? `<figcaption>${safe(item.caption)}</figcaption>` : ""}
+                </figure>`;
+              }).join("")}
+            </div>
+          </div>
+        </section>`);
+      }
+
+      /* ========================== NEWS AND EVENTS ======================== */
+      if (news.length || events.length) {
+        nav.push({ id: "news-events", label: "News & events" });
+        blocks.push(`<section class="ss-section ss-section--alt school-section school-section-muted" id="news-events">
+          <div class="ss-shell">
+            <div class="ss-head school-reveal">
+              <p class="ss-eyebrow section-kicker">Stay informed</p>
+              <h2 class="ss-title">News &amp; events</h2>
+              <div class="ss-rule"></div>
+            </div>
+            ${news.length ? `<div class="ss-news school-news-grid" style="margin-top:30px">
+              ${news.slice(0, 6).map((item, index) => `
+                <article class="ss-card ss-card--hover ss-news-card school-news-card school-reveal" data-school-delay="${index * 60}">
+                  ${item.image_path ? `<img src="${safe(item.image_path)}" alt="" loading="lazy">` : ""}
+                  <div class="ss-news-card__body">
+                    <time>${icons.calendar}${safe(schoolDate(item.created_at))}${item.category ? ` · ${safe(item.category)}` : ""}</time>
+                    <h3>${safe(item.title)}</h3>
+                    <p>${safe(item.body)}</p>
+                    ${item.author_name ? `<footer>By ${safe(item.author_name)}</footer>` : ""}
+                  </div>
+                </article>`).join("")}
+            </div>` : ""}
+            ${events.length ? `<div class="ss-events">
+              ${events.slice(0, 6).map((event, index) => {
+                const parts = schoolDateParts(event.event_date || event.created_at);
+                return `<article class="ss-card ss-event school-event-card school-reveal" data-school-delay="${index * 60}">
+                  ${parts ? `<div class="ss-event__date"><strong>${safe(parts.day)}</strong><span>${safe(parts.month)}</span></div>` : `<div class="ss-event__date"><strong>${icons.calendar}</strong><span>Event</span></div>`}
+                  <div>
+                    <h3>${safe(event.title)}</h3>
+                    ${event.body ? `<p>${safe(event.body)}</p>` : ""}
+                    <div class="ss-event__meta">
+                      ${parts ? `<span>${icons.calendar}${safe(parts.day)} ${safe(parts.month)} ${safe(parts.year)}</span>` : ""}
+                      ${event.event_location ? `<span>${icons.pin}${safe(event.event_location)}</span>` : ""}
+                    </div>
+                  </div>
+                </article>`;
+              }).join("")}
+            </div>` : ""}
+          </div>
+        </section>`);
+      }
+
+      /* ============================ CUSTOM PAGES ========================= */
+      const CORE_PAGE_SLUGS = ["home", "about-us", "programs", "teachers", "admissions", "gallery", "news", "events", "announcements", "achievements", "contact-us", "privacy", "terms", "policies"];
+      const customPages = (data.sitePages || [])
+        .filter((page) => page.slug && !CORE_PAGE_SLUGS.includes(String(page.slug).toLowerCase()))
+        .map((page) => Object.assign({}, page, { id: `page-${String(page.slug).toLowerCase()}` }));
+      customPages.forEach((page) => {
+        nav.push({ id: page.id, label: page.title });
+        blocks.push(`<section class="ss-section school-section" id="${safe(page.id)}">
+          <div class="ss-shell">
+            <div class="ss-head school-reveal">
+              <p class="ss-eyebrow section-kicker">${safe(m.nameEn || "Our school")}</p>
+              <h2 class="ss-title school-page-title">${safe(page.title)}</h2>
+              <div class="ss-rule"></div>
+              ${page.summary ? `<p class="ss-lead">${safe(page.summary)}</p>` : ""}
+            </div>
+            ${page.body ? `<div class="ss-page-body ss-copy school-copy" style="margin-top:22px">${safe(page.body)}</div>` : ""}
+          </div>
+        </section>`);
+      });
+
+      /* ========================= RESULTS CHECKING ======================== */
+      if (m.canCheckResults && Number(data.publishedTermCount) > 0) {
+        nav.push({ id: "results", label: "Results" });
+        blocks.push(`<section class="ss-section ss-results school-section school-results" id="results">
+          <div class="ss-shell ss-results__inner">
+            <div class="school-reveal">
+              <p class="ss-eyebrow section-kicker">Published results</p>
+              <h2 class="ss-title">Check your child's results</h2>
+              <div class="ss-rule"></div>
+              <p class="ss-lead">Enter the admission number and either the surname or date of birth on the school record. Report cards open as printable pages and the link expires after 15 minutes.</p>
+              <div class="ss-insight">
+                <div><strong>${Number(data.publishedTermCount)}</strong><small>Published results</small></div>
+                <div><strong>${stats.find((row) => row.label === "Students") ? stats.find((row) => row.label === "Students").value : (Number(m.students) || 0)}</strong><small>Students on record</small></div>
+                <div><strong>Secure</strong><small>Verified per student</small></div>
+              </div>
+            </div>
+            <div class="ss-form-card school-reveal" data-school-delay="120">
+              <h3>Result checker</h3>
+              <p>Only results the school has published are shown.</p>
+              <form id="schoolResultsForm" class="ss-form" novalidate>
+                <div class="ss-field"><label for="rsAdmission">Admission number <span class="req">*</span></label><input id="rsAdmission" name="admissionNo" required autocomplete="off"></div>
+                <div class="ss-form__grid">
+                  <div class="ss-field"><label for="rsSurname">Surname</label><input id="rsSurname" name="surname" autocomplete="off"></div>
+                  <div class="ss-field"><label for="rsDob">Date of birth</label><input id="rsDob" name="dateOfBirth" type="date"></div>
+                </div>
+                <div class="ss-actions"><button class="ss-btn ss-btn--block" type="submit">Check results ${icons.arrow}</button></div>
+                <p class="ss-form__note">Either the surname or the date of birth must match the school record.</p>
+                <p id="schoolResultsOutput" class="ss-result" aria-live="polite"></p>
+                <div id="schoolResultsBody"></div>
+              </form>
+            </div>
+          </div>
+        </section>`);
+      }
+
+      /* ============================ SCHOOL APP =========================== */
+      nav.push({ id: "school-app", label: "School app" });
+      blocks.push(`<section class="ss-section ss-app school-app-section school-section" id="school-app">
+        <div class="ss-shell">
+          <div class="ss-app__card school-app-card school-reveal">
+            <div>
+              <p class="ss-eyebrow section-kicker">Stay connected with our school</p>
+              <h2 class="ss-title">Open the School App</h2>
+              <div class="ss-rule"></div>
+              <p class="ss-copy school-copy">Students, parents and teachers sign in to this school's workspace from any phone, tablet or computer. It runs in the browser — add it to your home screen for an app-like experience, with attendance, results, fees and messages in one place.</p>
+              <ul class="ss-app__list">
+                <li>${icons.check}<span>Report cards and term results</span></li>
+                <li>${icons.check}<span>Attendance and timetable</span></li>
+                <li>${icons.check}<span>Fee statements and announcements</span></li>
+              </ul>
+            </div>
+            <div class="ss-app__actions school-app-actions">
+              <a class="ss-btn ss-btn--lg" href="${safe(m.loginUrl || "/login")}">Open School App ${icons.arrow}</a>
+              <a class="ss-btn ss-btn--ghost" href="#contact" data-school-link="contact">Contact the school</a>
+            </div>
+          </div>
+        </div>
+      </section>`);
+
+      /* ============================== CONTACT ============================ */
+      nav.push({ id: "contact", label: "Contact" });
+      const contactTiles = [
+        m.address ? `<div class="ss-tile"><span class="ss-tile__icon">${icons.pin}</span><div><small>Visit us</small><p>${safe(m.address)}${m.city ? `<br>${safe(m.city)}` : ""}${m.state ? `, ${safe(m.state)}` : ""}${m.country ? `<br>${safe(m.country)}` : ""}</p></div></div>` : "",
+        m.phone || m.altPhone ? `<div class="ss-tile"><span class="ss-tile__icon">${icons.phone}</span><div><small>Call the school</small>${m.phone ? `<a href="tel:${safe(m.phone)}">${safe(m.phone)}</a>` : ""}${m.altPhone ? `<p>${safe(m.altPhone)}</p>` : ""}</div></div>` : "",
+        m.email || m.admissionsEmail ? `<div class="ss-tile"><span class="ss-tile__icon">${icons.mail}</span><div><small>Email</small>${m.email ? `<a href="mailto:${safe(m.email)}">${safe(m.email)}</a>` : ""}${m.admissionsEmail ? `<p>Admissions: <a href="mailto:${safe(m.admissionsEmail)}">${safe(m.admissionsEmail)}</a></p>` : ""}</div></div>` : "",
+        m.whatsapp ? `<div class="ss-tile"><span class="ss-tile__icon">${icons.chat}</span><div><small>WhatsApp</small><a href="https://wa.me/${safe(String(m.whatsapp).replace(/[^\d]/g, ""))}" target="_blank" rel="noopener">${safe(m.whatsapp)}</a></div></div>` : "",
+        info.openingTime && info.closingTime ? `<div class="ss-tile"><span class="ss-tile__icon">${icons.clock}</span><div><small>Opening hours</small><p>${safe(info.openingTime)} – ${safe(info.closingTime)}${info.schoolDays ? `<br>${safe(info.schoolDays)}` : ""}</p></div></div>` : "",
+        contact.emergency ? `<div class="ss-tile"><span class="ss-tile__icon">${icons.shieldCheck}</span><div><small>Emergency line</small><p>${safe(contact.emergency)}</p></div></div>` : "",
+        classes.length ? `<div class="ss-tile"><span class="ss-tile__icon">${icons.graduation}</span><div><small>Classes on offer</small><p>${safe(classes.map((c) => c.name_en).slice(0, 8).join(" · "))}</p></div></div>` : "",
+      ].filter(Boolean);
+      const contactForm = contact.formEnabled !== false ? `
+        <form id="schoolContactForm" class="ss-form school-form" novalidate>
+          <div class="ss-form__grid school-form-grid">
+            <div class="ss-field"><label for="cfName">Your name <span class="req">*</span></label><input id="cfName" name="name" required maxlength="150"></div>
+            <div class="ss-field"><label for="cfEmail">Email <span class="req">*</span></label><input id="cfEmail" name="email" type="email" required maxlength="150"></div>
+            <div class="ss-field"><label for="cfPhone">Phone</label><input id="cfPhone" name="phone" type="tel" maxlength="40"></div>
+            <div class="ss-field"><label for="cfSubject">Subject</label><input id="cfSubject" name="subject" maxlength="150"></div>
+            <div class="ss-field full"><label for="cfMessage">Message <span class="req">*</span></label><textarea id="cfMessage" name="message" required maxlength="2000"></textarea></div>
+            <label class="ss-honeypot school-honeypot" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off"></label>
+          </div>
+          <div class="ss-actions"><button class="ss-btn ss-btn--lg" type="submit">Send message ${icons.arrow}</button></div>
+          <p id="schoolContactOutput" class="ss-result school-form-result" aria-live="polite"></p>
+        </form>` : `<div class="ss-form-card"><h3>Contact the school directly</h3><p>Use the details beside this card — the school answers enquiries during working hours.</p>${m.phone ? `<a class="ss-btn" href="tel:${safe(m.phone)}">Call ${safe(m.phone)}</a>` : ""}</div>`;
+      blocks.push(`<section class="ss-section school-section" id="contact">
+        <div class="ss-shell">
+          <div class="ss-contact school-two-col">
+            <div class="school-reveal">
+              <p class="ss-eyebrow section-kicker">Get in touch</p>
+              <h2 class="ss-title">Contact ${safe(m.nameEn || "us")}</h2>
+              <div class="ss-rule"></div>
+              <div class="ss-contact__tiles">${contactTiles.join("")}</div>
+              ${schoolSocials(contact) ? `<div class="ss-socials">${schoolSocials(contact)}</div>` : ""}
+              ${m.mapsLink ? `<div class="ss-map"><strong>Find us on the map</strong><p>${safe([m.address, m.city, m.state].filter(Boolean).join(", "))}</p><a class="ss-btn ss-btn--ghost" href="${safe(m.mapsLink)}" target="_blank" rel="noopener">Open directions ${icons.arrowUp}</a></div>` : ""}
+            </div>
+            <div class="ss-form-card school-reveal" data-school-delay="120">
+              <h3>Send a message</h3>
+              <p>Questions about admissions, fees or a visit? The school replies directly.</p>
+              ${contactForm}
+            </div>
+          </div>
+        </div>
+      </section>`);
+
+      /* -------------------------------- assemble -------------------------- */
+      const headerNav = nav.filter((item) => item.id !== "school-app");
+      const seoTitle = `${(m.seo && m.seo.title) || (m.nameEn || "Institution")}${m.mottoEn ? ` — ${m.mottoEn}` : ""}`;
       document.title = seoTitle;
       const seoDescription = String((m.seo && m.seo.description) || m.shortDescription || m.descriptionEn || `Welcome to ${m.nameEn || "our institution"}.`).slice(0, 300);
       const setMeta = (selector, attr, value) => { const el = document.querySelector(selector); if (el) el.setAttribute(attr, value); };
@@ -840,36 +1573,371 @@
       setMeta('meta[property="og:title"]', "content", seoTitle);
       setMeta('meta[property="og:description"]', "content", seoDescription);
       setMeta('meta[property="og:image"]', "content", m.logoPath || m.heroImagePath || "/assets/edusphere-logo.png");
+      setMeta('meta[property="og:site_name"]', "content", m.nameEn || "School website");
       const fav = document.querySelector('link[rel="icon"]');
       if (fav) fav.setAttribute("href", m.faviconPath || m.logoPath || "/assets/edusphere-logo.png");
       const canonical = document.querySelector('link[rel="canonical"]');
       if (canonical && data.publicWebsite && data.publicWebsite.url) canonical.setAttribute("href", data.publicWebsite.url);
-      app.innerHTML = `<div class="school-site-root${look.website_theme === "dark" ? " school-theme-dark" : ""}" style="${styleVars}">${schoolHeaderMarkup(m)}<main id="main-content" class="school-public${look.website_theme === "dark" ? " school-theme-dark" : ""}" style="${styleVars}">${navMarkup}
-        <section class="school-hero" id="home">${m.heroImagePath ? `<img src="${safe(m.heroImagePath)}" alt="" class="school-hero-image">` : ""}<div class="school-hero-overlay"></div><div class="container school-hero-inner"><p class="school-kicker">${safe(m.city)}${m.state ? `, ${safe(m.state)}` : ""}</p>${m.logoPath ? `<img src="${safe(m.logoPath)}" class="school-logo" alt="${safe(m.nameEn)} logo">` : ""}<h1>${safe(m.nameEn || "Welcome")}</h1>${m.nameAr ? `<p class="school-ar" lang="ar" dir="rtl">${safe(m.nameAr)}</p>` : ""}${m.mottoEn ? `<p class="school-motto">${safe(m.mottoEn)}</p>` : ""}<p class="school-lead">${safe(m.shortDescription || m.descriptionEn || m.tagline || "Welcome to our institution.")}</p>${admissions.status === "closed" || info.admissionStatus === "closed" ? `<p class="school-badge-closed">Admissions are currently closed</p>` : ""}<div class="school-actions">${m.canApply && admissions.status !== "closed" && info.admissionStatus !== "closed" ? `<a class="button button-gold" href="#admissions">Apply Now <span>${icons.arrow}</span></a>` : ""}<a class="button school-outline" href="#about">Learn More</a></div></div></section>
-        <section class="school-welcome school-section" id="about"><div class="container school-two-col"><div><p class="section-kicker">Welcome to ${safe(m.nameEn || "our institution")}</p><h2>${safe(profile.history ? "Our story" : "About our institution")}</h2><p class="school-copy">${safe(m.descriptionEn || m.shortDescription || "Our institution is committed to purposeful learning and strong character.")}</p>${profile.history ? `<p class="school-copy">${safe(profile.history)}</p>` : ""}${m.foundedYear ? `<p class="school-founded">Established ${safe(m.foundedYear)}</p>` : ""}</div><aside class="school-principal-card">${profile.headName ? `<p class="section-kicker">${safe(profile.headTitle || "Principal / Director")}</p><h3>${safe(profile.headName)}</h3>` : `<p class="section-kicker">Our commitment</p><h3>Learning with purpose. Growing with confidence.</h3>`}${profile.mission ? `<p>${safe(profile.mission)}</p>` : ""}</aside></div></section>
-        ${profile.mission || profile.vision || profile.coreValues || profile.philosophy ? `<section class="school-section school-section-muted"><div class="container school-values-grid">${profile.mission ? `<article><h3>Mission</h3><p>${safe(profile.mission)}</p></article>` : ""}${profile.vision ? `<article><h3>Vision</h3><p>${safe(profile.vision)}</p></article>` : ""}${profile.coreValues ? `<article><h3>Core values</h3><p>${safe(profile.coreValues)}</p></article>` : ""}${profile.philosophy ? `<article><h3>Educational philosophy</h3><p>${safe(profile.philosophy)}</p></article>` : ""}</div></section>` : ""}
-        ${streams.length ? `<section class="school-section school-section-muted"><div class="container"><p class="section-kicker">Educational offering</p><h2>One institution, distinct learning pathways</h2><div class="school-streams">${streams.map((stream) => `<article class="school-stream ${stream.accent}"><h3>${safe(stream.title)}</h3><p>${safe(stream.body)}</p></article>`).join("")}</div></div></section>` : ""}
-        <section class="school-section" id="programs"><div class="container"><p class="section-kicker">What we offer</p><h2>Programs &amp; courses</h2>${programMarkup}</div></section>
-        <section class="school-section school-section-muted" id="teachers"><div class="container"><p class="section-kicker">Meet our educators</p><h2>Teachers</h2><p class="school-copy">Only approved public profiles are shown. Private staff and HR information is never displayed.</p>${teacherMarkup}</div></section>
-        ${achievementsMarkup ? `<section class="school-section" id="achievements"><div class="container"><p class="section-kicker">Celebrating progress</p><h2>Achievements</h2>${achievementsMarkup}</div></section>` : ""}
-        <section class="school-section school-section-muted" id="admissions"><div class="container school-two-col"><div><p class="section-kicker">Join our community</p><h2>Admissions</h2><p class="school-copy">${safe(admissionIntro)}</p>${admissions.session ? `<p class="school-admission-meta"><strong>Current session:</strong> ${safe(admissions.session)}</p>` : ""}${admissions.startDate || admissions.closingDate ? `<p class="school-admission-meta">${admissions.startDate ? `Opens ${safe(admissions.startDate)}` : ""}${admissions.closingDate ? ` · Closes ${safe(admissions.closingDate)}` : ""}</p>` : ""}${admissions.requirements ? `<h3>Requirements</h3><p class="school-copy">${safe(admissions.requirements)}</p>` : ""}${availablePrograms.length ? `<h3>Available programs</h3><div class="school-tag-list">${availablePrograms.map((item) => `<span>${safe(item)}</span>`).join("")}</div>` : ""}</div>${m.canApply && admissions.status !== "closed" && info.admissionStatus !== "closed" ? `<form id="publicApplicationForm" class="school-form"><div class="school-form-grid"><label>Student first name *<input name="first_name" required></label><label>Last name<input name="last_name"></label><label>Parent / guardian *<input name="parent_name" required></label><label>Phone *<input name="parent_phone" required></label><label>Email<input name="parent_email" type="email"></label><label>Preferred program<input name="program"></label><label class="full">Message<textarea name="message"></textarea></label><label class="school-honeypot" aria-hidden="true">Website<input name="website" tabindex="-1"></label></div><button class="button button-primary" type="submit">Apply Now <span>${icons.arrow}</span></button><p id="publicApplicationOutput" class="school-form-result" aria-live="polite"></p></form>` : `<div class="school-contact-card"><h3>${admissions.status === "closed" ? "Admissions are closed" : "Start your application"}</h3><p>Contact the institution for application guidance and important dates.</p>${m.email ? `<a class="school-text-link" href="mailto:${safe(m.email)}">Contact admissions</a>` : ""}</div>`}</div></section>
-        <section class="school-section" id="gallery"><div class="container"><p class="section-kicker">Campus life</p><h2>Gallery</h2>${galleryMarkup}</div></section>
-        <section class="school-section school-section-muted" id="news-events"><div class="container"><p class="section-kicker">Stay informed</p><h2>News &amp; Events</h2><div class="school-news-grid">${newsMarkup}</div><div class="school-event-grid"><h3>Upcoming events</h3>${eventMarkup}</div></div></section>
-        <section class="school-section school-app-section" id="school-app"><div class="container school-app-card"><div><p class="section-kicker">Stay connected with our school</p><h2>Open the School App</h2><p class="school-copy">Students, parents and teachers can sign in to this school's workspace from any phone, tablet or computer. The school app runs in your browser — add it to your home screen for quick, app-like access.</p></div><div class="school-app-actions"><a class="button button-primary" href="/login">Open School App <span>${icons.arrow}</span></a><a class="button school-outline" href="#contact">Contact the school</a></div></div></section>
-        <section class="school-section" id="contact"><div class="container school-two-col"><div><p class="section-kicker">Get in touch</p><h2>Contact ${safe(m.nameEn || "us")}</h2><div class="school-contact-card">${m.address ? `<p><strong>Address</strong><br>${safe(m.address)}${m.city ? `<br>${safe(m.city)}${m.state ? `, ${safe(m.state)}` : ""}` : ""}</p>` : ""}${m.phone ? `<p><strong>Phone</strong><br><a href="tel:${safe(m.phone)}">${safe(m.phone)}</a></p>` : ""}${m.email ? `<p><strong>Email</strong><br><a href="mailto:${safe(m.email)}">${safe(m.email)}</a></p>` : ""}${m.whatsapp ? `<p><strong>WhatsApp</strong><br>${safe(m.whatsapp)}</p>` : ""}${info.openingTime && info.closingTime ? `<p><strong>Opening hours</strong><br>${safe(info.openingTime)}–${safe(info.closingTime)}${info.schoolDays ? `<br>${safe(info.schoolDays)}` : ""}</p>` : ""}${m.mapsLink ? `<a class="school-text-link" href="${safe(m.mapsLink)}" target="_blank" rel="noopener">Open Google Maps</a>` : ""}</div></div>${contactForm}</div></section>
-      </main>${schoolFooterMarkup(m)}</div>`;
-      const menu = document.querySelector(".school-menu-toggle"); const nav = document.querySelector(".school-site-menu");
-      if (menu && nav) menu.addEventListener("click", () => { const open = menu.getAttribute("aria-expanded") === "true"; menu.setAttribute("aria-expanded", String(!open)); nav.classList.toggle("is-open", !open); });
-      document.querySelectorAll(".school-site-menu a, .school-page-nav a, .school-site-footer a").forEach((link) => link.addEventListener("click", () => { if (nav) nav.classList.remove("is-open"); if (menu) menu.setAttribute("aria-expanded", "false"); }));
-      const application = document.getElementById("publicApplicationForm");
-      if (application) application.addEventListener("submit", async (event) => { event.preventDefault(); const output = document.getElementById("publicApplicationOutput"); output.textContent = "Submitting…"; try { const result = await window.API.public.post(`/schools/${encodeURIComponent(slug)}/apply`, Object.fromEntries(new FormData(application))); output.textContent = `Application received. Keep this reference: ${result.reference}`; application.reset(); } catch (error) { output.textContent = error.message || "We could not submit the application."; } });
-      const contactFormElement = document.getElementById("schoolContactForm");
-      if (contactFormElement) contactFormElement.addEventListener("submit", async (event) => { event.preventDefault(); const output = document.getElementById("schoolContactOutput"); output.textContent = "Sending…"; try { await window.API.public.post(`/schools/${encodeURIComponent(slug)}/contact`, Object.fromEntries(new FormData(contactFormElement))); output.textContent = "Your message has been sent."; contactFormElement.reset(); } catch (error) { output.textContent = error.message || "We could not send your message."; } });
+      const themeColor = document.querySelector('meta[name="theme-color"]');
+      if (themeColor) themeColor.setAttribute("content", theme === "dark" ? "#141122" : brand);
+
+      app.innerHTML = `<div class="school-site-root${theme !== "light" ? " school-theme-" + theme : ""}" data-theme="${safe(theme)}" data-cards="${safe(cardStyle)}" style="${styleVars}">
+        <a class="skip-link" href="#main-content">Skip to content</a>
+        ${schoolHeaderMarkup(m, look, headerNav, customPages)}
+        <main id="main-content" class="ss-main school-public" style="${styleVars}">
+          ${schoolSubnav(headerNav)}
+          ${blocks.join("")}
+        </main>
+        ${schoolFooterMarkup(m, look, headerNav, customPages)}
+        ${schoolDrawerMarkup(m, nav, customPages)}
+        <div class="ss-lightbox" id="schoolLightbox" hidden>
+          <button class="ss-lightbox__btn ss-lightbox__close" type="button" id="schoolLightboxClose" aria-label="Close">${icons.close}</button>
+          <div class="ss-lightbox__stage">
+            <div id="schoolLightboxMedia"></div>
+            <p class="ss-lightbox__caption" id="schoolLightboxCaption"></p>
+          </div>
+          <div class="ss-lightbox__bar">
+            <button class="ss-lightbox__btn" type="button" id="schoolLightboxPrev" aria-label="Previous">${icons.chevLeft}</button>
+            <span id="schoolLightboxCount"></span>
+            <button class="ss-lightbox__btn" type="button" id="schoolLightboxNext" aria-label="Next">${icons.chevRight}</button>
+          </div>
+        </div>
+        ${schoolDockMarkup(m)}
+      </div>`;
+
+      document.body.style.backgroundColor = theme === "dark" ? "#141122" : (paper || (theme === "warm" ? "#fdfaf5" : ""));
+      initSchoolSite({ slug, m, contact, layout });
       initPageEvents();
     } catch (err) {
+      document.body.classList.remove("school-site-active");
       const message = err && err.status === 404 ? "Institution not found" : (err.message || "This institution website is unavailable");
-      app.innerHTML = `<main id="main-content" class="school-public"><div class="container school-not-found"><p class="section-kicker">Public website</p><h1>${safe(message)}</h1><p>This institution may be unpublished or the address may be incorrect.</p><a href="/" data-route="/" class="button button-primary">Return to EduSphere</a></div></main>`;
+      app.innerHTML = `<main id="main-content" class="school-public"><div class="container school-not-found">
+        <p class="section-kicker">Public website</p>
+        <h1>${safe(message)}</h1>
+        <p>This institution may be unpublished or the address may be incorrect.</p>
+        <a href="/" data-route="/" class="ss-btn">Return to EduSphere ${icons.arrow}</a>
+      </div></main>`;
       initPageEvents();
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+     TENANT PUBLIC WEBSITE — behaviour
+     ------------------------------------------------------------------
+     Everything interactive on a school website lives here: the mobile
+     drawer, active-section highlighting, scroll reveals, number counters,
+     the gallery lightbox and the three public forms. All of it degrades
+     safely (no IntersectionObserver → content simply shows).
+     ------------------------------------------------------------------ */
+  function initSchoolSite(context) {
+    const root = document.querySelector(".school-site-root");
+    if (!root) return;
+    try {
+      initSchoolSiteInner(root, context);
+    } catch (error) {
+      /* A school website must never look broken because one interaction
+         failed to bind: reveal everything and keep the page readable. */
+      root.classList.remove("school-jmotion");
+      root.querySelectorAll("[data-school-count]").forEach((el) => {
+        if (!el.textContent || el.textContent === "0") el.textContent = el.getAttribute("data-school-count") || "0";
+      });
+      if (window.console && console.warn) console.warn("School website interaction failed:", error);
+    }
+  }
+
+  function initSchoolSiteInner(root, context) {
+
+    const header = root.querySelector(".ss-header");
+    const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* ---- smooth in-page navigation with a header-aware offset ---------- */
+    const headerOffset = () => (header ? header.getBoundingClientRect().height + 16 : 90);
+    const goToSection = (id, updateHash) => {
+      const target = document.getElementById(id);
+      if (!target) return;
+      const top = target.getBoundingClientRect().top + window.scrollY - headerOffset();
+      window.scrollTo({ top: Math.max(0, top), behavior: reduced ? "auto" : "smooth" });
+      if (updateHash) { try { history.replaceState(null, "", `#${id}`); } catch (e) { /* file:// */ } }
+    };
+    root.querySelectorAll("[data-school-link]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        const id = link.getAttribute("data-school-link");
+        goToSection(id, true);
+        closeDrawer();
+        const more = root.querySelector("#schoolMoreMenu");
+        if (more) more.classList.remove("is-open");
+        const moreBtn = root.querySelector("#schoolMoreBtn");
+        if (moreBtn) moreBtn.setAttribute("aria-expanded", "false");
+      });
+    });
+
+    /* ---- sticky header shadow ----------------------------------------- */
+    const onScroll = () => {
+      if (header) header.classList.toggle("is-scrolled", window.scrollY > 10);
+      const toTop = root.querySelector("#schoolToTop");
+      if (toTop) toTop.classList.toggle("is-visible", window.scrollY > 620);
+      // Active section: the last one whose top has passed the header.
+      const marks = root.querySelectorAll(".ss-section[id], .ss-hero[id]");
+      const fromTop = headerOffset() + 40;
+      let activeId = null;
+      marks.forEach((section) => {
+        if (section.getBoundingClientRect().top <= fromTop) activeId = section.id;
+      });
+      if (activeId) {
+        root.querySelectorAll("[data-school-link]").forEach((link) => {
+          if (!link.classList.contains("ss-nav__link") && !link.classList.contains("ss-subnav__link")) return;
+          const isActive = link.getAttribute("data-school-link") === activeId;
+          link.classList.toggle("is-active", isActive);
+          if (isActive && link.classList.contains("ss-subnav__link") && link.parentElement) {
+            const box = link.parentElement;
+            const target = link.offsetLeft - box.clientWidth / 2 + link.clientWidth / 2;
+            if (Math.abs(box.scrollLeft - target) > 40) box.scrollTo({ left: Math.max(0, target), behavior: reduced ? "auto" : "smooth" });
+          }
+        });
+      }
+    };
+    let scrollTick = false;
+    window.addEventListener("scroll", () => {
+      if (scrollTick) return;
+      scrollTick = true;
+      requestAnimationFrame(() => { scrollTick = false; onScroll(); });
+    }, { passive: true });
+    onScroll();
+
+    /* ---- mobile drawer ------------------------------------------------ */
+    const drawer = root.querySelector("#schoolDrawer");
+    const burger = root.querySelector("#schoolMenuToggle");
+    function closeDrawer() {
+      if (!drawer || !drawer.classList.contains("is-open")) return;
+      drawer.classList.remove("is-open");
+      drawer.setAttribute("hidden", "");
+      document.body.classList.remove("school-nav-open");
+      if (burger) burger.setAttribute("aria-expanded", "false");
+    }
+    if (drawer && burger) {
+      burger.addEventListener("click", () => {
+        drawer.removeAttribute("hidden");
+        drawer.classList.add("is-open");
+        document.body.classList.add("school-nav-open");
+        burger.setAttribute("aria-expanded", "true");
+        const first = drawer.querySelector("a, button");
+        if (first) first.focus({ preventScroll: true });
+      });
+      const close = root.querySelector("#schoolDrawerClose");
+      if (close) close.addEventListener("click", closeDrawer);
+      drawer.addEventListener("click", (event) => { if (event.target === drawer) closeDrawer(); });
+      document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
+    }
+
+    /* ---- "More" page menu -------------------------------------------- */
+    const moreBtn = root.querySelector("#schoolMoreBtn");
+    const moreMenu = root.querySelector("#schoolMoreMenu");
+    if (moreBtn && moreMenu) {
+      moreBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const open = moreBtn.getAttribute("aria-expanded") === "true";
+        moreBtn.setAttribute("aria-expanded", String(!open));
+        moreMenu.classList.toggle("is-open", !open);
+      });
+      document.addEventListener("click", (event) => {
+        if (!moreMenu.classList.contains("is-open")) return;
+        if (moreMenu.contains(event.target) || moreBtn.contains(event.target)) return;
+        moreMenu.classList.remove("is-open");
+        moreBtn.setAttribute("aria-expanded", "false");
+      });
+    }
+
+    /* ---- scroll reveals + stat counters ------------------------------ */
+    const revealTargets = root.querySelectorAll(".school-reveal");
+    const countTargets = root.querySelectorAll("[data-school-count]");
+    const showAll = () => {
+      revealTargets.forEach((el) => el.classList.add("is-visible"));
+      countTargets.forEach((el) => { el.textContent = el.getAttribute("data-school-count"); });
+    };
+    if (reduced || !("IntersectionObserver" in window)) {
+      showAll();
+    } else {
+      // Progressive enhancement: the hidden state is only applied now that
+      // the observer below is certain to hand it back on scroll.
+      root.classList.add("school-jmotion");
+      const revealObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add("is-visible");
+          revealObserver.unobserve(entry.target);
+        });
+      }, { threshold: 0.14, rootMargin: "0px 0px -40px 0px" });
+      revealTargets.forEach((el) => {
+        const delay = el.getAttribute("data-school-delay");
+        if (delay) el.style.setProperty("--school-delay", `${delay}ms`);
+        revealObserver.observe(el);
+      });
+      const countObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const el = entry.target;
+          countObserver.unobserve(el);
+          const end = Number(el.getAttribute("data-school-count")) || 0;
+          if (end <= 0) { el.textContent = String(end); return; }
+          const started = performance.now();
+          const duration = 900;
+          const tick = (now) => {
+            const progress = Math.min(1, (now - started) / duration);
+            const eased = 1 - Math.pow(1 - progress, 3);
+            el.textContent = String(Math.round(end * eased));
+            if (progress < 1) requestAnimationFrame(tick);
+          };
+          el.textContent = "0";
+          requestAnimationFrame(tick);
+        });
+      }, { threshold: 0.4 });
+      countTargets.forEach((el) => countObserver.observe(el));
+    }
+
+    const toTop = root.querySelector("#schoolToTop");
+    if (toTop) toTop.addEventListener("click", () => window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" }));
+
+    /* ---- gallery: album filter + lightbox ---------------------------- */
+    const shots = Array.from(root.querySelectorAll(".ss-shot[data-media-index]"));
+    const lightbox = root.querySelector("#schoolLightbox");
+    let current = 0;
+    const openLightbox = (index) => {
+      if (!lightbox || !shots.length) return;
+      current = Math.max(0, Math.min(shots.length - 1, index));
+      const shot = shots[current];
+      const media = lightbox.querySelector("#schoolLightboxMedia");
+      const video = shot.getAttribute("data-video");
+      media.innerHTML = video
+        ? `<video src="${safe(video)}" controls autoplay playsinline></video>`
+        : `<img src="${safe(shot.getAttribute("data-src"))}" alt="${safe(shot.getAttribute("aria-label") || "")}">`;
+      lightbox.querySelector("#schoolLightboxCaption").textContent = shot.getAttribute("aria-label") || "";
+      lightbox.querySelector("#schoolLightboxCount").textContent = `${current + 1} / ${shots.length}`;
+      lightbox.removeAttribute("hidden");
+      lightbox.classList.add("is-open");
+      document.body.classList.add("school-nav-open");
+    };
+    const closeLightbox = () => {
+      if (!lightbox) return;
+      lightbox.classList.remove("is-open");
+      lightbox.setAttribute("hidden", "");
+      lightbox.querySelector("#schoolLightboxMedia").innerHTML = "";
+      document.body.classList.remove("school-nav-open");
+    };
+    shots.forEach((shot, index) => {
+      shot.addEventListener("click", () => openLightbox(index));
+      shot.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openLightbox(index); }
+      });
+    });
+    if (lightbox) {
+      lightbox.querySelector("#schoolLightboxClose").addEventListener("click", closeLightbox);
+      lightbox.addEventListener("click", (event) => { if (event.target === lightbox) closeLightbox(); });
+      lightbox.querySelector("#schoolLightboxPrev").addEventListener("click", () => openLightbox(current - 1));
+      lightbox.querySelector("#schoolLightboxNext").addEventListener("click", () => openLightbox(current + 1));
+      document.addEventListener("keydown", (event) => {
+        if (!lightbox.classList.contains("is-open")) return;
+        if (event.key === "Escape") closeLightbox();
+        if (event.key === "ArrowRight") openLightbox(current + 1);
+        if (event.key === "ArrowLeft") openLightbox(current - 1);
+      });
+    }
+    const albumBar = root.querySelector("#schoolAlbums");
+    if (albumBar) {
+      albumBar.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-album]");
+        if (!button) return;
+        const wanted = button.getAttribute("data-album");
+        albumBar.querySelectorAll("[data-album]").forEach((el) => el.classList.toggle("is-active", el === button));
+        shots.forEach((shot) => {
+          const album = shot.getAttribute("data-album");
+          const show = wanted === "all" || album === wanted;
+          shot.style.display = show ? "" : "none";
+        });
+      });
+    }
+
+    /* ---- the three public forms -------------------------------------- */
+    const setResult = (el, message, kind) => {
+      if (!el) return;
+      el.textContent = message;
+      el.classList.toggle("is-ok", kind === "ok");
+      el.classList.toggle("is-error", kind === "error");
+    };
+    const submitTo = async (form, path, onSuccess, extra) => {
+      const button = form.querySelector('button[type="submit"]');
+      const label = button ? button.textContent : "";
+      if (button) { button.disabled = true; button.textContent = "Sending…"; }
+      try {
+        const payload = Object.assign(Object.fromEntries(new FormData(form)), extra || {});
+        const result = await window.API.public.post(path, payload);
+        form.reset();
+        await onSuccess(result);
+      } catch (error) {
+        const output = form.querySelector(".ss-result");
+        setResult(output, error.message || "We could not send that just now. Please try again.", "error");
+      } finally {
+        if (button) { button.disabled = false; button.textContent = label; }
+      }
+    };
+    const applicationForm = root.querySelector("#publicApplicationForm");
+    if (applicationForm) {
+      applicationForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const output = root.querySelector("#publicApplicationOutput");
+        setResult(output, "Submitting your application…", null);
+        submitTo(applicationForm, `/schools/${encodeURIComponent(context.slug)}/apply`, (result) => {
+          setResult(output, `Application received. Keep this reference: ${result.reference}`, "ok");
+        });
+      });
+    }
+    const contactForm = root.querySelector("#schoolContactForm");
+    if (contactForm) {
+      contactForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const output = root.querySelector("#schoolContactOutput");
+        setResult(output, "Sending your message…", null);
+        submitTo(contactForm, `/schools/${encodeURIComponent(context.slug)}/contact`, () => {
+          setResult(output, "Thank you — your message has been sent to the school.", "ok");
+        });
+      });
+    }
+    /** Report-card links come back as /api/... paths; honour a custom API base. */
+    const reportHref = (url) => {
+      const raw = String(url || "");
+      const base = (window.__APP_CONFIG__ && window.__APP_CONFIG__.apiBase) || "/api";
+      return base !== "/api" && raw.startsWith("/api/") ? base + raw.slice(4) : raw;
+    };
+    const resultsForm = root.querySelector("#schoolResultsForm");
+    if (resultsForm) {
+      resultsForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const output = root.querySelector("#schoolResultsOutput");
+        const body = root.querySelector("#schoolResultsBody");
+        body.innerHTML = "";
+        setResult(output, "Checking the school records…", null);
+        submitTo(resultsForm, "/results/verify", (result) => {
+          if (!result || !result.verified) { setResult(output, "No matching record was found.", "error"); return; }
+          setResult(output, `Verified: ${result.student.name}${result.student.className ? ` · ${result.student.className}` : ""}`, "ok");
+          const terms = result.terms || [];
+          if (!terms.length) {
+            body.innerHTML = `<div class="ss-result-card"><p>${safe(result.message || "No results have been published for this student yet.")}</p></div>`;
+            return;
+          }
+          body.innerHTML = `<div class="ss-result-card">
+            <h4>${safe(result.student.name)}</h4>
+            <small>${safe(result.student.admissionNo || "")}${result.student.className ? ` · ${safe(result.student.className)}` : ""}</small>
+            ${terms.map((term) => `
+              <div class="ss-term-row">
+                <div>
+                  <strong>${safe(term.name_en || "Term")}</strong>
+                  <span>${safe(term.session_label || "")}${term.average !== undefined && term.average !== null ? ` · Average ${safe(String(term.average))}%` : ""}${term.position ? ` · Position ${safe(String(term.position))}` : ""}</span>
+                </div>
+                <a class="ss-btn ss-btn--ghost" href="${safe(reportHref(term.reportUrl))}" target="_blank" rel="noopener">Open report card ${icons.arrowUp}</a>
+              </div>`).join("")}
+          </div>`;
+        }, { madrasaSlug: context.slug });
+      });
     }
   }
 
@@ -923,6 +1991,11 @@
   function renderRoute() {
     const path = window.location.pathname.replace(/\/+$/, "") || "/";
     const hash = window.location.hash;
+
+    // Leaving a school website must not leave its paper colour (or its
+    // scroll-lock class) behind on the platform pages.
+    document.body.classList.remove("school-site-active", "school-nav-open");
+    document.body.style.backgroundColor = "";
 
     if (hash.startsWith("#/app") || hash === "#/login" || hash.startsWith("#/login") ||
         // The admin section has real addresses of its own — /login is the
