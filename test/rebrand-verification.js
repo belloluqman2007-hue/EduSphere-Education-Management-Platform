@@ -50,6 +50,14 @@ async function openPage(path, { settle = 1200 } = {}) {
   };
 }
 
+/** The tenant's own name, straight from its public payload — the checks below
+    must follow the demo data, not a name hard-coded in this file. */
+async function publicName(slug) {
+  const res = await fetch(`${BASE}/api/public/schools/${slug}`);
+  const body = await res.json();
+  return (body && body.madrasa && body.madrasa.nameEn) || "";
+}
+
 async function login(page, user, pass) {
   for (let attempt = 0; attempt < 3; attempt++) {
     for (let i = 0; i < 40 && !page.$("#dashLoginForm, #portalLoginForm"); i++) await sleep(50);
@@ -128,8 +136,9 @@ async function login(page, user, pass) {
 
   console.log("\n── 4. School public website (tenant B: Western) ──");
   {
+    const nameB = await publicName("demo-fatihah");
     const p = await openPage("/schools/demo-fatihah", { settle: 1800 });
-    check("tenant B title is its own name", p.doc.title.includes("Northgate"), p.doc.title);
+    check("tenant B title is its own name", Boolean(nameB) && p.doc.title.includes(nameB), p.doc.title);
     check("tenant A's Arabic name does NOT appear on tenant B", !p.doc.body.textContent.includes("مدرسة القرونية"));
     check("tenant A's name does NOT appear on tenant B", !p.doc.body.textContent.includes("Al-Quraniyya"));
     check("no subject tag list on tenant B either", p.$$("#programs .school-tag-list").length === 0);
@@ -169,6 +178,7 @@ async function login(page, user, pass) {
 
   console.log("\n── 6. Western admin sidebar ──");
   {
+    const nameB = await publicName("demo-fatihah");
     const p = await openPage("/admin");
     await login(p, "demo-fatihah-admin", demoUsers["demo-fatihah-admin"]);
     await sleep(1500);
@@ -181,7 +191,7 @@ async function login(page, user, pass) {
     }
     check("Academic → Curriculum & Subjects is present", /Curriculum & Subjects/.test(nav));
     check("no Qur'an / Hifz item for Western institutions", !nav.includes("Qur'an"));
-    check("sidebar shows the academy's own name", sidebar.includes("Northgate"));
+    check("sidebar shows the institution's own name", Boolean(nameB) && sidebar.includes(nameB));
     check("no client errors", p.pageErrors.length === 0, p.pageErrors.join(" | "));
     p.close();
   }

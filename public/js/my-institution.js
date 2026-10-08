@@ -1033,11 +1033,13 @@
     });
   }
 
+  /* Single-quoted family names: these stacks are injected into double-quoted
+     style="" attributes, and a double quote would truncate the attribute. */
   const FONT_STACKS = {
-    system: 'Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif',
-    serif: 'Georgia, "Times New Roman", serif',
-    rounded: '"Trebuchet MS", "Segoe UI", system-ui, sans-serif',
-    humanist: 'Optima, Candara, "Segoe UI", system-ui, sans-serif',
+    system: "Inter, ui-sans-serif, system-ui, 'Segoe UI', sans-serif",
+    serif: "Georgia, 'Times New Roman', serif",
+    rounded: "'Trebuchet MS', 'Segoe UI', system-ui, sans-serif",
+    humanist: "Optima, Candara, 'Segoe UI', system-ui, sans-serif",
   };
 
   function livePreviewMarkup(v, device) {

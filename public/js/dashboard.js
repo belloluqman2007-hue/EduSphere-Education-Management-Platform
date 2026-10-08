@@ -534,6 +534,61 @@
   }
   window.addEventListener("hashchange", onHashChange);
 
+  /** ---------------------------------------------------------------------
+      Delegated dashboard navigation (safety net)
+      ---------------------------------------------------------------------
+      Every in-dashboard control is marked with data-nav-route (or
+      data-mi-nav in the My Institution section) and each page also binds its
+      own listener. That per-page binding silently failed whenever a page
+      threw before its bind step, which is how "Edit Website" and "Visit
+      Website" dead-ended. This ONE document-level listener guarantees a
+      control marked as navigation always navigates, no matter which page
+      rendered it — the page-level listener (if present) has already run by
+      the time this bubbles up, and re-setting the same route is a no-op. */
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    const control = target.closest("[data-nav-route],[data-mi-nav]");
+    if (!control) return;
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !root.contains(control)) return;   // not our shell
+    const route = control.getAttribute("data-nav-route") || control.getAttribute("data-mi-nav");
+    if (!route) return;
+    if (control.tagName === "A" && control.getAttribute("href") && !control.hasAttribute("data-nav-route")) {
+      // An element that already carries a real href is left to the browser.
+      return;
+    }
+    event.preventDefault();
+    go(route);
+    const sidebar = root.querySelector("#dashSidebar");
+    const overlay = root.querySelector("#dashOverlay");
+    if (sidebar) sidebar.classList.remove("is-open");
+    if (overlay) overlay.classList.remove("is-open");
+  });
+
+  /** ---------------------------------------------------------------------
+      School-website links always open SOMETHING
+      ---------------------------------------------------------------------
+      "Visit Website" is a new-tab link. Popup blockers and embedded
+      previews can refuse the new tab, which leaves the button looking dead.
+      open() is called synchronously in the click (so it is allowed), and
+      when the environment refuses it the browser's own navigation follows —
+      the site opens in this tab instead of nothing happening. */
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;   // keep native tab behaviour
+    const link = target.closest('a[href^="/schools/"]');
+    if (!link) return;
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !root.contains(link)) return;             // not our shell
+    const tab = window.open(link.getAttribute("href"), "_blank");
+    if (!tab) return;                                      // refused → let the browser navigate here
+    try { tab.opener = null; } catch (e) { /* cross-origin, harmless */ }
+    event.preventDefault();
+  });
+
   /** Any authenticated API call answering 401 means the session ended
       server-side (logged out elsewhere, expired, account deactivated).
       The dashboard must fall back to the sign-in screen instead of
