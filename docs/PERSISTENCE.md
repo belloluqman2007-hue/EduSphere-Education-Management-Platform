@@ -259,10 +259,18 @@ reach the live service. A manually created service keeps its own settings, so
 verify its disk and the six variables above in the Render Dashboard after
 syncing or before the next deploy.
 
+If the disk is mounted at `/var/data` but `DATA_DIR` is not set, the app uses
+`/var/data` as its data directory on Render by itself, so uploads and backups
+still go to the disk. The variables above keep that choice explicit.
+
+Without the disk, boot prints `EPHEMERAL_UPLOADS` and `EPHEMERAL_BACKUPS`, each
+with the Render steps. Add the disk from the service's **Disks** page (mount
+path `/var/data`, 1 GB). Render redeploys the service after you save it.
+
 Facts worth knowing before you click *Create*:
 
-* a disk can only be attached **while creating the service** (or via
-  `POST /v1/disks` with the service id afterwards);
+* a disk can be added **while creating the service** (under *Advanced*) or
+  **later from the service's Disks page**; Render redeploys once it is saved;
 * `mountPath` may not be `/`, `/opt`, `/opt/render/project/src`, `/home`, `/etc`;
 * with a disk, Render runs **one instance** and skips zero-downtime deploys —
   fine for this app (single process, in-memory rate limiting);

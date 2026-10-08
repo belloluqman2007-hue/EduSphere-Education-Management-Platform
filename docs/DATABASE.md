@@ -114,6 +114,26 @@ Current pool utilisation is visible at `/api/perf` (super admin, with
 `PERF_MONITOR=1`): `configuredLimit`, `activeConnections`, `idleConnections`
 and `queuedRequests` tell you whether the pool is the bottleneck.
 
+## TLS (encrypting the MySQL connection)
+
+The app encrypts the connection to MySQL only when `DB_SSL=true` is set.
+The `ssl-mode` parameter in `DATABASE_URL` does not turn TLS on:
+
+* mysql2 has no `ssl-mode` option. Earlier releases passed the parameter to the
+  driver, which printed `Ignoring invalid configuration option … ssl-mode` at
+  every boot. The app now removes `ssl-mode` (and `sslmode`) from the URL before
+  the driver sees it.
+* The requested mode is reported, not applied, so the connection behaves exactly
+  as before. When the URL asks for a mode other than `DISABLED` and `DB_SSL` is
+  off, boot prints `Database: DATABASE_URL asks for ssl-mode=…` and says that the
+  connection is `NOT encrypted`.
+
+To encrypt the connection, set `DB_SSL=true` and redeploy. TLS is then used
+without certificate verification, which gives the same guarantee as MySQL's
+`REQUIRED` mode. It is not switched on by default, because a server that does
+not offer TLS would refuse the app at boot. Confirm that your server accepts TLS
+before you turn it on.
+
 ## Safety rules
 
 - **Never** copy the old `.env` or old connection string into this project.
