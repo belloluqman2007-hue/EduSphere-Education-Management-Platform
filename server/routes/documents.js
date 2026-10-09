@@ -1,15 +1,23 @@
 "use strict";
 /* ============================================================================
-   EduSphere — printable documents
+   EduSphere — printable documents: ID cards and certificates
    ----------------------------------------------------------------------------
    This module deliberately returns HTML, not PDF files. The browser's print
-   engine is the document renderer, which keeps the feature small, portable
-   and consistent with the existing fee receipts and report cards.
+   engine is the document renderer, which keeps the feature small, portable and
+   consistent with the existing fee receipts and report cards. The layout and
+   the QR encoder live in services/print-documents.js, services/
+   id-card-designs.js and services/certificate-designs.js so the printed page
+   and its on-screen preview cannot drift apart.
 
-   Every query below is tenant-scoped from the authenticated user's session.
-   No request can select a different madrasa by posting a madrasa_id.
+   Two rules the whole file obeys:
+     • Every query is tenant-scoped from the authenticated user's session. No
+       request can select a different madrasa by posting a madrasa_id.
+     • A printed document must stay true after it leaves the printer. Card and
+       certificate QR codes therefore point at durable, revocable codes rather
+       than short-lived signed links.
    ========================================================================== */
 const express = require("express");
+const crypto = require("crypto");
 const db = require("../db");
 const tokens = require("../services/tokens");
 const { asyncHandler, err, ok, cleanStr, toNum, validDate, logActivity } = require("../util");
@@ -17,13 +25,25 @@ const { requireAuth, requireTenant, requireRole } = require("../middleware/auth"
 const { effectiveTenantId, getTeacherAssignments } = require("../middleware/tenant");
 const { requireStaffPermission } = require("../services/permissions");
 const institution = require("../services/institution");
+const print = require("../services/print-documents");
+const cardDesigns = require("../services/id-card-designs");
+const certDesigns = require("../services/certificate-designs");
+const cardCreds = require("../services/card-credentials");
+const media = require("../services/profile-media");
+const { imageUploader } = require("../middleware/upload");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
 
 const STAFF = requireRole("madrasa_admin", "teacher");
 const ADMIN = requireRole("madrasa_admin");
-const TEMPLATE_TYPES = new Set(["graduation", "achievement", "completion", "participation", "custom"]);
+
+const escapeHtml = print.escapeHtml;
+const safeAssetPath = print.safeAssetPath;
+const today = print.today;
+const dateLabel = print.dateLabel;
+
+const TEMPLATE_TYPES = new Set(certDesigns.CERT_TYPES.concat(["custom"]));
 const MAX_TEMPLATE_LENGTH = 200000;
 const MAX_CUSTOM_FIELD_LENGTH = 500;
 
@@ -36,51 +56,67 @@ async function tenantId(req, res) {
   return Number(tid);
 }
 
-function escapeHtml(value) {
-  return String(value === null || value === undefined ? "" : value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function safeAssetPath(value) {
-  const path = cleanStr(value, 500);
-  // Logos and photos are uploaded through the existing image pipeline. Do not
-  // turn a database value into an arbitrary remote image or javascript URL.
-  return /^\/uploads\/[A-Za-z0-9_./-]+$/.test(path) ? path : "";
-}
-
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function dateLabel(value) {
-  const raw = String(value || "").slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const [year, month, day] = raw.split("-");
-  return `${day}/${month}/${year}`;
-}
-
 function studentName(student) {
   return [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(" ").trim();
 }
 
+function staffName(row) {
+  const fromProfile = [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" ").trim();
+  return fromProfile || row.full_name || "";
+}
+
+function initials(name) {
+  const parts = String(name || "").split(/\s+/).filter(Boolean);
+  if (!parts.length) return "S";
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+}
+
+function truthyFlag(value) {
+  return !(value === false || value === 0 || value === "0" || value === "false");
+}
+
+/* --------------------------- the rows we print --------------------------- */
 /* Columns shared by every printable student card, so the single and bulk
    layouts cannot drift apart. Tenant scoping is applied by each caller. */
 const STUDENT_DOC_SELECT = `
     SELECT s.*, c.name_en AS class_name, a.label AS session_label,
            m.name_en AS institution_name, m.name_ar AS institution_name_ar, m.logo_path,
-           m.slug AS institution_slug, m.motto_en, m.category, m.brand_color,
+           m.slug AS institution_slug, m.motto_en, m.category, m.brand_color, m.institution_type,
            m.address, m.city, m.state_name, m.phone
     FROM students s
     LEFT JOIN classes c ON c.id = s.class_id AND c.madrasa_id = s.madrasa_id
     LEFT JOIN academic_sessions a ON a.id = s.session_id AND a.madrasa_id = s.madrasa_id
     JOIN madaris m ON m.id = s.madrasa_id`;
 
+/*
+ * Staff cards are built from `users` LEFT JOIN `teacher_profiles`, not from the
+ * profile table alone: a school can employ an administrator, a bursar or a
+ * driver who has no teaching profile, and a freshly created teacher may not
+ * have had their profile row written yet. A card is identification, so it must
+ * exist for every member of staff — the profile only adds the fields it knows.
+ */
+const TEACHER_DOC_SELECT = `
+    SELECT u.id, u.full_name, u.username, u.role, u.email, u.is_active, u.madrasa_id,
+           u.phone AS user_phone,
+           COALESCE(NULLIF(p.photo_path, ''), u.photo_path, '') AS photo_path,
+           COALESCE(NULLIF(p.signature_path, ''), u.signature_path, '') AS signature_path,
+           p.staff_id, p.first_name, p.middle_name, p.last_name, p.position, p.department,
+           p.specialization, p.employment_type, p.emergency_contact, p.status AS profile_status,
+           a.label AS session_label,
+           m.name_en AS institution_name, m.name_ar AS institution_name_ar, m.logo_path,
+           m.slug AS institution_slug, m.motto_en, m.category, m.brand_color, m.institution_type,
+           m.address, m.city, m.state_name, m.phone, m.head_name, m.head_title
+    FROM users u
+    LEFT JOIN teacher_profiles p ON p.user_id = u.id AND p.madrasa_id = u.madrasa_id
+    LEFT JOIN academic_sessions a ON a.id = p.academic_session_id AND a.madrasa_id = u.madrasa_id
+    JOIN madaris m ON m.id = u.madrasa_id`;
+
 async function studentDocumentRow(tid, studentId) {
   return db.get(`${STUDENT_DOC_SELECT} WHERE s.id = ? AND s.madrasa_id = ?`, [studentId, tid]);
+}
+
+async function staffDocumentRow(tid, userId) {
+  return db.get(`${TEACHER_DOC_SELECT} WHERE u.id = ? AND u.madrasa_id = ?`, [userId, tid]);
 }
 
 async function assertTeacherCanSee(req, res, tid, student) {
@@ -91,458 +127,147 @@ async function assertTeacherCanSee(req, res, tid, student) {
   return false;
 }
 
-/* --------------------------------------------------------------------------
-   QR support
-   --------------------------------------------------------------------------
-   A small dependency-free QR encoder is kept here because printable pages
-   must work offline and the platform intentionally does not add a PDF/QR
-   package just for an optional ID-card decoration. It supports byte-mode
-   QR versions 1–9 at error-correction level L, enough for a short signed
-   profile URL. The resulting SVG is a real QR matrix, not a screenshot or a
-   remote image request.
----------------------------------------------------------------------------- */
-const QR_BLOCKS_L = [
-  null,
-  { version: 1, blocks: 1, total: 26, data: 19, ecc: 7 },
-  { version: 2, blocks: 1, total: 44, data: 34, ecc: 10 },
-  { version: 3, blocks: 1, total: 70, data: 55, ecc: 15 },
-  { version: 4, blocks: 1, total: 100, data: 80, ecc: 20 },
-  { version: 5, blocks: 1, total: 134, data: 108, ecc: 26 },
-  { version: 6, blocks: 2, total: 86, data: 68, ecc: 18 },
-  { version: 7, blocks: 2, total: 98, data: 78, ecc: 20 },
-  { version: 8, blocks: 2, total: 121, data: 97, ecc: 24 },
-  { version: 9, blocks: 2, total: 146, data: 116, ecc: 30 },
-];
-const QR_ALIGNMENT = [[], [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46]];
-
-function gfTables() {
-  const exp = new Uint8Array(512);
-  const log = new Int16Array(256);
-  let x = 1;
-  for (let i = 0; i < 255; i++) {
-    exp[i] = x;
-    log[x] = i;
-    x <<= 1;
-    if (x & 0x100) x ^= 0x11d;
-  }
-  for (let i = 255; i < 512; i++) exp[i] = exp[i - 255];
-  return { exp, log };
-}
-const GF = gfTables();
-function gfMul(a, b) {
-  return a && b ? GF.exp[GF.log[a] + GF.log[b]] : 0;
-}
-function qrGenerator(eccLength) {
-  let poly = [1];
-  for (let i = 0; i < eccLength; i++) {
-    const next = new Array(poly.length + 1).fill(0);
-    for (let j = 0; j < poly.length; j++) {
-      next[j] ^= poly[j];
-      next[j + 1] ^= gfMul(poly[j], GF.exp[i]);
-    }
-    poly = next;
-  }
-  return poly;
-}
-function qrEcc(data, eccLength) {
-  const generator = qrGenerator(eccLength);
-  const result = new Uint8Array(eccLength);
-  for (const byte of data) {
-    const factor = byte ^ result[0];
-    result.copyWithin(0, 1);
-    result[eccLength - 1] = 0;
-    for (let i = 0; i < eccLength; i++) result[i] ^= gfMul(generator[i + 1], factor);
-  }
-  return result;
-}
-function qrBch(value, polynomial) {
-  let v = value;
-  const degree = 31 - Math.clz32(polynomial);
-  while (v && (31 - Math.clz32(v)) >= degree) v ^= polynomial << ((31 - Math.clz32(v)) - degree);
-  return v;
-}
-function qrBitsFor(data, version, capacity) {
-  const bytes = Buffer.from(data, "utf8");
-  const bits = [0, 1, 0, 0];
-  const lengthBits = version < 10 ? 8 : 16;
-  for (let i = lengthBits - 1; i >= 0; i--) bits.push((bytes.length >>> i) & 1);
-  for (const byte of bytes) for (let i = 7; i >= 0; i--) bits.push((byte >>> i) & 1);
-  const totalBits = capacity * 8;
-  for (let i = 0; i < Math.min(4, totalBits - bits.length); i++) bits.push(0);
-  while (bits.length % 8) bits.push(0);
-  const codewords = [];
-  for (let i = 0; i < bits.length; i += 8) codewords.push(bits.slice(i, i + 8).reduce((n, bit) => (n << 1) | bit, 0));
-  let pad = 0;
-  while (codewords.length < capacity) codewords.push((pad++ % 2) ? 0x11 : 0xec);
-  return codewords;
-}
-function qrDataCodewords(text) {
-  const bytes = Buffer.byteLength(String(text), "utf8");
-  const entry = QR_BLOCKS_L.find((x) => x && bytes <= x.data * x.blocks - (x.version < 10 ? 2 : 3));
-  if (!entry) return null;
-  return { bytes: Buffer.from(String(text), "utf8"), entry };
-}
-function qrInterleaved(text) {
-  const selected = qrDataCodewords(text);
-  if (!selected) return null;
-  const { bytes, entry } = selected;
-  const dataWords = qrBitsFor(text, entry.version, entry.data * entry.blocks);
-  const blocks = [];
-  let offset = 0;
-  for (let i = 0; i < entry.blocks; i++) {
-    const block = Uint8Array.from(dataWords.slice(offset, offset + entry.data));
-    offset += entry.data;
-    blocks.push({ data: block, ecc: qrEcc(block, entry.ecc) });
-  }
-  const out = [];
-  for (let i = 0; i < entry.data; i++) for (const block of blocks) if (i < block.data.length) out.push(block.data[i]);
-  for (let i = 0; i < entry.ecc; i++) for (const block of blocks) out.push(block.ecc[i]);
-  return { version: entry.version, bytes, codewords: out };
-}
-function qrMatrix(text, mask) {
-  const encoded = qrInterleaved(text);
-  if (!encoded) return null;
-  const version = encoded.version;
-  const size = 17 + version * 4;
-  const matrix = Array.from({ length: size }, () => Array(size).fill(null));
-  const finder = (row, col) => {
-    for (let r = -1; r <= 7; r++) for (let c = -1; c <= 7; c++) {
-      if (row + r < 0 || row + r >= size || col + c < 0 || col + c >= size) continue;
-      matrix[row + r][col + c] = (r >= 0 && r <= 6 && c >= 0 && c <= 6 && (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4)));
-    }
-  };
-  finder(0, 0); finder(size - 7, 0); finder(0, size - 7);
-  const alignment = QR_ALIGNMENT[version] || [];
-  for (const row of alignment) for (const col of alignment) {
-    if (matrix[row][col] !== null) continue;
-    for (let r = -2; r <= 2; r++) for (let c = -2; c <= 2; c++) matrix[row + r][col + c] = Math.max(Math.abs(r), Math.abs(c)) !== 1;
-  }
-  for (let i = 8; i < size - 8; i++) {
-    if (matrix[6][i] === null) matrix[6][i] = i % 2 === 0;
-    if (matrix[i][6] === null) matrix[i][6] = i % 2 === 0;
-  }
-  matrix[size - 8][8] = true;
-  const formatData = (1 << 3) | mask; // level L = 01
-  const format = ((formatData << 10) | qrBch(formatData << 10, 0x537)) ^ 0x5412;
-  for (let i = 0; i < 15; i++) {
-    const bit = ((format >>> i) & 1) === 1;
-    if (i < 6) matrix[i][8] = bit;
-    else if (i < 8) matrix[i + 1][8] = bit;
-    else matrix[size - 15 + i][8] = bit;
-    if (i < 8) matrix[8][size - i - 1] = bit;
-    else if (i < 9) matrix[8][15 - i - 1 + 1] = bit;
-    else matrix[8][15 - i - 1] = bit;
-  }
-  // Versions 7+ carry an 18-bit version code in two 3×6 blocks (top-right and
-  // bottom-left). Without it a scanner cannot read the larger profile URLs.
-  if (version >= 7) {
-    const info = (version << 12) | qrBch(version << 12, 0x1f25);
-    for (let i = 0; i < 18; i++) {
-      const bit = ((info >>> i) & 1) === 1;
-      const r = Math.floor(i / 3);
-      const c = (i % 3) + size - 11;
-      matrix[r][c] = bit;
-      matrix[c][r] = bit;
-    }
-  }
-  const data = [];
-  for (const word of encoded.codewords) for (let i = 7; i >= 0; i--) data.push((word >>> i) & 1);
-  let bitIndex = 0; let row = size - 1; let direction = -1;
-  for (let col = size - 1; col > 0; col -= 2) {
-    if (col === 6) col--;
-    while (true) {
-      for (const c of [col, col - 1]) if (matrix[row][c] === null) {
-        let bit = bitIndex < data.length ? data[bitIndex++] === 1 : false;
-        const invert = [
-          (row + c) % 2 === 0, row % 2 === 0, c % 3 === 0, (row + c) % 3 === 0,
-          (Math.floor(row / 2) + Math.floor(c / 3)) % 2 === 0,
-          (row * c) % 2 + (row * c) % 3 === 0,
-          ((row * c) % 2 + (row * c) % 3) % 2 === 0,
-          ((row * c) % 3 + (row + c) % 2) % 2 === 0,
-        ][mask];
-        matrix[row][c] = invert ? !bit : bit;
-      }
-      row += direction;
-      if (row < 0 || row >= size) { row -= direction; direction = -direction; break; }
-    }
-  }
-  return matrix;
-}
-function qrPenalty(matrix) {
-  const size = matrix.length; let score = 0;
-  const linePenalty = (line) => {
-    let run = 1;
-    for (let i = 1; i < line.length; i++) {
-      if (line[i] === line[i - 1]) run++;
-      else { if (run >= 5) score += run - 2; run = 1; }
-    }
-    if (run >= 5) score += run - 2;
-  };
-  for (let r = 0; r < size; r++) linePenalty(matrix[r]);
-  for (let c = 0; c < size; c++) linePenalty(matrix.map((row) => row[c]));
-  for (let r = 0; r < size - 1; r++) for (let c = 0; c < size - 1; c++) {
-    const a = matrix[r][c];
-    if (a === matrix[r + 1][c] && a === matrix[r][c + 1] && a === matrix[r + 1][c + 1]) score += 3;
-  }
-  for (let r = 0; r < size; r++) for (let c = 0; c < size - 6; c++) if (matrix[r].slice(c, c + 7).join("") === "true,false,true,true,true,false,true") score += 40;
-  for (let c = 0; c < size; c++) for (let r = 0; r < size - 6; r++) if (matrix.slice(r, r + 7).map((row) => row[c]).join("") === "true,false,true,true,true,false,true") score += 40;
-  let dark = 0; for (const row of matrix) for (const cell of row) if (cell) dark++;
-  score += Math.floor(Math.abs(100 * dark / (size * size) - 50) / 5) * 10;
-  return score;
-}
-function qrSvg(text) {
-  const candidates = Array.from({ length: 8 }, (_, mask) => ({ mask, matrix: qrMatrix(text, mask) })).filter((x) => x.matrix);
-  if (!candidates.length) return "";
-  const chosen = candidates.reduce((best, current) => qrPenalty(current.matrix) < qrPenalty(best.matrix) ? current : best);
-  const matrix = chosen.matrix; const size = matrix.length; const paths = [];
-  for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) if (matrix[r][c]) paths.push(`M${c} ${r}h1v1h-1z`);
-  return `<svg class="qr-code" viewBox="-4 -4 ${size + 8} ${size + 8}" role="img" aria-label="QR code linking to the student's public profile" shape-rendering="crispEdges"><rect x="-4" y="-4" width="${size + 8}" height="${size + 8}" fill="#fff"/><path d="${paths.join("")}" fill="#111827"/></svg>`;
-}
-
+/* ------------------------- profile links (legacy QR) ----------------------
+   Kept for the existing signed student-profile link; card QR codes no longer
+   use it because it expires. See services/card-credentials.js.
+-------------------------------------------------------------------------- */
 function signedProfileUrl(req, student) {
   const token = tokens.sign({ purpose: "public-student-profile", m: Number(student.madrasa_id), s: Number(student.id) }, 15 * 60);
   const path = `/api/public/student-profile/${token}`;
   const host = req.get("host");
   if (!host) return path;
-  const proto = req.get("x-forwarded-proto") || req.protocol || "https";
+  const proto = (req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0];
   return `${proto}://${host}${path}`;
 }
 
-/* --------------------------- shared print design ------------------------- */
-// The palette matches the term report sheets (services/report-sheet.js):
-// forest green + old gold for Islamic madaris, navy + slate blue for Western
-// academies. A school's own brand colour (Settings) overrides the base brand.
-const DOC_PALETTE = {
-  islamic: { brand: "#14532d", accent: "#a87f2b" },
-  western: { brand: "#0a2342", accent: "#3f6fa6" },
-};
-const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
-
-function mixHex(hex, target, ratio) {
-  const from = parseInt(hex.slice(1), 16);
-  const to = parseInt(target.slice(1), 16);
-  const channel = (shift) => {
-    const a = (from >> shift) & 255;
-    const b = (to >> shift) & 255;
-    return Math.round(a + (b - a) * ratio).toString(16).padStart(2, "0");
-  };
-  return `#${channel(16)}${channel(8)}${channel(0)}`;
-}
-
-/** Visual identity for one school, derived from its existing category field. */
-function documentTheme(school) {
-  const key = institution.normalizeCategory(school.category, "") === "western" ? "western" : "islamic";
-  const palette = DOC_PALETTE[key];
-  const brand = HEX_COLOR.test(String(school.brandColor || "")) ? school.brandColor : palette.brand;
-  return {
-    western: key === "western",
-    brand,
-    brandDark: mixHex(brand, "#000000", 0.3),
-    brandSoft: mixHex(brand, "#ffffff", 0.9),
-    tint: mixHex(brand, "#ffffff", 0.96),
-    accent: palette.accent,
-    accentSoft: mixHex(palette.accent, "#ffffff", 0.6),
-  };
-}
-
-function themeStyle(theme) {
-  return `--brand:${theme.brand};--brand-dark:${theme.brandDark};--brand-soft:${theme.brandSoft};--tint:${theme.tint};--accent:${theme.accent};--accent-soft:${theme.accentSoft}`;
-}
-
-/** Faint geometric star lattice (Islamic themes only). Colour is a constant. */
-function patternUrl(color, opacity) {
-  const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'>"
-    + `<g fill='none' stroke='${color}' stroke-opacity='${opacity}' stroke-width='1'>`
-    + "<rect x='10' y='10' width='20' height='20'/>"
-    + "<rect x='10' y='10' width='20' height='20' transform='rotate(45 20 20)'/></g></svg>";
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-}
-const ISLAMIC_LATTICE = patternUrl(DOC_PALETTE.islamic.accent, 0.2);
-const ISLAMIC_LATTICE_CERT = patternUrl(DOC_PALETTE.islamic.accent, 0.11);
-
-/** Normalises a school row (aliased by the queries below) for every renderer. */
-function schoolIdentity(row) {
-  return {
-    name: row.institution_name || "",
-    nameAr: row.institution_name_ar || "",
-    logo: safeAssetPath(row.logo_path),
-    motto: row.motto_en || "",
-    address: [row.address, row.city, row.state_name].filter(Boolean).join(", "),
-    phone: row.phone || "",
-    category: row.category || "",
-    brandColor: row.brand_color || "",
-  };
-}
-
-function schoolMark(school) {
-  return school.logo
-    ? `<img src="${escapeHtml(school.logo)}" alt="">`
-    : `<span>${escapeHtml(String(school.name || "S").trim().slice(0, 1).toUpperCase() || "S")}</span>`;
-}
-
-function noStore(res) {
-  res.set("Cache-Control", "no-store");
-}
-
-/* ------------------------------- ID cards -------------------------------- */
-async function loadIdCardStudent(req, res, tid, id) {
-  const student = await studentDocumentRow(tid, id);
-  if (!student) { err(res, 404, "Student not found."); return null; }
-  if (!await assertTeacherCanSee(req, res, tid, student)) return null;
-  return student;
-}
-
-function qrFigure(url) {
-  const svg = qrSvg(url);
-  if (!svg) return "";
-  return `<figure class="id-qr" data-profile-url="${escapeHtml(url)}"><a href="${escapeHtml(url)}" aria-label="Open public student profile">${svg}</a><figcaption>Scan to verify</figcaption></figure>`;
-}
-
-function idCardClasses(theme, name, side) {
-  return ["id-card", side, theme.western ? "category-western" : "category-islamic", name.length > 24 ? "is-long" : ""]
-    .filter(Boolean).join(" ");
-}
-
-/** Front of the card: identity, photo and (optionally) the profile QR. */
-function idCardFrontMarkup(student, qrUrl, issuedLabel) {
-  const school = schoolIdentity(student);
-  const theme = documentTheme(school);
-  const name = studentName(student);
-  const photo = safeAssetPath(student.photo_path);
+/* ------------------------------ ID card data -----------------------------
+   One normaliser per holder type, so the card engine sees one shape and a
+   staff card gets exactly the same verification as a student card.
+-------------------------------------------------------------------------- */
+async function buildStudentHolder(req, tid, student) {
+  const credential = await cardCreds.ensureCardCredential(tid, "student", Number(student.id));
+  const school = print.schoolIdentity(student);
+  const wantsQr = truthyFlag(req.query.qr === undefined ? "1" : req.query.qr);
   const fields = [
-    ["Admission no.", student.admission_no],
-    ["Class", student.class_name || "Not assigned"],
-    ["Session", student.session_label || "Not set"],
+    { label: "Admission no.", value: student.admission_no },
+    { label: "Class", value: student.class_name || "Not assigned" },
+    { label: "Session", value: student.session_label || "Not set" },
+    { label: "Programme", value: student.program || "" },
   ];
-  return `<article class="${idCardClasses(theme, name, "id-front")}" style="${themeStyle(theme)}">
-    <header class="id-head"><div class="id-mark">${schoolMark(school)}</div><div class="id-school"><strong>${escapeHtml(school.name || "School")}</strong><span>Student identity card</span></div></header>
-    <div class="id-body">
-      <div class="id-photo">${photo ? `<img src="${escapeHtml(photo)}" alt="${escapeHtml(name)}">` : `<div class="id-photo-empty">${escapeHtml(String(name || "S").slice(0, 1).toUpperCase())}</div>`}</div>
-      <div class="id-info">
-        <span class="id-role">Student</span>
-        <h2 class="id-name">${escapeHtml(name)}</h2>
-        <dl class="id-fields">${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
-      </div>
-      ${qrUrl ? qrFigure(qrUrl) : ""}
-    </div>
-    <footer class="id-foot"><span>${escapeHtml(school.motto || "Official student identification")}</span><span>Issued ${escapeHtml(issuedLabel)}</span></footer>
-  </article>`;
-}
-
-/** Back of the card: terms, school contact, emergency contact, signatures. */
-function idCardBackMarkup(student, issuedLabel) {
-  const school = schoolIdentity(student);
-  const theme = documentTheme(school);
   const name = studentName(student);
-  const contacts = [
-    ["School", school.address],
-    ["Phone", school.phone],
-    ["Emergency", student.emergency_contact || student.parent_phone || ""],
-  ].filter(([, value]) => value);
-  const subtitle = !theme.western && school.nameAr
-    ? `<span dir="rtl" lang="ar">${escapeHtml(school.nameAr)}</span>`
-    : "<span>Student identity card</span>";
-  return `<article class="${idCardClasses(theme, name, "id-back")}" style="${themeStyle(theme)}">
-    <header class="id-head"><div class="id-mark">${schoolMark(school)}</div><div class="id-school"><strong>${escapeHtml(school.name || "School")}</strong>${subtitle}</div></header>
-    <div class="id-body">
-      <p class="id-terms">This card remains the property of ${escapeHtml(school.name || "the school")}. Carry it on school premises and show it when asked. If found, please return it to the school office.</p>
-      <dl class="id-contact">${contacts.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
-      <div class="id-signs"><span>Holder's signature</span><span>Principal's signature</span></div>
-    </div>
-    <footer class="id-foot"><span>${escapeHtml(student.admission_no)} · ${escapeHtml(name)}</span><span>Issued ${escapeHtml(issuedLabel)}</span></footer>
-  </article>`;
+  return {
+    type: "student",
+    id: Number(student.id),
+    name,
+    initials: initials(name),
+    photoPath: safeAssetPath(student.photo_path),
+    roleLabel: "Student",
+    designation: [student.islamic_program, student.western_program].filter(Boolean).join(" · "),
+    fields,
+    meta: [
+      { label: "School", value: school.address },
+      { label: "Phone", value: school.phone },
+    ],
+    emergency: student.emergency_contact || student.parent_phone || "",
+    serial: student.admission_no || student.student_code || "",
+    validThrough: student.session_label || "",
+    verifyUrl: wantsQr && credential ? cardCreds.cardVerifyUrl(req, credential.code) : "",
+    credential,
+    holderSignature: safeAssetPath(student.signature_path),
+    issuerSignature: "",
+    issuerName: student.head_name || "",
+    school,
+    theme: print.documentTheme(school),
+  };
 }
 
-const idSlot = (inner) => `<div class="id-slot">${inner}</div>`;
+const STAFF_ROLE_LABELS = { madrasa_admin: "Administrator", teacher: "Teacher", parent: "Parent", super_admin: "Platform staff" };
 
-function printShell(title, css, body, { interactive = true } = {}) {
-  const bar = interactive
-    ? `<div class="print-bar"><span>${escapeHtml(title)}</span><button id="printPageBtn" type="button">Print / Save as PDF</button></div>`
-    : "";
-  const script = interactive ? '<script src="/js/print.js"></script>' : "";
-  return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${PRINT_BASE_CSS}\n${css}</style></head><body>${bar}${body}${script}</body></html>`;
+async function buildTeacherHolder(req, tid, row) {
+  const credential = await cardCreds.ensureCardCredential(tid, "teacher", Number(row.id));
+  const school = print.schoolIdentity(row);
+  const wantsQr = truthyFlag(req.query.qr === undefined ? "1" : req.query.qr);
+  const name = staffName(row);
+  const fields = [
+    { label: "Staff ID", value: row.staff_id || "" },
+    { label: "Department", value: row.department || "" },
+    { label: "Session", value: row.session_label || "" },
+    { label: "Specialty", value: row.specialization || "" },
+  ].filter((field) => field.value);
+  return {
+    type: "teacher",
+    id: Number(row.id),
+    name,
+    initials: initials(name),
+    photoPath: safeAssetPath(row.photo_path),
+    roleLabel: row.position || STAFF_ROLE_LABELS[row.role] || "Staff",
+    designation: [row.position, row.employment_type].filter(Boolean).join(" · "),
+    fields: fields.length ? fields : [{ label: "Role", value: STAFF_ROLE_LABELS[row.role] || "Staff" }],
+    meta: [
+      { label: "School", value: school.address },
+      { label: "Phone", value: school.phone || row.user_phone },
+      { label: "Email", value: row.email },
+    ],
+    emergency: row.emergency_contact || "",
+    serial: row.staff_id || `STAFF-${row.id}`,
+    validThrough: row.session_label || "",
+    verifyUrl: wantsQr && credential ? cardCreds.cardVerifyUrl(req, credential.code) : "",
+    credential,
+    holderSignature: safeAssetPath(row.signature_path),
+    issuerSignature: "",
+    issuerName: row.head_name || "",
+    school,
+    theme: print.documentTheme(school),
+  };
 }
 
-const PRINT_BASE_CSS = `
-*{box-sizing:border-box}
-html,body{margin:0;padding:0}
-body{background:#e6ebf2;color:#172033;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.print-bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:#1f3154;color:#fff;font:600 13px/1.3 Arial,"Segoe UI",sans-serif}
-.print-bar span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.9}
-.print-bar button{flex:none;border:0;border-radius:7px;background:#fff;color:#1f3154;padding:8px 14px;font:700 13px Arial,sans-serif;cursor:pointer}
-.print-bar button:focus-visible{outline:2px solid #a87f2b;outline-offset:2px}
-@media print{body{background:#fff}.print-bar{display:none!important}}`;
+/**
+ * The signature printed under "Principal" on a card back: the school's own
+ * signatory choice (Settings → signature) when set, otherwise the first
+ * administrator who has saved a signature. Names come from the institution
+ * record so a card never prints a signature nobody authorised.
+ */
+async function issuerSignatureFor(tid) {
+  const school = await db.get("SELECT head_name, head_title FROM madaris WHERE id = ?", [tid]);
+  const setting = await db.get("SELECT value FROM settings WHERE madrasa_id = ? AND key_name = 'document_signatory'", [tid]);
+  let configured = null;
+  if (setting && setting.value) {
+    try { configured = JSON.parse(String(setting.value)); } catch (e) { configured = null; }
+  }
+  if (configured && configured.principalUserId) {
+    const account = await db.get("SELECT full_name, signature_path FROM users WHERE id = ? AND madrasa_id = ? AND is_active = 1",
+      [Number(configured.principalUserId), tid]);
+    if (account && safeAssetPath(account.signature_path)) {
+      return { signaturePath: safeAssetPath(account.signature_path), name: account.full_name || "" };
+    }
+  }
+  const admin = await db.get(
+    `SELECT u.full_name, u.signature_path FROM users u
+      WHERE u.madrasa_id = ? AND u.role IN ('madrasa_admin','super_admin') AND u.signature_path <> ''
+      ORDER BY u.id LIMIT 1`,
+    [tid]
+  );
+  if (admin) return { signaturePath: safeAssetPath(admin.signature_path), name: admin.full_name || "" };
+  return { signaturePath: "", name: (school && school.head_name) || "" };
+}
 
-const ID_CARD_CSS = `
-.id-slot{position:relative;width:85.6mm;height:54mm;margin:12px auto}
-.id-card{position:relative;display:flex;flex-direction:column;width:85.6mm;height:54mm;overflow:hidden;border-radius:3.2mm;background:#fff;color:#1b2538;break-inside:avoid;box-shadow:0 1px 2px rgba(16,24,40,.14),0 6px 18px rgba(16,24,40,.16)}
-.id-head{position:relative;flex:none;display:flex;align-items:center;gap:2.6mm;height:12.6mm;padding:0 3.4mm;background:linear-gradient(118deg,var(--brand-dark) 0%,var(--brand) 62%,var(--brand) 100%);color:#fff}
-.id-head::after{content:"";position:absolute;left:0;right:0;bottom:0;height:.9mm;background:var(--accent)}
-.id-mark{flex:none;width:8.6mm;height:8.6mm;border-radius:50%;background:#fff;display:grid;place-items:center;overflow:hidden;box-shadow:0 0 0 .5mm var(--accent)}
-.id-mark img{width:100%;height:100%;object-fit:contain;padding:.8mm}
-.id-mark span{font:700 3.8mm/1 Georgia,"Times New Roman",serif;color:var(--brand)}
-.id-school{min-width:0;flex:1}
-.id-school strong{display:block;font:800 3.1mm/1.15 Arial,"Segoe UI",sans-serif;letter-spacing:.035em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.id-school span{display:block;margin-top:.7mm;font:600 2mm/1.2 Arial,"Segoe UI",sans-serif;letter-spacing:.14em;text-transform:uppercase;opacity:.86}
-.id-body{position:relative;flex:1;min-height:0;display:flex;align-items:center;gap:3.2mm;padding:2.8mm 3.4mm 2mm;background:linear-gradient(180deg,#fff 0%,var(--tint) 100%);overflow:hidden}
-.id-body::before{content:"";position:absolute;inset:0;pointer-events:none;background-size:9mm 9mm}
-.category-islamic .id-body::before{background-image:${ISLAMIC_LATTICE}}
-.category-western .id-body::before{background-image:repeating-linear-gradient(135deg,rgba(10,35,66,.05) 0 .25mm,transparent .25mm 3mm)}
-.id-photo{position:relative;z-index:1;flex:none;width:19.5mm;height:24.5mm;padding:.7mm;border-radius:2.2mm;background:#fff;box-shadow:0 0 0 .3mm var(--accent),0 .7mm 1.8mm rgba(16,24,40,.2)}
-.id-photo img,.id-photo-empty{display:block;width:100%;height:100%;border-radius:1.5mm;object-fit:cover}
-.id-photo-empty{display:grid;place-items:center;background:var(--brand-soft);color:var(--brand);font:800 8mm Georgia,serif}
-.id-info{position:relative;z-index:1;min-width:0;flex:1;display:flex;flex-direction:column;gap:1.3mm}
-.id-role{align-self:flex-start;padding:.5mm 1.9mm;border-radius:1mm;background:var(--accent);color:#fff;font:800 1.9mm/1.2 Arial,sans-serif;letter-spacing:.2em;text-transform:uppercase}
-.id-name{margin:0;font:700 3.5mm/1.15 Georgia,"Times New Roman",serif;color:var(--brand-dark);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.is-long .id-name{font-size:2.8mm}
-.id-fields{margin:0;display:grid;gap:.8mm}
-.id-fields div,.id-contact div{display:grid;grid-template-columns:19mm minmax(0,1fr);align-items:baseline;gap:1mm}
-.id-fields dt,.id-contact dt{white-space:nowrap;font:700 1.9mm/1.25 Arial,sans-serif;letter-spacing:.05em;text-transform:uppercase;color:#6b7689}
-.id-fields dd,.id-contact dd{margin:0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:700 2.4mm/1.25 Arial,sans-serif;color:#1b2538}
-.id-qr{position:relative;z-index:1;flex:none;width:14mm;margin:0;text-align:center}
-.id-qr a{display:block;width:14mm;height:14mm}
-.id-qr svg{display:block;width:14mm;height:14mm}
-.id-qr figcaption{margin-top:.7mm;font:700 1.6mm/1.2 Arial,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:#6b7689}
-.id-foot{position:relative;flex:none;display:flex;justify-content:space-between;align-items:center;gap:2mm;height:6.2mm;padding:0 3.4mm;background:var(--brand-soft);border-top:.25mm solid var(--accent-soft);font:600 2mm/1 Arial,sans-serif;color:#44506a;letter-spacing:.02em}
-.id-foot span{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.id-foot span:last-child{flex:none;color:var(--brand);font-weight:800;letter-spacing:.06em;text-transform:uppercase}
-.id-back .id-body{flex-direction:column;align-items:stretch;justify-content:flex-start;gap:1.7mm;padding:2.9mm 3.4mm 2mm}
-.id-terms{position:relative;z-index:1;margin:0;font:400 2.2mm/1.42 Georgia,"Times New Roman",serif;color:#354057}
-.id-contact{position:relative;z-index:1;margin:0;display:grid;gap:.9mm}
-.id-signs{position:relative;z-index:1;margin-top:auto;display:flex;justify-content:space-between;gap:6mm}
-.id-signs span{flex:1;padding-top:.9mm;border-top:.3mm solid #475467;font:700 1.8mm/1.2 Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#6b7689}
-.id-side-label{margin:14px 0 2px;text-align:center;font:700 11px/1 Arial,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#667085}
-`;
+/* ------------------------------ single cards ---------------------------- */
+const SIDE_LABELS = { front: ["Front"], back: ["Back"], both: ["Front", "Back"] };
 
-const ID_SINGLE_CSS = `
-@page{size:85.6mm 54mm;margin:0}
-.id-single{padding:0 0 18px}
-.id-single .id-slot{margin:0 auto 14px}
-.id-single .id-slot:first-of-type{margin-top:4px}
-@media screen{.id-single .id-card{box-shadow:0 1px 2px rgba(16,24,40,.14),0 10px 26px rgba(16,24,40,.22)}}
-@media print{body{background:#fff}.id-side-label{display:none}.id-single{padding:0}.id-single .id-slot,.id-single .id-slot:first-of-type{margin:0;break-after:page;page-break-after:always}.id-single .id-slot:last-of-type{break-after:auto;page-break-after:auto}.id-card{box-shadow:none}}
-`;
-
-// Eight cards per A4 portrait sheet (two columns by four rows) with crop
-// marks drawn just outside every card so the cut lines are easy to find.
-const ID_SHEET_CSS = `
-@page{size:A4 portrait;margin:10mm}
-.id-sheet{width:190mm;height:276mm;margin:0 auto;display:grid;grid-template-columns:repeat(2,85.6mm);grid-template-rows:repeat(4,54mm);gap:8mm 10mm;align-content:center;justify-content:center;break-after:page;page-break-after:always}
-.id-sheet:last-of-type{break-after:auto;page-break-after:auto}
-.id-sheet .id-slot{margin:0}
-.id-sheet .id-card{box-shadow:none}
-.id-sheet .id-slot::before{content:"";position:absolute;inset:-4mm;pointer-events:none;background:
-  linear-gradient(#777,#777) 0 3.5mm/2.5mm .2mm no-repeat,
-  linear-gradient(#777,#777) 3.5mm 0/.2mm 2.5mm no-repeat,
-  linear-gradient(#777,#777) 91.1mm 3.5mm/2.5mm .2mm no-repeat,
-  linear-gradient(#777,#777) 90.1mm 0/.2mm 2.5mm no-repeat,
-  linear-gradient(#777,#777) 0 58.5mm/2.5mm .2mm no-repeat,
-  linear-gradient(#777,#777) 3.5mm 59.5mm/.2mm 2.5mm no-repeat,
-  linear-gradient(#777,#777) 91.1mm 58.5mm/2.5mm .2mm no-repeat,
-  linear-gradient(#777,#777) 90.1mm 59.5mm/.2mm 2.5mm no-repeat}
-@media screen{.id-sheet{margin:16px auto;background:#fff;box-shadow:0 2px 14px rgba(16,24,40,.12)}}
-@media print{body{background:#fff}.id-sheet{margin:0}}
-`;
+function singleCardDocument(title, holder, side) {
+  const wanted = SIDE_LABELS[side] ? side : "both";
+  const issued = dateLabel(today());
+  const prepared = Object.assign({}, holder, { issued, code: (holder.credential && holder.credential.code) || "" });
+  const pages = (wanted === "both" ? [cardDesigns.idCardFront(prepared), cardDesigns.idCardBack(prepared)]
+    : wanted === "back" ? [cardDesigns.idCardBack(prepared)] : [cardDesigns.idCardFront(prepared)]);
+  const labels = SIDE_LABELS[wanted];
+  const body = `<section class="id-single">${pages
+    .map((page, index) => `<p class="id-side-label">${labels[index]}</p>${cardDesigns.idSlot(page)}`)
+    .join("")}</section>`;
+  return print.printShell(title, cardDesigns.ID_CARD_CSS + cardDesigns.ID_SINGLE_CSS, body, {
+    badge: holder.type === "teacher" ? "Staff ID card" : "Student ID card",
+  });
+}
 
 router.get("/id-card/bulk", STAFF, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
@@ -560,61 +285,275 @@ router.get("/id-card/bulk", STAFF, requireStaffPermission("documents.generate"),
     ORDER BY s.last_name, s.first_name, s.id`, [tid, classId]);
   if (!students.length) return err(res, 404, "No students found in this class.");
   const issued = dateLabel(today());
-  const cards = students.map((student) => (side === "back"
-    ? idCardBackMarkup(student, issued)
-    : idCardFrontMarkup(student, "", issued)));
+  const cards = [];
+  for (const student of students) {
+    const holder = await buildStudentHolder(req, tid, student);
+    const prepared = Object.assign({}, holder, { issued, code: (holder.credential && holder.credential.code) || "" });
+    cards.push(side === "back" ? cardDesigns.idCardBack(prepared) : cardDesigns.idCardFront(prepared));
+  }
+  await cardCreds.noteCardsPrinted(students, { madrasaId: tid, userId: req.user.id, ip: req.ip, holderType: "student", side });
   const sheets = [];
   for (let i = 0; i < cards.length; i += 8) {
-    sheets.push(`<section class="id-sheet">${cards.slice(i, i + 8).map(idSlot).join("")}</section>`);
+    sheets.push(`<section class="id-sheet">${cards.slice(i, i + 8).map(cardDesigns.idSlot).join("")}</section>`);
   }
-  noStore(res);
-  res.type("html").send(printShell(`ID cards — ${klass.name_en} (${side === "back" ? "backs" : "fronts"})`, ID_CARD_CSS + ID_SHEET_CSS, sheets.join("")));
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(print.printShell(
+    `ID cards — ${klass.name_en} (${side === "back" ? "backs" : "fronts"})`,
+    cardDesigns.ID_CARD_CSS + cardDesigns.ID_SHEET_CSS,
+    sheets.join(""),
+    { badge: "Class set" }
+  ));
+}));
+
+router.get("/staff-id-card/bulk", ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const side = String(req.query.side || "front").toLowerCase() === "back" ? "back" : "front";
+  const search = cleanStr(req.query.q, 80);
+  // `role` narrows the run: staff cards are printed for the whole office, not
+  // only for the teaching body, but a school printing 40 teacher cards should
+  // not have to tape four administrator cards onto the pile afterwards.
+  const requestedRole = cleanStr(req.query.role, 20).toLowerCase();
+  const roles = requestedRole === "teacher" ? ["teacher"] : requestedRole === "madrasa_admin" ? ["madrasa_admin"] : ["teacher", "madrasa_admin"];
+  const where = ["u.madrasa_id = ?", "u.is_active = 1", `u.role IN (${roles.map(() => "?").join(",")})`];
+  const params = [tid, ...roles];
+  if (search) {
+    where.push("(u.full_name LIKE ? OR p.first_name LIKE ? OR p.last_name LIKE ? OR p.staff_id LIKE ?)");
+    const like = `%${search}%`;
+    params.push(like, like, like, like);
+  }
+  const rows = await db.all(`${TEACHER_DOC_SELECT}
+    WHERE ${where.join(" AND ")}
+    ORDER BY COALESCE(NULLIF(p.last_name, ''), u.full_name), u.id`, params);
+  if (!rows.length) return err(res, 404, search ? "No staff matched that search." : "No active staff found.");
+  const issued = dateLabel(today());
+  const cards = [];
+  for (const row of rows) {
+    const holder = await buildTeacherHolder(req, tid, row);
+    const prepared = Object.assign({}, holder, { issued, code: (holder.credential && holder.credential.code) || "" });
+    cards.push(side === "back" ? cardDesigns.idCardBack(prepared) : cardDesigns.idCardFront(prepared));
+  }
+  await cardCreds.noteCardsPrinted(rows, { madrasaId: tid, userId: req.user.id, ip: req.ip, holderType: "teacher", side });
+  const sheets = [];
+  for (let i = 0; i < cards.length; i += 8) {
+    sheets.push(`<section class="id-sheet">${cards.slice(i, i + 8).map(cardDesigns.idSlot).join("")}</section>`);
+  }
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(print.printShell(
+    `Staff ID cards (${side === "back" ? "backs" : "fronts"})`,
+    cardDesigns.ID_CARD_CSS + cardDesigns.ID_SHEET_CSS,
+    sheets.join(""),
+    { badge: `Staff · ${rows.length}` }
+  ));
 }));
 
 router.get("/id-card/:studentId", STAFF, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
-  const student = await loadIdCardStudent(req, res, tid, toNum(req.params.studentId, 0)); if (!student) return;
-  const issued = dateLabel(today());
-  const withQr = ["1", "true", "yes"].includes(String(req.query.qr || "").toLowerCase());
-  const qrUrl = withQr ? signedProfileUrl(req, student) : "";
-  const body = `<section class="id-single">
-    <p class="id-side-label">Front</p>${idSlot(idCardFrontMarkup(student, qrUrl, issued))}
-    <p class="id-side-label">Back</p>${idSlot(idCardBackMarkup(student, issued))}
-  </section>`;
-  noStore(res);
-  res.type("html").send(printShell(`ID card — ${studentName(student)}`, ID_CARD_CSS + ID_SINGLE_CSS, body));
+  const student = await studentDocumentRow(tid, toNum(req.params.studentId, 0));
+  if (!student) { err(res, 404, "Student not found."); return; }
+  if (!await assertTeacherCanSee(req, res, tid, student)) return;
+  const holder = await buildStudentHolder(req, tid, student);
+  const issuer = await issuerSignatureFor(tid);
+  holder.issuerSignature = issuer.signaturePath;
+  holder.issuerName = holder.issuerName || issuer.name;
+  const side = String(req.query.side || "both").toLowerCase();
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(singleCardDocument(`ID card — ${holder.name}`, holder, side));
 }));
 
-/* -------------------------- certificate templates ----------------------- */
-function cleanTemplateHtml(value) {
-  // The editor is intentionally HTML-based, but stored templates must not be
-  // able to execute scripts when a certificate is opened by a staff member.
-  return String(value || "").slice(0, MAX_TEMPLATE_LENGTH)
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/\s(?:href|src)\s*=\s*["']\s*javascript:[^"']*["']/gi, "");
-}
-function templateType(value) {
-  const type = cleanStr(value, 30).toLowerCase();
-  return TEMPLATE_TYPES.has(type) ? type : "custom";
-}
-function normalizeCustomFields(value) {
-  let source = value;
-  if (typeof source === "string") {
-    try { source = JSON.parse(source); } catch (_) { source = {}; }
+/* ----------------------------- my own card ---------------------------------
+   Printing a card used to be something an administrator did for you. A student
+   or a member of staff can now open their own, complete with the same QR code,
+   because the moment a card is useful is the moment nobody is at a desk to
+   issue it: the first day of term, an exam hall, a gate.
+   Parents get no card; they get their children's, which is what a gate asks for.
+--------------------------------------------------------------------------- */
+router.get("/my-card", asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const role = String(req.user.role || "");
+  let holder = null;
+  if (role === "student") {
+    const student = await studentDocumentRow(tid, toNum(req.user.studentId, 0));
+    if (!student) { err(res, 404, "No student record is linked to your account yet. Ask your school to confirm your admission."); return; }
+    holder = await buildStudentHolder(req, tid, student);
+  } else {
+    const row = await staffDocumentRow(tid, Number(req.user.id));
+    if (!row) { err(res, 404, "No staff record was found for your account."); return; }
+    holder = await buildTeacherHolder(req, tid, row);
+    // Only the principal's own signature belongs on the issuer line, and only
+    // when the principal is the one printing.
+    if (role === "madrasa_admin") {
+      const issuer = await issuerSignatureFor(tid);
+      holder.issuerSignature = issuer.signaturePath;
+      holder.issuerName = holder.issuerName || issuer.name;
+    }
   }
-  if (!source || typeof source !== "object" || Array.isArray(source)) source = {};
-  const out = {};
-  for (let i = 1; i <= 3; i++) out[`custom_field_${i}`] = cleanStr(source[`custom_field_${i}`] ?? source[String(i)] ?? "", MAX_CUSTOM_FIELD_LENGTH);
+  const side = String(req.query.side || "both").toLowerCase();
+  await cardCreds.noteCardsPrinted([holder], { madrasaId: tid, userId: req.user.id, ip: req.ip, holderType: role === "student" ? "student" : "teacher", side });
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(singleCardDocument(`ID card — ${holder.name}`, holder, side));
+}));
+
+/** The card a signed-in person owns, as JSON, for the portal's own panel. */
+router.get("/my-card/credential", asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const isStudent = req.user.role === "student";
+  const holderId = isStudent ? toNum(req.user.studentId, 0) : Number(req.user.id);
+  if (!holderId) { err(res, 404, "No card has been issued for your account yet."); return; }
+  const credential = await cardCreds.ensureCardCredential(tid, isStudent ? "student" : "teacher", holderId);
+  if (!credential) { err(res, 404, "No card has been issued for your account yet."); return; }
+  ok(res, {
+    credential: {
+      code: credential.code,
+      status: credential.status,
+      printedAt: credential.printed_at || "",
+      printCount: Number(credential.print_count || 0),
+      verifyUrl: cardCreds.cardVerifyUrl(req, credential.code),
+    },
+  });
+}));
+
+router.get("/staff-id-card/:userId", STAFF, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const requested = toNum(req.params.userId, 0);
+  // A teacher may always print their own card; printing anyone else's is admin work.
+  if (req.user.role !== "madrasa_admin" && Number(req.user.id) !== requested) {
+    err(res, 403, "You can print only your own staff card.");
+    return;
+  }
+  const row = await staffDocumentRow(tid, requested);
+  if (!row) { err(res, 404, "Staff record not found."); return; }
+  const holder = await buildTeacherHolder(req, tid, row);
+  const issuer = await issuerSignatureFor(tid);
+  // The principal signs staff cards; a teacher printing their own card leaves
+  // the issuer line blank rather than inventing someone else's signature.
+  if (req.user.role === "madrasa_admin") {
+    holder.issuerSignature = issuer.signaturePath;
+    holder.issuerName = holder.issuerName || issuer.name;
+  }
+  const side = String(req.query.side || "both").toLowerCase();
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(singleCardDocument(`Staff ID card — ${holder.name}`, holder, side));
+}));
+
+/* ------------------------ card credential controls ----------------------- */
+router.get("/card/:holderType/:holderId/credential", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const type = req.params.holderType === "teacher" || req.params.holderType === "staff" ? "teacher" : "student";
+  const id = toNum(req.params.holderId, 0);
+  if (type === "teacher" && req.user.role !== "madrasa_admin" && Number(req.user.id) !== id) {
+    err(res, 403, "You can view only your own card credential.");
+    return;
+  }
+  const credential = await cardCreds.ensureCardCredential(tid, type, id);
+  if (!credential) return err(res, 404, "Card not found.");
+  ok(res, {
+    credential: {
+      code: credential.code,
+      status: credential.status,
+      issuedAt: credential.issued_at || credential.created_at,
+      lastPrintedAt: credential.last_printed_at || "",
+      printCount: Number(credential.print_count || 0),
+      verifyUrl: cardCreds.cardVerifyUrl(req, credential.code),
+    },
+  });
+}));
+
+router.post("/card/:holderType/:holderId/status", ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const type = req.params.holderType === "teacher" || req.params.holderType === "staff" ? "teacher" : "student";
+  const id = toNum(req.params.holderId, 0);
+  const status = cleanStr(req.body && req.body.status, 20).toLowerCase();
+  if (!["active", "revoked"].includes(status)) return err(res, 400, "status must be active or revoked.");
+  const credential = await cardCreds.setCardStatus(tid, type, id, status, req.user.id);
+  if (!credential) return err(res, 404, "No card has been printed for this holder yet.");
+  logActivity(db, { madrasaId: tid, userId: req.user.id, action: `card.${status}`, entity: "card_credentials", entityId: String(credential.id), meta: { type, holderId: id }, ip: req.ip });
+  ok(res, { ok: true, status: credential.status, code: credential.code });
+}));
+
+/* --------------------------- certificate designs ------------------------
+   A template is a design plus a filled form. The HTML editor is gone: what is
+   stored is a design key and a bounded JSON config of plain text, which the
+   renderer expands into the document.
+-------------------------------------------------------------------------- */
+async function readTemplateConfig(template) {
+  const raw = template && template.config;
+  let parsed = null;
+  if (typeof raw === "string" && raw.trim()) {
+    try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+  } else if (raw && typeof raw === "object") {
+    parsed = raw;
+  }
+  const legacyHtml = String((template && template.html_template) || "");
+  if (!parsed && legacyHtml) {
+    // Migration path for templates written before the design gallery existed:
+    // the stored HTML is reduced to its text and mapped onto plain fields, so
+    // an old template prints with the new renderer and no raw HTML survives.
+    parsed = certDesigns.legacyConfigFromHtml(legacyHtml);
+  }
+  return certDesigns.normaliseConfig(parsed || {}, {
+    type: certDesigns.CERT_TYPES.includes(String(template && template.type).toLowerCase()) ? String(template.type).toLowerCase() : "custom",
+    designKey: template && template.design_key ? template.design_key : "",
+  });
+}
+
+function templateView(template, config) {
+  const design = certDesigns.designByKey(config.designKey) || certDesigns.designByKey(certDesigns.DESIGNS[0].key);
+  return {
+    id: template.id,
+    madrasa_id: template.madrasa_id,
+    name: template.name,
+    type: config.type,
+    designKey: design.key,
+    designName: design.name,
+    designTagline: design.tagline,
+    swatch: design.swatch,
+    config,
+    created_at: template.created_at,
+    archived_at: template.archived_at || null,
+    // Populated so an old HTML-only template still shows what it says.
+    excerpt: String(config.body || "").slice(0, 160),
+  };
+}
+
+/** Signatory names/signatures may reference a staff account; resolved at print. */
+async function resolveSignatories(tid, signatories) {
+  const out = [];
+  for (const signatory of signatories) {
+    const next = { ...signatory };
+    if (next.userId && !next.signaturePath) {
+      const account = await db.get(
+        "SELECT full_name, signature_path FROM users WHERE id = ? AND madrasa_id = ? AND is_active = 1",
+        [Number(next.userId), tid]
+      );
+      if (account) {
+        next.signaturePath = safeAssetPath(account.signature_path);
+        if (!next.name) next.name = account.full_name || "";
+      }
+    }
+    out.push(next);
+  }
   return out;
 }
-function replacePlaceholders(template, values) {
-  return cleanTemplateHtml(template).replace(/\{\{\s*(student_name|class|session|date|custom_field_[1-3])\s*\}\}/gi, (_, key) => escapeHtml(values[String(key).toLowerCase()] || ""));
-}
+
+router.get("/certificate-designs", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  ok(res, {
+    designs: certDesigns.designList(),
+    tokens: certDesigns.TOKENS,
+    facts: certDesigns.FACTS,
+    types: certDesigns.CERT_TYPES,
+    typeDefaults: certDesigns.TYPE_DEFAULTS,
+    defaultBodies: certDesigns.DEFAULT_BODY_TEMPLATES,
+  });
+}));
 
 router.get(["/templates", "/certificate-templates"], ADMIN, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
-  const templates = await db.all("SELECT id, madrasa_id, name, type, html_template, created_at, archived_at FROM certificate_templates WHERE madrasa_id=? ORDER BY archived_at IS NOT NULL, name, id DESC", [tid]);
+  const rows = await db.all(
+    "SELECT * FROM certificate_templates WHERE madrasa_id=? ORDER BY archived_at IS NOT NULL, name, id DESC",
+    [tid]
+  );
+  const templates = [];
+  for (const row of rows) templates.push(templateView(row, await readTemplateConfig(row)));
   ok(res, { templates });
 }));
 
@@ -622,45 +561,83 @@ router.get(["/templates/:id", "/certificate-templates/:id"], ADMIN, requireStaff
   const tid = await tenantId(req, res); if (tid == null) return;
   const template = await db.get("SELECT * FROM certificate_templates WHERE id=? AND madrasa_id=?", [toNum(req.params.id, 0), tid]);
   if (!template) return err(res, 404, "Certificate template not found.");
-  ok(res, { template });
+  const config = await readTemplateConfig(template);
+  ok(res, { template: templateView(template, config), config });
 }));
+
+async function writeTemplate(tid, req, body, existing) {
+  const name = cleanStr(body.name, 160);
+  if (!name) return { status: 400, error: "Template name is required." };
+  const requestedType = cleanStr(body.type, 30).toLowerCase();
+  if (requestedType && !TEMPLATE_TYPES.has(requestedType)) return { status: 400, error: "Invalid certificate template type." };
+  const type = requestedType || (existing ? existing.type : "custom");
+  if (body.html_template !== undefined && String(body.html_template || "").length > MAX_TEMPLATE_LENGTH) {
+    return { status: 400, error: "Certificate wording is too long." };
+  }
+  // An older client that still posts a block of HTML gets it converted, not
+  // rejected: the markup is reduced to the wording it clearly carried, and the
+  // school's design choice supplies the frame. Nothing executable is stored.
+  const legacyHtml = body.config === undefined && typeof body.html_template === "string" && body.html_template.trim();
+  const source = body.config || (legacyHtml
+    ? Object.assign({}, body, certDesigns.legacyConfigFromHtml(body.html_template))
+    : body);
+  const config = certDesigns.normaliseConfig(source, { type, designKey: body.designKey || body.design_key });
+  if (!config.title) return { status: 400, error: "A certificate needs a title, e.g. “Certificate of Achievement”." };
+  if (!config.body) return { status: 400, error: "Write the certificate wording — what the certificate is for." };
+  return { config, name, type };
+}
 
 router.post(["/templates", "/certificate-templates"], ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
-  const b = req.body || {}; const name = cleanStr(b.name, 160); const html = cleanTemplateHtml(b.html_template);
-  if (!name) return err(res, 400, "Template name is required.");
-  if (!html.trim()) return err(res, 400, "HTML template is required.");
-  if (String(b.html_template || "").length > MAX_TEMPLATE_LENGTH) return err(res, 400, "HTML template is too large.");
-  const requestedType = cleanStr(b.type, 30).toLowerCase();
-  if (requestedType && !TEMPLATE_TYPES.has(requestedType)) return err(res, 400, "Invalid certificate template type.");
-  const type = requestedType || "custom";
-  const result = await db.run("INSERT INTO certificate_templates (madrasa_id,name,type,html_template) VALUES (?,?,?,?)", [tid, name, type, html]);
-  logActivity(db, { madrasaId: tid, userId: req.user.id, action: "certificate_template.create", entity: "certificate_template", entityId: String(result.lastInsertRowid), ip: req.ip });
-  ok(res, { ok: true, id: result.lastInsertRowid });
+  const result = await writeTemplate(tid, req, req.body || {});
+  if (result.status) return err(res, result.status, result.error);
+  // html_template is kept empty: plain text + a design key is the storage
+  // format now, and an empty column proves nothing executable is stored.
+  const insert = await db.run(
+    "INSERT INTO certificate_templates (madrasa_id, name, type, html_template, design_key, config) VALUES (?,?,?,?,?,?)",
+    [tid, result.name, result.type, "", result.config.designKey, JSON.stringify(result.config)]
+  );
+  const id = Number(insert.lastInsertRowid);
+  logActivity(db, { madrasaId: tid, userId: req.user.id, action: "certificate_template.create", entity: "certificate_template", entityId: String(id), meta: { designKey: result.config.designKey }, ip: req.ip });
+  ok(res, { ok: true, id, config: result.config });
 }));
 
 router.patch(["/templates/:id", "/certificate-templates/:id"], ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
-  const id = toNum(req.params.id, 0); const existing = await db.get("SELECT * FROM certificate_templates WHERE id=? AND madrasa_id=?", [id, tid]);
+  const id = toNum(req.params.id, 0);
+  const existing = await db.get("SELECT * FROM certificate_templates WHERE id=? AND madrasa_id=?", [id, tid]);
   if (!existing) return err(res, 404, "Certificate template not found.");
-  const b = req.body || {}; const sets = []; const values = [];
-  if (b.name !== undefined) { const name = cleanStr(b.name, 160); if (!name) return err(res, 400, "Template name is required."); sets.push("name=?"); values.push(name); }
-  if (b.type !== undefined) { const type = cleanStr(b.type, 30).toLowerCase(); if (!TEMPLATE_TYPES.has(type)) return err(res, 400, "Invalid certificate template type."); sets.push("type=?"); values.push(type); }
-  if (b.html_template !== undefined) { if (String(b.html_template).length > MAX_TEMPLATE_LENGTH) return err(res, 400, "HTML template is too large."); const html = cleanTemplateHtml(b.html_template); if (!html.trim()) return err(res, 400, "HTML template is required."); sets.push("html_template=?"); values.push(html); }
-  if (b.archived !== undefined) { sets.push("archived_at=?"); values.push(b.archived === true || b.archived === 1 || b.archived === "1" ? today() : null); }
-  if (!sets.length) return err(res, 400, "Nothing to update.");
-  values.push(id, tid); await db.run(`UPDATE certificate_templates SET ${sets.join(",")} WHERE id=? AND madrasa_id=?`, values);
-  ok(res, { ok: true });
+  const body = req.body || {};
+  if (body.archived !== undefined) {
+    const archivedAt = truthyFlag(body.archived) ? today() : null;
+    await db.run("UPDATE certificate_templates SET archived_at=? WHERE id=? AND madrasa_id=?", [archivedAt, id, tid]);
+    return ok(res, { ok: true, archivedAt });
+  }
+  const stored = await readTemplateConfig(existing);
+  const merged = Object.assign({}, stored, body.config || {}, {
+    title: body.title !== undefined ? body.title : stored.title,
+    designKey: body.designKey || body.design_key || stored.designKey,
+    type: body.type || stored.type,
+  });
+  const result = await writeTemplate(tid, req, { name: body.name !== undefined ? body.name : existing.name, type: body.type, config: merged }, existing);
+  if (result.status) return err(res, result.status, result.error);
+  await db.run(
+    "UPDATE certificate_templates SET name=?, type=?, design_key=?, config=?, html_template='' WHERE id=? AND madrasa_id=?",
+    [result.name, result.type, result.config.designKey, JSON.stringify(result.config), id, tid]
+  );
+  ok(res, { ok: true, config: result.config });
 }));
 
-/* ------------------------------- certificates --------------------------- */
+/* ------------------------------ certificates ---------------------------- */
 async function certificateRow(tid, id) {
   return db.get(`
-    SELECT c.*, t.name AS template_name, t.type AS template_type, t.html_template,
-           s.first_name, s.middle_name, s.last_name, s.admission_no, s.class_id, s.session_id,
+    SELECT c.*, t.name AS template_name, t.type AS template_type, t.html_template, t.design_key, t.config AS template_config,
+           s.first_name, s.middle_name, s.last_name, s.admission_no, s.student_code, s.class_id, s.session_id,
+           s.photo_path, s.program, s.islamic_program, s.western_program, s.education_track, s.signature_path,
            cl.name_en AS class_name, a.label AS session_label,
            m.name_en AS institution_name, m.name_ar AS institution_name_ar, m.logo_path,
-           m.motto_en, m.address, m.city, m.state_name, m.category, m.brand_color
+           m.motto_en, m.address, m.city, m.state_name, m.phone, m.category, m.brand_color, m.institution_type,
+           m.head_name, m.head_title
     FROM certificates c
     JOIN certificate_templates t ON t.id=c.template_id AND t.madrasa_id=c.madrasa_id
     JOIN students s ON s.id=c.student_id AND s.madrasa_id=c.madrasa_id
@@ -670,149 +647,196 @@ async function certificateRow(tid, id) {
     WHERE c.id=? AND c.madrasa_id=?
   `, [id, tid]);
 }
-function certificateValues(row) {
-  return Object.assign({
-    student_name: studentName(row),
-    class: row.class_name || "",
-    session: row.session_label || "",
-    date: dateLabel(row.issued_date),
-  }, normalizeCustomFields(row.custom_fields));
-}
+
 function certificateReference(row) {
   const year = String(row.issued_date || today()).slice(0, 4);
   return `CERT-${year}-${String(row.id).padStart(6, "0")}`;
 }
 
-const CERT_CSS = `
-@page{size:A4 landscape;margin:0}
-.cert-page{position:relative;width:297mm;height:210mm;margin:0 auto;padding:9mm;background:#fff;overflow:hidden;color:#1d2433}
-.cert-frame{position:relative;height:192mm;padding:3mm;border:.8mm solid var(--brand)}
-.cert-frame::before{content:"";position:absolute;inset:2.2mm;border:.28mm solid var(--accent);pointer-events:none}
-.cert-inner{position:relative;height:100%;display:flex;flex-direction:column;padding:8mm 15mm 5.5mm;overflow:hidden;background:linear-gradient(180deg,#fff 0%,var(--tint) 100%)}
-.is-islamic .cert-inner::before{content:"";position:absolute;inset:0;pointer-events:none;background-image:${ISLAMIC_LATTICE_CERT};background-size:12mm 12mm}
-.cert-inner>*{position:relative}
-.cert-head{display:flex;align-items:center;justify-content:center;gap:6mm}
-.cert-mark{flex:none;width:19mm;height:19mm;border-radius:50%;background:#fff;display:grid;place-items:center;overflow:hidden;box-shadow:0 0 0 .6mm var(--accent)}
-.cert-mark img{width:100%;height:100%;object-fit:contain;padding:1.6mm}
-.cert-mark span{font:700 8mm/1 Georgia,"Times New Roman",serif;color:var(--brand)}
-.cert-school-name{margin:0;font:700 6.8mm/1.1 Georgia,"Times New Roman",serif;letter-spacing:.05em;text-transform:uppercase;color:var(--brand-dark)}
-.cert-school-ar{margin:1.2mm 0 0;font:600 5mm/1.2 "Noto Naskh Arabic","Traditional Arabic",Georgia,serif;color:var(--brand)}
-.cert-motto{margin:1.2mm 0 0;font:italic 3.4mm/1.2 Georgia,"Times New Roman",serif;color:#5b6474}
-.cert-rule{display:flex;align-items:center;justify-content:center;height:6mm;margin:3mm 0 1mm}
-.cert-rule::before,.cert-rule::after{content:"";flex:1;border-top:.3mm solid var(--accent-soft)}
-.cert-rule span{flex:none;width:2.6mm;height:2.6mm;margin:0 3mm;background:var(--accent);transform:rotate(45deg)}
-.cert-body{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;padding:0 8mm;color:#1d2433}
-.cert-body h1{margin:0 0 2mm;font:700 13mm/1.05 Georgia,"Times New Roman",serif;letter-spacing:.01em;color:var(--brand-dark)}
-.cert-body h2{margin:0 0 2mm;font:600 6.4mm/1.2 Georgia,"Times New Roman",serif;color:var(--brand)}
-.cert-body p{margin:1.6mm 0;font:400 4.2mm/1.55 Georgia,"Times New Roman",serif;color:#344054}
-.cert-body strong,.cert-body b{font-weight:700;color:var(--brand-dark)}
-.cert-body .cert-kicker{margin:0 0 2.5mm;font:700 3.1mm/1.2 Arial,"Segoe UI",sans-serif;letter-spacing:.3em;text-transform:uppercase;color:var(--accent)}
-.cert-body .cert-name{margin:0 0 3mm;padding:0 6mm 2mm;border-bottom:.35mm solid var(--accent);font:700 12mm/1.1 Georgia,"Times New Roman",serif;color:var(--brand-dark)}
-.cert-body .cert-award{margin:3mm 0 1mm;font:700 6mm/1.2 Georgia,"Times New Roman",serif;color:var(--brand)}
-.cert-body .cert-note{margin:0;font-size:3.6mm;color:#667085}
-.cert-foot{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:end;gap:8mm;padding:0 10mm;margin-top:2mm}
-.cert-sign{display:flex;flex-direction:column;align-items:center;gap:1.4mm}
-.cert-sign-line{display:block;width:62mm;height:0;border-top:.3mm solid #475467}
-.cert-sign-label{font:700 2.6mm/1 Arial,"Segoe UI",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#475467}
-.cert-seal{width:25mm;height:25mm;border-radius:50%;border:.9mm double var(--accent);background:radial-gradient(circle at 50% 35%,#fff 0%,var(--brand-soft) 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.9mm;box-shadow:0 .8mm 2mm rgba(16,24,40,.18)}
-.cert-seal .cert-mark{width:12.5mm;height:12.5mm;box-shadow:none;background:transparent}
-.cert-seal .cert-mark span{font-size:6mm}
-.cert-seal small{font:700 1.7mm/1 Arial,"Segoe UI",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--brand)}
-.cert-meta{flex:none;display:flex;justify-content:space-between;gap:6mm;margin:3mm 0 0;font:600 2.5mm/1 Arial,"Segoe UI",sans-serif;letter-spacing:.03em;color:#667085}
-.cert-corner{position:absolute;z-index:2;pointer-events:none}
-.is-western .cert-corner{width:11mm;height:11mm;border:0 solid var(--accent)}
-.is-western .cert-corner.tl{top:-.8mm;left:-.8mm;border-top-width:1.4mm;border-left-width:1.4mm}
-.is-western .cert-corner.tr{top:-.8mm;right:-.8mm;border-top-width:1.4mm;border-right-width:1.4mm}
-.is-western .cert-corner.bl{bottom:-.8mm;left:-.8mm;border-bottom-width:1.4mm;border-left-width:1.4mm}
-.is-western .cert-corner.br{bottom:-.8mm;right:-.8mm;border-bottom-width:1.4mm;border-right-width:1.4mm}
-.is-islamic .cert-corner{width:10mm;height:10mm;background:#fff;border:.9mm solid var(--accent);transform:rotate(45deg)}
-.is-islamic .cert-corner.tl{top:-5mm;left:-5mm}
-.is-islamic .cert-corner.tr{top:-5mm;right:-5mm}
-.is-islamic .cert-corner.bl{bottom:-5mm;left:-5mm}
-.is-islamic .cert-corner.br{bottom:-5mm;right:-5mm}
-@media print{body{background:#fff}.cert-page{margin:0}}
-`;
-
-/** Full A4-landscape certificate: frame, school identity, template body, signatures. */
-function certificateDocument({ title, school, body, ref, issued, templateName, interactive }) {
-  const theme = documentTheme(school);
-  const corners = ["tl", "tr", "bl", "br"].map((p) => `<span class="cert-corner ${p}"></span>`).join("");
-  const markup = `<main class="cert-page ${theme.western ? "is-western" : "is-islamic"}" style="${themeStyle(theme)}">
-    <div class="cert-frame">${corners}<div class="cert-inner">
-      <header class="cert-head">
-        <div class="cert-mark">${schoolMark(school)}</div>
-        <div class="cert-school">
-          <p class="cert-school-name">${escapeHtml(school.name || "School")}</p>
-          ${school.nameAr ? `<p class="cert-school-ar" dir="rtl" lang="ar">${escapeHtml(school.nameAr)}</p>` : ""}
-          ${school.motto ? `<p class="cert-motto">${escapeHtml(school.motto)}</p>` : ""}
-        </div>
-      </header>
-      <div class="cert-rule" aria-hidden="true"><span></span></div>
-      <div class="cert-body">${body}</div>
-      <footer class="cert-foot">
-        <div class="cert-sign"><span class="cert-sign-line"></span><span class="cert-sign-label">Principal</span></div>
-        <div class="cert-seal" aria-label="Official seal"><div class="cert-mark">${schoolMark(school)}</div><small>Official seal</small></div>
-        <div class="cert-sign"><span class="cert-sign-line"></span><span class="cert-sign-label">Class teacher</span></div>
-      </footer>
-      <p class="cert-meta"><span>Ref. ${escapeHtml(ref)}</span><span>${escapeHtml(templateName || "Certificate")}</span><span>Issued ${escapeHtml(issued)}</span></p>
-    </div></div>
-  </main>`;
-  return printShell(title, CERT_CSS, markup, { interactive });
+/** Every fact the certificate can print, resolved from the student record. */
+function certificateFacts(row, customFields) {
+  const track = String(row.education_track || "").toLowerCase();
+  const trackLabel = track === "both" ? "Islamic + Western" : track === "western" ? "Western / general" : track === "islamic" ? "Islamic education" : "";
+  return {
+    identifier: row.admission_no || row.student_code || "",
+    class: row.class_name || "",
+    session: row.session_label || "",
+    term: customFields.term || "",
+    program: [row.program, row.islamic_program, row.western_program].filter(Boolean).join(" · ") || "",
+    track: trackLabel,
+    result: customFields.result || "",
+    date: dateLabel(row.issued_date),
+    guardian: row.parent_name || "",
+  };
 }
 
-function renderCertificate(row) {
-  return certificateDocument({
-    title: `Certificate — ${studentName(row)}`,
-    school: schoolIdentity(row),
-    body: replacePlaceholders(row.html_template, certificateValues(row)),
+function certificateValues(row, config, customFields, facts) {
+  return {
+    holder_name: studentName(row),
+    student_name: studentName(row),
+    name: studentName(row),
+    identifier: facts.identifier,
+    admission_no: row.admission_no || "",
+    class: facts.class,
+    session: facts.session,
+    term: facts.term,
+    date: facts.date,
+    school: row.institution_name || "",
+    program: facts.program,
+    track: facts.track,
+    result: facts.result,
+    reference: certificateReference(row),
+    award: config.award || "",
+    custom_field_1: customFields.custom_field_1,
+    custom_field_2: customFields.custom_field_2,
+    custom_field_3: customFields.custom_field_3,
+  };
+}
+
+function certificateUrl(req, code) {
+  const path = `/verify/certificate/${code}`;
+  const host = req.get("host");
+  if (!host) return path;
+  const proto = (req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0];
+  return `${proto}://${host}${path}`;
+}
+
+async function renderCertificate(row, req, { interactive = true } = {}) {
+  const templateConfig = await readTemplateConfig({
+    config: row.template_config,
+    html_template: row.html_template,
+    design_key: row.design_key,
+    type: row.template_type,
+  });
+  // A certificate is a snapshot: the wording chosen when it was issued wins
+  // over anything the template says today, otherwise editing a template would
+  // silently rewrite documents people already hold.
+  let own = null;
+  const rawOwn = row.config;
+  if (typeof rawOwn === "string" && rawOwn.trim()) { try { own = JSON.parse(rawOwn); } catch (e) { own = null; } } else if (rawOwn && typeof rawOwn === "object") own = rawOwn;
+  const custom = normalizeCustomFields(row.custom_fields);
+  const merged = certDesigns.normaliseConfig(Object.assign({}, templateConfig, own || {}, { customFields: custom }), { type: row.template_type });
+  merged.signatories = await resolveSignatories(row.madrasa_id, merged.signatories);
+  merged.photoPath = merged.showPhoto ? safeAssetPath(row.photo_path) : "";
+
+  // term/result may have been typed at issue time (own.facts), stored in the
+  // custom-fields blob, or left blank by an older record.
+  const facts = certificateFacts(row, custom);
+  // Whoever issued the certificate typed a term or a grade, so it prints — even
+  // on a template saved before those facts were part of the default strip.
+  for (const key of ["term", "result"]) {
+    if (facts[key] && !merged.facts.includes(key)) merged.facts.push(key);
+  }
+  if (own && own.facts) {
+    for (const key of certDesigns.FACTS.map((f) => f.key)) {
+      if (own.facts[key]) facts[key] = cleanStr(own.facts[key], 120);
+    }
+  }
+  const values = certificateValues(row, merged, custom, facts);
+  const school = print.schoolIdentity(row);
+  const verifyUrl = merged.showQr && row.verify_code ? certificateUrl(req, row.verify_code) : "";
+  const rendered = certDesigns.renderCertificateDocument({
+    school,
+    config: merged,
+    facts,
+    values,
     ref: certificateReference(row),
     issued: dateLabel(row.issued_date),
     templateName: row.template_name,
-    interactive: true,
+    verifyUrl,
+    forPreview: !interactive,
+  });
+  return print.printShell(`Certificate — ${studentName(row)}`, certDesigns.CERTIFICATE_CSS, rendered.markup, {
+    interactive,
+    badge: merged.title || row.template_name || "Certificate",
   });
 }
 
-/** Live preview in the template editor: same renderer, sample data, no print bar. */
-function renderCertificatePreview(school, html) {
-  const issued = dateLabel(today());
+/** Live preview used by the editor: sample school data, no print bar. */
+async function renderTemplatePreview(req, tid, configInput, type) {
+  const madrasa = await db.get(`SELECT name_en AS institution_name, name_ar AS institution_name_ar, logo_path, badge_path,
+      motto_en, address, city, state_name, phone, category, brand_color, institution_type, head_name, head_title
+      FROM madaris WHERE id = ?`, [tid]);
+  if (!madrasa) return null;
+  const school = print.schoolIdentity(madrasa);
+  const config = certDesigns.normaliseConfig(configInput, { type });
+  // Signatory signatures resolve here too, exactly as they do at print time:
+  // a school choosing who signs has to see the actual ink, not an empty line.
+  config.signatories = await resolveSignatories(tid, config.signatories);
+  const facts = certDesigns.previewFacts();
   const values = {
-    student_name: "Amina Yusuf", class: "Class 6", session: "2026/2027", date: issued,
-    custom_field_1: "Outstanding character", custom_field_2: "Principal's Award", custom_field_3: "",
+    holder_name: "Amina Yusuf", student_name: "Amina Yusuf", identifier: facts.identifier, admission_no: facts.identifier,
+    class: facts.class, session: facts.session, term: facts.term, date: dateLabel(today()), school: school.name,
+    program: facts.program, track: "Islamic + Western", result: facts.result, reference: `CERT-${today().slice(0, 4)}-000001`,
+    award: config.award, custom_field_1: "Outstanding character", custom_field_2: "Principal's Award", custom_field_3: "",
   };
-  return certificateDocument({
-    title: "Certificate preview",
+  const rendered = certDesigns.renderCertificateDocument({
     school,
-    body: replacePlaceholders(html, values),
-    ref: `CERT-${today().slice(0, 4)}-000001`,
-    issued,
+    config: Object.assign(config, { photoPath: "" }),
+    facts,
+    values,
+    ref: values.reference,
+    issued: values.date,
     templateName: "Preview",
-    interactive: false,
+    verifyUrl: "",
+    forPreview: true,
   });
+  return print.printShell("Certificate preview", certDesigns.CERTIFICATE_CSS, rendered.markup, { interactive: false });
 }
 
 router.post(["/templates/preview", "/certificate-templates/preview"], ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
-  const raw = (req.body && req.body.html_template) || "";
-  if (String(raw).length > MAX_TEMPLATE_LENGTH) return err(res, 400, "HTML template is too large.");
-  const madrasa = await db.get(`SELECT name_en AS institution_name, name_ar AS institution_name_ar, logo_path,
-      motto_en, address, city, state_name, phone, category, brand_color FROM madaris WHERE id = ?`, [tid]);
-  if (!madrasa) return err(res, 404, "Madrasa not found.");
-  noStore(res);
-  res.type("html").send(renderCertificatePreview(schoolIdentity(madrasa), cleanTemplateHtml(raw)));
+  const body = req.body || {};
+  if (String(body.html_template || "").length > MAX_TEMPLATE_LENGTH) return err(res, 400, "Certificate wording is too long.");
+  // The preview accepts the same shape the form posts, so the editor can send
+  // its live form state straight through without a save first.
+  const rendered = await renderTemplatePreview(req, tid, body.config || body, body.type || "custom");
+  if (!rendered) return err(res, 404, "Madrasa not found.");
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(rendered);
 }));
+
+router.get(["/templates/preview/:id", "/certificate-templates/preview/:id"], ADMIN, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const template = await db.get("SELECT * FROM certificate_templates WHERE id=? AND madrasa_id=?", [toNum(req.params.id, 0), tid]);
+  if (!template) return err(res, 404, "Certificate template not found.");
+  const config = await readTemplateConfig(template);
+  const rendered = await renderTemplatePreview(req, tid, config, config.type);
+  if (!rendered) return err(res, 404, "Madrasa not found.");
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(rendered);
+}));
+
+function normalizeCustomFields(value) {
+  let source = value;
+  if (typeof source === "string") {
+    try { source = JSON.parse(source); } catch (_) { source = {}; }
+  }
+  if (!source || typeof source !== "object" || Array.isArray(source)) source = {};
+  const out = {};
+  for (let i = 1; i <= 3; i++) out[`custom_field_${i}`] = cleanStr(source[`custom_field_${i}`] ?? source[String(i)] ?? "", MAX_CUSTOM_FIELD_LENGTH);
+  // `term` and `result` are ordinary certificate facts, kept beside the
+  // custom fields rather than in a second column.
+  out.term = cleanStr(source.term, 80);
+  out.result = cleanStr(source.result, 80);
+  return out;
+}
 
 router.post("/certificates", ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {};
   const templateId = toNum(b.template_id, 0);
-  const template = await db.get("SELECT id FROM certificate_templates WHERE id=? AND madrasa_id=? AND archived_at IS NULL", [templateId, tid]);
+  const template = await db.get("SELECT id, type, config, design_key, html_template FROM certificate_templates WHERE id=? AND madrasa_id=? AND archived_at IS NULL", [templateId, tid]);
   if (!template) return err(res, 400, "Active certificate template not found.");
   let ids = Array.isArray(b.student_ids) ? b.student_ids : (b.student_id !== undefined ? [b.student_id] : []);
   ids = [...new Set(ids.map((id) => toNum(id, 0)).filter((id) => id > 0))];
   if (!ids.length) return err(res, 400, "At least one student_id is required.");
   const issuedDate = b.issued_date === undefined || b.issued_date === "" ? today() : validDate(b.issued_date);
   if (!issuedDate) return err(res, 400, "issued_date must be YYYY-MM-DD.");
-  const customFields = normalizeCustomFields(b.custom_fields);
+  const customFields = normalizeCustomFields(Object.assign({}, b.custom_fields, { term: b.term ?? (b.custom_fields || {}).term, result: b.result ?? (b.custom_fields || {}).result }));
+  const ownConfig = b.overrides && typeof b.overrides === "object"
+    ? certDesigns.normaliseConfig(Object.assign({}, b.overrides, { customFields }), { type: template.type, designKey: template.design_key })
+    : null;
   const students = [];
   for (const id of ids) {
     const row = await db.get("SELECT id FROM students WHERE id=? AND madrasa_id=?", [id, tid]);
@@ -822,21 +846,39 @@ router.post("/certificates", ADMIN, requireStaffPermission("documents.generate")
   const created = await db.transaction(async (tx) => {
     const out = [];
     for (const id of students) {
-      const r = await tx.run("INSERT INTO certificates (madrasa_id,student_id,template_id,custom_fields,issued_date) VALUES (?,?,?,?,?)", [tid, id, templateId, JSON.stringify(customFields), issuedDate]);
-      out.push(Number(r.lastInsertRowid));
+      // The code is minted here, not at print time, so re-issuing the same
+      // certificate keeps the QR that may already be in someone's hand.
+      const verifyCode = crypto.randomBytes(12).toString("hex");
+      const r = await tx.run(
+        "INSERT INTO certificates (madrasa_id,student_id,template_id,custom_fields,issued_date,verify_code,config) VALUES (?,?,?,?,?,?,?)",
+        [tid, id, templateId, JSON.stringify(customFields), issuedDate, verifyCode, ownConfig ? JSON.stringify(ownConfig) : null]
+      );
+      out.push({ id: Number(r.lastInsertRowid), verifyCode });
     }
     return out;
   });
-  for (const id of created) logActivity(db, { madrasaId: tid, userId: req.user.id, action: "certificate.issue", entity: "certificate", entityId: String(id), meta: { templateId, issuedDate }, ip: req.ip });
-  ok(res, { ok: true, id: created[0], ids: created });
+  for (const row of created) logActivity(db, { madrasaId: tid, userId: req.user.id, action: "certificate.issue", entity: "certificate", entityId: String(row.id), meta: { templateId, issuedDate }, ip: req.ip });
+  ok(res, { ok: true, id: created[0].id, ids: created.map((row) => row.id), verifyCode: created[0].verifyCode, verifyUrl: certificateUrl(req, created[0].verifyCode) });
 }));
 
 router.get("/certificates", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const where = ["c.madrasa_id=?"]; const params = [tid];
   if (req.query.studentId !== undefined) { const studentId = toNum(req.query.studentId, 0); if (!studentId) return err(res, 400, "studentId must be a valid id."); where.push("c.student_id=?"); params.push(studentId); }
-  const rows = await db.all(`SELECT c.id,c.madrasa_id,c.student_id,c.template_id,c.custom_fields,c.issued_date,c.created_at,t.name AS template_name,t.type AS template_type,s.first_name,s.middle_name,s.last_name,s.admission_no FROM certificates c JOIN certificate_templates t ON t.id=c.template_id AND t.madrasa_id=c.madrasa_id JOIN students s ON s.id=c.student_id AND s.madrasa_id=c.madrasa_id WHERE ${where.join(" AND ")} ORDER BY c.issued_date DESC,c.id DESC LIMIT 500`, params);
-  ok(res, { certificates: rows.map((row) => Object.assign({}, row, { student_name: studentName(row) })) });
+  const rows = await db.all(`SELECT c.id,c.madrasa_id,c.student_id,c.template_id,c.custom_fields,c.issued_date,c.verify_code,c.created_at,
+        t.name AS template_name,t.type AS template_type,t.design_key,
+        s.first_name,s.middle_name,s.last_name,s.admission_no
+      FROM certificates c
+      JOIN certificate_templates t ON t.id=c.template_id AND t.madrasa_id=c.madrasa_id
+      JOIN students s ON s.id=c.student_id AND s.madrasa_id=c.madrasa_id
+      WHERE ${where.join(" AND ")} ORDER BY c.issued_date DESC,c.id DESC LIMIT 500`, params);
+  ok(res, {
+    certificates: rows.map((row) => Object.assign({}, row, {
+      student_name: studentName(row),
+      designName: (certDesigns.designByKey(row.design_key) || {}).name || "Heritage Classic",
+      verifyUrl: row.verify_code ? certificateUrl(req, row.verify_code) : "",
+    })),
+  });
 }));
 
 router.get("/certificates/:id", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
@@ -844,8 +886,194 @@ router.get("/certificates/:id", STAFF, requireStaffPermission("documents.view"),
   const row = await certificateRow(tid, toNum(req.params.id, 0));
   if (!row) return res.status(404).type("html").send("Certificate not found");
   if (!await assertTeacherCanSee(req, res, tid, row)) return;
-  res.type("html").send(renderCertificate(row));
+  res.type("html").send(await renderCertificate(row, req, { interactive: true }));
+}));
+
+/* --------------------------- signature capture ---------------------------
+   A signature is a picture of a person's handwriting, stored on their own
+   account. The pad in the browser sends a PNG data URL; an upload is also
+   accepted for people who sign on paper and photograph it.
+-------------------------------------------------------------------------- */
+const signatureUploader = imageUploader("signatures", "signature");
+
+router.post("/my-signature", STAFF, signatureUploader, asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  if (!req.file) return err(res, 400, "No signature image was received.");
+  const signaturePath = `/uploads/signatures/${req.file.filename}`;
+  await db.run("UPDATE users SET signature_path = ? WHERE id = ? AND madrasa_id = ?", [signaturePath, req.user.id, tid]);
+  if (req.user.role === "teacher") {
+    await db.run("UPDATE teacher_profiles SET signature_path = ? WHERE user_id = ? AND madrasa_id = ?", [signaturePath, req.user.id, tid]);
+  }
+  ok(res, { ok: true, signaturePath });
+}));
+
+/* -------------------------- card verification (staff) -------------------
+   The dashboard scanner uses this; the public page lives in routes/public.js.
+   Same projection, but it also says which class/department so office staff can
+   match a physical card against the register.
+-------------------------------------------------------------------------- */
+router.get("/verify-card/:code", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const code = cardCreds.normaliseCode(req.params.code);
+  if (!code) return err(res, 400, "Enter or scan the code printed on the card.");
+  const result = await cardCreds.lookupCard(code);
+  if (!result || Number(result.madrasa_id || result.credential.madrasa_id) !== tid) return err(res, 404, "No card matches that code in your school.");
+  const view = cardCreds.cardVerificationView(result);
+  const studentExtra = view.holderType === "student"
+    ? await db.get("SELECT parent_name, parent_phone, class_id FROM students WHERE id=? AND madrasa_id=?", [result.credential.holder_id, tid])
+    : await db.get("SELECT position, department, email FROM teacher_profiles p JOIN users u ON u.id=p.user_id AND u.madrasa_id=p.madrasa_id WHERE p.user_id=? AND p.madrasa_id=?", [result.credential.holder_id, tid]);
+  ok(res, { card: Object.assign(view, { contact: studentExtra || {} }) });
+}));
+
+/* ------------------------ signatures of the school -----------------------
+   Three things live here: whose signature a document prints (the institution
+   choice), the picture of it, and a directory the template editor uses to
+   offer "print the signature of…" as a dropdown rather than a paste box.
+-------------------------------------------------------------------------- */
+const SIGNATORY_KEY = "document_signatory";
+
+router.get("/signatories", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const rows = await db.all(
+    `SELECT u.id, u.full_name, u.role, u.signature_path, p.position, p.department, p.staff_id,
+            p.first_name, p.middle_name, p.last_name
+       FROM users u
+       LEFT JOIN teacher_profiles p ON p.user_id = u.id AND p.madrasa_id = u.madrasa_id
+      WHERE u.madrasa_id = ? AND u.is_active = 1 AND u.role IN ('madrasa_admin','teacher','super_admin')
+      ORDER BY (u.role = 'madrasa_admin') DESC, u.full_name, u.id`,
+    [tid]
+  );
+  const people = rows.map((row) => ({
+    id: row.id,
+    name: [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" ").trim() || row.full_name || "",
+    role: row.role,
+    title: [row.position, row.department].filter(Boolean).join(" · "),
+    staffId: row.staff_id || "",
+    hasSignature: Boolean(safeAssetPath(row.signature_path)),
+    signaturePath: safeAssetPath(row.signature_path),
+  }));
+  const setting = await db.get("SELECT value FROM settings WHERE madrasa_id = ? AND key_name = ?", [tid, SIGNATORY_KEY]);
+  let stored = null;
+  if (setting && setting.value) { try { stored = JSON.parse(String(setting.value)); } catch (e) { stored = null; } }
+  const school = await db.get("SELECT head_name, head_title FROM madaris WHERE id = ?", [tid]);
+  ok(res, {
+    people,
+    signatory: {
+      principalUserId: Number((stored && stored.principalUserId) || 0) || null,
+      principalName: (stored && stored.principalName) || (school && school.head_name) || "",
+      principalTitle: (stored && stored.principalTitle) || (school && school.head_title) || "",
+    },
+  });
+}));
+
+router.put("/signatories", ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const b = req.body || {};
+  const value = {
+    principalUserId: b.principalUserId ? toNum(b.principalUserId, 0) : null,
+    principalName: cleanStr(b.principalName, 120),
+    principalTitle: cleanStr(b.principalTitle, 80),
+  };
+  if (value.principalUserId) {
+    const account = await db.get("SELECT id FROM users WHERE id = ? AND madrasa_id = ? AND is_active = 1", [value.principalUserId, tid]);
+    if (!account) return err(res, 400, "The chosen signatory does not belong to this school.");
+  }
+  const existing = await db.get("SELECT id FROM settings WHERE madrasa_id = ? AND key_name = ?", [tid, SIGNATORY_KEY]);
+  if (existing) await db.run("UPDATE settings SET value = ? WHERE id = ?", [JSON.stringify(value), existing.id]);
+  else await db.run("INSERT INTO settings (madrasa_id, key_name, value) VALUES (?,?,?)", [tid, SIGNATORY_KEY, JSON.stringify(value)]);
+  ok(res, { ok: true, signatory: value });
+}));
+
+router.put("/my-signature", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const b = req.body || {};
+  let signaturePath = "";
+  if (b.signatureDataUrl || b.dataUrl) {
+    signaturePath = await media.saveDataUrl(b.signatureDataUrl || b.dataUrl, "signatures", { maxBytes: media.MAX_SIGNATURE_BYTES });
+  } else if (typeof b.signaturePath === "string" && b.signaturePath === "") {
+    // Clear it.
+    await db.run("UPDATE users SET signature_path = '' WHERE id = ? AND madrasa_id = ?", [req.user.id, tid]);
+    if (req.user.role === "teacher") await db.run("UPDATE teacher_profiles SET signature_path = '' WHERE user_id = ? AND madrasa_id = ?", [req.user.id, tid]);
+    return ok(res, { ok: true, signaturePath: "" });
+  } else {
+    return err(res, 400, "Draw or upload a signature first.");
+  }
+  const previous = await db.get("SELECT signature_path FROM users WHERE id = ? AND madrasa_id = ?", [req.user.id, tid]);
+  await db.run("UPDATE users SET signature_path = ? WHERE id = ? AND madrasa_id = ?", [signaturePath, req.user.id, tid]);
+  if (req.user.role === "teacher") {
+    await db.run("UPDATE teacher_profiles SET signature_path = ? WHERE user_id = ? AND madrasa_id = ?", [signaturePath, req.user.id, tid]);
+  }
+  if (previous && previous.signature_path) media.deleteStored(previous.signature_path);
+  ok(res, { ok: true, signaturePath });
+}));
+
+/* --------------------------- the card registry ---------------------------
+   Which cards exist, whether they are still live, and how often they have
+  been printed. This is what the ID-card screen shows so "revoking a lost
+   card" is a button rather than a support ticket.
+-------------------------------------------------------------------------- */
+router.get("/cards", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const holderType = req.query.holderType === "teacher" || req.query.holderType === "staff" ? "teacher" : "student";
+  if (holderType === "teacher") {
+    const rows = await db.all(`
+      SELECT u.id, u.full_name, u.role, u.is_active,
+             COALESCE(NULLIF(p.photo_path, ''), u.photo_path, '') AS photo_path,
+             p.first_name, p.middle_name, p.last_name, p.staff_id, p.position, p.department, p.status,
+             cc.code, cc.status AS card_status, cc.print_count, cc.issued_at, cc.last_printed_at
+        FROM users u
+        LEFT JOIN teacher_profiles p ON p.user_id = u.id AND p.madrasa_id = u.madrasa_id
+        LEFT JOIN card_credentials cc ON cc.madrasa_id = u.madrasa_id AND cc.holder_type = 'teacher' AND cc.holder_id = u.id
+       WHERE u.madrasa_id = ? AND u.role IN ('teacher','madrasa_admin') AND u.is_active = 1
+       ORDER BY COALESCE(NULLIF(p.last_name, ''), u.full_name), u.id LIMIT 500`, [tid]);
+    return ok(res, { holderType, cards: rows.map((row) => ({
+      id: row.id,
+      name: [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" ").trim() || row.full_name || "",
+      identifier: row.staff_id || "",
+      role: row.position || STAFF_ROLE_LABELS[row.role] || "Staff",
+      detail: row.department || "",
+      hasPhoto: Boolean(safeAssetPath(row.photo_path)),
+      holderStatus: row.status || (Number(row.is_active) === 1 ? "active" : "inactive"),
+      cardCode: row.code || "",
+      cardStatus: row.card_status || "not-issued",
+      printCount: Number(row.print_count || 0),
+      issuedAt: row.issued_at || row.last_printed_at || "",
+    })) });
+  }
+  const rows = await db.all(`
+    SELECT s.id, s.admission_no, s.first_name, s.middle_name, s.last_name, s.photo_path, s.status,
+           c.name_en AS class_name,
+           cc.code, cc.status AS card_status, cc.print_count, cc.issued_at, cc.last_printed_at
+      FROM students s
+      LEFT JOIN classes c ON c.id = s.class_id AND c.madrasa_id = s.madrasa_id
+      LEFT JOIN card_credentials cc ON cc.madrasa_id = s.madrasa_id AND cc.holder_type = 'student' AND cc.holder_id = s.id
+     WHERE s.madrasa_id = ? AND s.status NOT IN ('withdrawn','inactive')
+     ORDER BY s.last_name, s.first_name, s.id LIMIT 500`, [tid]);
+  ok(res, { holderType, cards: rows.map((row) => ({
+    id: row.id,
+    name: [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" "),
+    identifier: row.admission_no || "",
+    role: "Student",
+    detail: row.class_name || "",
+    hasPhoto: Boolean(safeAssetPath(row.photo_path)),
+    holderStatus: row.status,
+    cardCode: row.code || "",
+    cardStatus: row.card_status || "not-issued",
+    printCount: Number(row.print_count || 0),
+    issuedAt: row.issued_at || row.last_printed_at || "",
+  })) });
 }));
 
 module.exports = router;
-module.exports._private = { qrSvg, replacePlaceholders, renderCertificate, renderCertificatePreview, idCardFrontMarkup, idCardBackMarkup, documentTheme };
+module.exports._private = {
+  documentTheme: print.documentTheme,
+  idCardFrontMarkup: cardDesigns.idCardFront,
+  idCardBackMarkup: cardDesigns.idCardBack,
+  qrSvg: print.qrSvg,
+  readTemplateConfig,
+  renderCertificate,
+  renderTemplatePreview,
+  normalizeCustomFields,
+  signedProfileUrl,
+  certificateReference,
+};

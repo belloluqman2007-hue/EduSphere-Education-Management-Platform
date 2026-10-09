@@ -600,6 +600,18 @@
         </div><div class="dash-actions" style="margin-top:12px"><button class="dash-btn dash-btn-primary" type="submit">Change password</button></div></form>
       </div></div>`;
     content.appendChild(grid);
+
+    /* The same account card an administrator sees. A student who joins a madrasa
+       should be able to put a face on their own profile — and a teacher should be
+       able to save the signature that prints on certificates — without waiting
+       for someone else to do it for them. */
+    if (window.EduProfile) {
+      window.EduProfile.attachAccountCard(grid, {
+        account: account || {},
+        showSignature: false,
+        hint: "Shown on your ID card and wherever your name is printed",
+      });
+    }
     grid.querySelector("#profileForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const payload = Object.fromEntries(new FormData(e.target).entries());

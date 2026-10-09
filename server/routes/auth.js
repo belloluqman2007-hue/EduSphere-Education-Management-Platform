@@ -18,6 +18,8 @@ const db = require("../db");
 const config = require("../config");
 const { cleanStr, logActivity, asyncHandler } = require("../util");
 const permissionService = require("../services/permissions");
+const profileMedia = require("../services/profile-media");
+const { imageUploader } = require("../middleware/upload");
 
 const router = express.Router();
 
@@ -244,6 +246,23 @@ router.get("/me", asyncHandler(async (req, res) => {
   let permissions = [];
   try { permissions = Array.from(await permissionService.effectivePermissions(req.user)).sort(); }
   catch (e) { permissions = permissionService.roleDefaults(req.user.role); }
+  // The portrait shown in the shell is the one on the person's own record — a
+  // student's ID photo, a teacher's staff photo — because that is the picture
+  // they (or the office) last set. The account-level avatar is the fallback.
+  let photoPath = "";
+  try {
+    const account = await db.get("SELECT photo_path FROM users WHERE id = ?", [req.user.id]);
+    photoPath = (account && account.photo_path) || "";
+    if (req.user.role === "student" && req.user.studentId) {
+      const linked = await db.get("SELECT photo_path FROM students WHERE id = ? AND madrasa_id = ?", [req.user.studentId, req.user.madrasaId]);
+      photoPath = (linked && linked.photo_path) || photoPath;
+    } else if (req.user.role === "teacher") {
+      const linked = await db.get("SELECT photo_path FROM teacher_profiles WHERE user_id = ? AND madrasa_id = ?", [req.user.id, req.user.madrasaId]);
+      photoPath = (linked && linked.photo_path) || photoPath;
+    }
+  } catch (e) {
+    /* an avatar is never a reason to fail a session bootstrap */
+  }
   res.json({
     loggedIn: true,
     role: req.user.role,
@@ -259,17 +278,62 @@ router.get("/me", asyncHandler(async (req, res) => {
       role: req.user.role,
       fullName: req.user.fullName,
       fullNameAr: req.user.fullNameAr,
+      photoPath,
     },
   });
 }));
+
+/**
+ * Portrait and signature for the signed-in account, plus the record it is
+ * linked to. A student's or a teacher's OWN profile picture lives on their
+ * student / teacher_profiles row (that is the one ID cards, registers and
+ * portals read), so `photoPath` is resolved from there first and falls back to
+ * the account's own avatar. Returning both paths keeps the UI honest about
+ * what it is changing.
+ */
+async function accountIdentity(req) {
+  const row = await db.get(
+    `SELECT u.id, u.username, u.role, u.full_name, u.full_name_ar, u.email, u.phone, u.photo_path, u.signature_path,
+            u.student_id, u.madrasa_id, u.created_at,
+            s.photo_path AS student_photo_path, s.signature_path AS student_signature_path, s.admission_no, s.student_code,
+            p.photo_path AS teacher_photo_path, p.signature_path AS teacher_signature_path, p.staff_id, p.position
+       FROM users u
+       LEFT JOIN students s ON s.id = u.student_id AND s.madrasa_id = u.madrasa_id
+       LEFT JOIN teacher_profiles p ON p.user_id = u.id AND p.madrasa_id = u.madrasa_id
+      WHERE u.id = ?`,
+    [req.user.id]
+  );
+  return row;
+}
+
+function accountView(user) {
+  const photo = user.photo_path || (user.role === "student" ? user.student_photo_path : "") || (user.role === "teacher" ? user.teacher_photo_path : "") || "";
+  const signature = user.signature_path || (user.role === "teacher" ? user.teacher_signature_path : "") || "";
+  const account = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    full_name: user.full_name,
+    full_name_ar: user.full_name_ar,
+    email: user.email,
+    phone: user.phone,
+    created_at: user.created_at,
+    photoPath: photo || "",
+    signaturePath: signature || "",
+    hasSignature: Boolean(signature),
+    identifier: user.admission_no || user.student_code || user.staff_id || "",
+    designation: user.position || "",
+  };
+  return account;
+}
 
 /** The signed-in account can keep its own visible contact details current.
  * This deliberately cannot alter role, tenant, username or activation state. */
 router.get("/account", asyncHandler(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: "Authentication required." });
-  const user = await db.get("SELECT id, username, role, full_name, full_name_ar, email, phone, created_at FROM users WHERE id = ?", [req.user.id]);
+  const user = await accountIdentity(req);
   if (!user) return res.status(404).json({ error: "User not found." });
-  res.json({ account: user });
+  res.json({ account: accountView(user) });
 }));
 router.put("/account", asyncHandler(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: "Authentication required." });
@@ -284,6 +348,117 @@ router.put("/account", asyncHandler(async (req, res) => {
   await db.run(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`, values);
   logActivity(db, { madrasaId: req.user.madrasaId, userId: req.user.id, action: "account.update", entity: "user", entityId: String(req.user.id), ip: req.ip });
   res.json({ ok: true });
+}));
+
+/* ---------------------- own profile picture & signature ------------------
+   Every role can change its own portrait, and staff can store the picture of
+   their own signature that certificates and ID cards print. The rule is
+   strict on purpose: an account may only ever write to ITS OWN row, the id is
+   taken from the session and never from the request body.
+
+   Where the account is linked to a student or a staff profile, the portrait is
+   written to both, so the change shows up on the ID card, in the register and
+   in the portal at the same time — one action, one truth.
+-------------------------------------------------------------------------- */
+const avatarUploader = imageUploader("avatars", "photo");
+const avatarSignature = imageUploader("signatures", "signature");
+
+function readImageField(req, names) {
+  for (const name of names) {
+    if (req.body && typeof req.body[name] === "string" && req.body[name].trim()) return req.body[name];
+  }
+  return "";
+}
+
+/** Only a student account may write into students.*, only a teacher into teacher_profiles.* */
+async function mirrorPortrait(req, path) {
+  const user = await db.get("SELECT id, role, student_id, madrasa_id FROM users WHERE id = ?", [req.user.id]);
+  if (!user) return;
+  if (user.role === "student" && user.student_id) {
+    await db.run("UPDATE students SET photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND madrasa_id = ?",
+      [path, user.student_id, user.madrasa_id]);
+  } else if (user.role === "teacher") {
+    await db.run("UPDATE teacher_profiles SET photo_path = ? WHERE user_id = ? AND madrasa_id = ?",
+      [path, user.id, user.madrasa_id]);
+  }
+}
+
+async function mirrorSignature(req, path) {
+  const user = await db.get("SELECT id, role, madrasa_id FROM users WHERE id = ?", [req.user.id]);
+  if (!user || user.role !== "teacher") return;
+  await db.run("UPDATE teacher_profiles SET signature_path = ? WHERE user_id = ? AND madrasa_id = ?",
+    [path, user.id, user.madrasa_id]);
+}
+
+async function storePortrait(req, res, buffer) {
+  const previous = await db.get("SELECT photo_path FROM users WHERE id = ?", [req.user.id]);
+  const path = await profileMedia.writeImage(buffer, "avatars", { maxBytes: profileMedia.MAX_PHOTO_BYTES });
+  await db.run("UPDATE users SET photo_path = ? WHERE id = ?", [path, req.user.id]);
+  await mirrorPortrait(req, path);
+  if (previous && previous.photo_path) profileMedia.deleteStored(previous.photo_path);
+  logActivity(db, { madrasaId: req.user.madrasaId, userId: req.user.id, action: "account.photo.update", entity: "user", entityId: String(req.user.id), ip: req.ip });
+  res.json({ ok: true, photoPath: path });
+}
+
+/** POST /api/auth/account/photo — multipart file OR a canvas data URL. */
+router.post("/account/photo", (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  if (req.is("multipart/form-data")) return avatarUploader(req, res, next);
+  next();
+}, asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  if (req.file) return storePortrait(req, res, require("fs").readFileSync(req.file.path));
+  const dataUrl = readImageField(req, ["photoDataUrl", "dataUrl", "photo"]);
+  if (!dataUrl) return res.status(400).json({ error: "Choose an image or take a photo first." });
+  return storePortrait(req, res, profileMedia.decodeDataUrl(dataUrl, { maxBytes: profileMedia.MAX_PHOTO_BYTES }));
+}));
+
+/** DELETE /api/auth/account/photo — back to initials everywhere. */
+router.delete("/account/photo", asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  const previous = await db.get("SELECT photo_path FROM users WHERE id = ?", [req.user.id]);
+  await db.run("UPDATE users SET photo_path = '' WHERE id = ?", [req.user.id]);
+  await mirrorPortrait(req, "");
+  if (previous && previous.photo_path) profileMedia.deleteStored(previous.photo_path);
+  res.json({ ok: true, photoPath: "" });
+}));
+
+/** PUT /api/auth/account/signature — the drawing the certificate prints. */
+router.put("/account/signature", asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  const dataUrl = readImageField(req, ["signatureDataUrl", "dataUrl", "signature"]);
+  if (!dataUrl) return res.status(400).json({ error: "Draw your signature first." });
+  const previous = await db.get("SELECT signature_path FROM users WHERE id = ?", [req.user.id]);
+  const path = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES });
+  await db.run("UPDATE users SET signature_path = ? WHERE id = ?", [path, req.user.id]);
+  await mirrorSignature(req, path);
+  if (previous && previous.signature_path) profileMedia.deleteStored(previous.signature_path);
+  logActivity(db, { madrasaId: req.user.madrasaId, userId: req.user.id, action: "account.signature.update", entity: "user", entityId: String(req.user.id), ip: req.ip });
+  res.json({ ok: true, signaturePath: path });
+}));
+
+router.post("/account/signature", (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  if (!req.is("multipart/form-data")) return next();
+  return avatarSignature(req, res, next);
+}, asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  if (!req.file) return res.status(400).json({ error: "Choose an image of your signature." });
+  const previous = await db.get("SELECT signature_path FROM users WHERE id = ?", [req.user.id]);
+  const path = `/uploads/signatures/${req.file.filename}`;
+  await db.run("UPDATE users SET signature_path = ? WHERE id = ?", [path, req.user.id]);
+  await mirrorSignature(req, path);
+  if (previous && previous.signature_path) profileMedia.deleteStored(previous.signature_path);
+  res.json({ ok: true, signaturePath: path });
+}));
+
+router.delete("/account/signature", asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  const previous = await db.get("SELECT signature_path FROM users WHERE id = ?", [req.user.id]);
+  await db.run("UPDATE users SET signature_path = '' WHERE id = ?", [req.user.id]);
+  await mirrorSignature(req, "");
+  if (previous && previous.signature_path) profileMedia.deleteStored(previous.signature_path);
+  res.json({ ok: true, signaturePath: "" });
 }));
 
 router.post("/change-password", async (req, res) => {
