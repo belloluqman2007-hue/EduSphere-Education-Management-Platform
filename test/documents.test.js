@@ -78,6 +78,16 @@ test("certificate templates and issued certificates validate, render, and stay t
   assert.equal(created.status, 200);
   templateId = created.data.id;
 
+  // The dashboard reads `is_active` to paint the Active/Archived pill and to
+  // decide which templates the issue wizard may use; it must be in the list
+  // payload, or every template looks archived and issuing never starts.
+  const listed = await admin.req("GET", "/api/documents/templates?type=certificate");
+  assert.equal(listed.status, 200);
+  const listedTemplate = (listed.data.templates || []).find((row) => Number(row.id) === Number(templateId));
+  assert.ok(listedTemplate, "the new template is listed");
+  assert.equal(listedTemplate.is_active, true, "an unarchived template reports is_active");
+  assert.equal(listedTemplate.archived_at, null);
+
   const issued = await admin.api("POST", "/api/documents/certificates", {
     student_id: ctx.studentA1, template_id: templateId, issued_date: "2026-09-17", custom_fields: { custom_field_1: "Excellent character" },
   });
@@ -108,6 +118,9 @@ test("certificate templates and issued certificates validate, render, and stay t
   assert.equal(archived.status, 200);
   const noIssue = await admin.api("POST", "/api/documents/certificates", { student_id: ctx.studentA2, template_id: templateId });
   assert.equal(noIssue.status, 400);
+  const afterArchive = await admin.req("GET", "/api/documents/templates?type=certificate");
+  const archivedTemplate = (afterArchive.data.templates || []).find((row) => Number(row.id) === Number(templateId));
+  assert.equal(archivedTemplate.is_active, false, "an archived template no longer reports is_active");
 });
 
 test("teachers can print assigned-class cards but cannot manage templates", async () => {

@@ -510,6 +510,10 @@ function templateView(template, config) {
     config,
     created_at: template.created_at,
     archived_at: template.archived_at || null,
+    // The dashboard lists templates with an Active/Archived pill and only
+    // offers active ones for issuing; without this field every template
+    // filtered as "inactive" and the issue wizard could never open.
+    is_active: !template.archived_at,
     // Populated so an old HTML-only template still shows what it says.
     excerpt: String(config.body || "").slice(0, 160),
   };
