@@ -82,4 +82,20 @@ const verifyLimiter = rateLimit({
   message: { error: "Too many verification attempts. Please wait a few minutes and try again." },
 });
 
-module.exports = { apiLimiter, loginLimiter, resetRequestLimiter, publicLimiter, publicWriteLimiter, verifyLimiter };
+/**
+ * Card / certificate QR verification. Stricter than the general public bucket
+ * (it is the one an unauthenticated stranger can hit repeatedly) but looser
+ * than the result checker: a school gate or registry desk legitimately scans
+ * dozens of cards in a row from one connection, and a scanner that starts
+ * answering 429 halfway through a fresh-card printing morning is worse than
+ * the theoretical enumeration it prevents — the code is 12 random bytes.
+ */
+const scanLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.CARD_SCAN_LIMIT || 120),
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many verification attempts from this connection. Please wait a few minutes." },
+});
+
+module.exports = { apiLimiter, loginLimiter, resetRequestLimiter, publicLimiter, publicWriteLimiter, verifyLimiter, scanLimiter };

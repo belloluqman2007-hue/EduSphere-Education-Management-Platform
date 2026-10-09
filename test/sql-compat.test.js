@@ -80,8 +80,17 @@ const AUDITED_DIALECT_BRANCHES = new Set([
    the exact pattern required for dynamic sorting. */
 const AUDITED_SORT_ALLOWLISTS = new Set([
   "server/routes/classes.js:195",
-  "server/routes/teachers.js:381",
 ]);
+
+/* Audited dynamic-sort shapes, matched by file and query text rather than by
+   line number: a numbered entry silently passes the moment an unrelated edit
+   shifts the line, and silently fails the moment it does not. `sort` and
+   `direction` in the staff directory come from a literal sortMap lookup and a
+   ternary — both constants, never request text — so the exact SQL is what a
+   reviewer needs to see here. */
+const AUDITED_SORT_SHAPES = [
+  { file: "server/routes/teachers.js", sql: /ORDER BY \$\{sort\} \$\{direction\}, u\.id DESC LIMIT \? OFFSET \?/ },
+];
 
 /* Statements where a table or column list is interpolated from a hardcoded,
    non-user-controlled constant array (verified: values come from literal
@@ -164,7 +173,9 @@ test("ORDER BY / LIMIT / column names are never interpolated straight from user 
         // services/analytics.js — they interpolate a per-dialect CONSTANT
         // (DATE_FORMAT vs strftime), never user input.
         const dialectHelper = /\$\{(monthExpr|dayExpr)\(/.test(line);
-        const known = dialectHelper || AUDITED_CONSTANT_INTERPOLATIONS.some((r) => r.test(ref)) || AUDITED_SORT_ALLOWLISTS.has(ref);
+        const byShape = AUDITED_SORT_SHAPES.some((audited) => audited.file === rel && audited.sql.test(line));
+        const known = dialectHelper || byShape
+          || AUDITED_CONSTANT_INTERPOLATIONS.some((r) => r.test(ref)) || AUDITED_SORT_ALLOWLISTS.has(ref);
         if (!known) violations.push(`${ref}  dynamic ORDER BY/LIMIT: ${line.trim().slice(0, 100)}`);
       }
     });

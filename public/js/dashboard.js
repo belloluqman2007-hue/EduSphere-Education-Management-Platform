@@ -18,6 +18,7 @@
      sources anyway).
      -------------------------------------------------------------------- */
   const I = {
+    scan: `<svg viewBox="0 0 24 24"><path d="M3 8V5.5A1.5 1.5 0 0 1 4.5 4H7M17 4h2.5A1.5 1.5 0 0 1 21 5.5V8M21 16v2.5a1.5 1.5 0 0 1-1.5 1.5H17M7 20H4.5A1.5 1.5 0 0 1 3 18.5V16"/><path d="M7 12h10"/></svg>`,
     dashboard: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`,
     building: `<svg viewBox="0 0 24 24"><path d="M4 21V5l8-2v18M20 21V9l-8-2M8 7h1M8 11h1M8 15h1M14 11h1M18 11h1M14 15h1M18 15h1M2 21h20"/></svg>`,
     users: `<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 20v-2.1A4.9 4.9 0 0 1 8.4 13h1.2a4.9 4.9 0 0 1 4.9 4.9V20M16 5.5a3 3 0 0 1 0 5.8M18.3 13.4a4.7 4.7 0 0 1 2.2 4V20"/></svg>`,
@@ -110,10 +111,10 @@
       },
       {
         key: "students", label: "Students", icon: "users",
-        items: [["All Students", "students/all"], ["Add Student", "students/add"], ["Student Applications", "students/applications"], ["Student Groups", "students/groups"], ["Student Profiles", "students/profiles"], ["Health Reports", "students/health"], ["ID Cards", "students/id-cards"]],
+        items: [["All Students", "students/all"], ["Add Student", "students/add"], ["Student Applications", "students/applications"], ["Student Groups", "students/groups"], ["Student Profiles", "students/profiles"], ["Health Reports", "students/health"]],
       },
       {
-        key: "documents", label: "Documents", icon: "file", items: [["Certificate Templates", "documents/templates"], ["Issue Certificate", "documents/issue"]],
+        key: "documents", label: "Documents", icon: "file", items: [["ID Cards", "students/id-cards"], ["Certificate Templates", "documents/templates"], ["Issue Certificate", "documents/issue"]],
       },
       {
         key: "teachers", label: "Teachers", icon: "teacher",
@@ -964,6 +965,7 @@
     const m = (state.profile && state.profile.madrasa) || {};
     const verified = Number(m.verified) === 1;
     const initials = (state.me.user.fullName || state.me.user.username || "A").trim().split(/\s+/).map((s) => s[0]).slice(0, 2).join("").toUpperCase();
+    state.headerAvatar = headerAvatarMarkup(initials);
 
     root.innerHTML = `
       <div class="dash-root">
@@ -1001,7 +1003,7 @@
                 ? `<span class="dash-badge verified">${I.shield} Super Admin</span>`
                 : `<span class="dash-badge ${verified ? "verified" : "pending"}">${verified ? I.check + " Verified" : I.clock + " Pending Review"}</span>`}
               <div class="dash-header-user">
-                <span class="dash-header-avatar">${esc(initials)}</span>
+                <span class="dash-header-avatar">${state.headerAvatar}</span>
                 <span class="who"><strong>${esc(state.me.user.fullName || state.me.user.username)}</strong><small>${state.superAdmin ? "Platform Administrator" : esc(m.name_en || "")}</small></span>
               </div>
             </header>
@@ -2063,16 +2065,187 @@
     window.open(url, "_blank", "noopener");
   }
 
+  /* ---------------------------- ID card workspace -------------------------
+     One screen prints every card the school needs, because the operation is
+     identical for a student and a member of staff: choose who, choose the
+     side, send it to the printer. Keeping staff cards on a separate page is
+     how "teachers must also have ID cards" ends up half-implemented, so the
+     role is a tab and the same controls drive both.
+
+     The right-hand panel is the other half of a QR code: a card is only worth
+     printing if a gate, a bank or an exam hall can CHECK it, so the scanner
+     lives next to the printer.
+    ---------------------------------------------------------------------- */
   async function pageIdCards(content) {
-    const base = await catalogue();
-    content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Students</div><h2>ID Cards</h2><p>Print a two-sided wallet card (front and back) or prepare eight cards per A4 sheet for cutting.</p></div></div>
-      <div class="dash-grid-2"><div class="dash-card"><div class="dash-card-head"><h3>Print a class set</h3></div><div class="dash-card-pad"><div class="dash-field"><label for="idCardClass">Class / level</label><select id="idCardClass"><option value="">Choose a class</option>${options(base.classes)}</select></div><div class="dash-actions" style="margin-top:16px"><button id="printBulkIdCards" class="dash-btn dash-btn-primary">${I.external} Print fronts</button><button id="printBulkIdBacks" class="dash-btn dash-btn-ghost">${I.external} Print backs</button></div><p class="hint" style="margin-top:12px">A4 portrait, eight 85.6 × 54 mm cards per sheet with cut marks. Print the fronts, then the backs, and cut along the marks.</p></div></div>
-      <div class="dash-card"><div class="dash-card-head"><h3>Print an individual card</h3></div><div class="dash-card-pad"><p class="hint">Open any student profile from <button type="button" class="dash-link-btn" data-nav-route="students/profiles">Student Profiles</button>, then choose <strong>Print ID card</strong> in Quick actions.</p></div></div></div>`;
-    [["#printBulkIdCards", "front"], ["#printBulkIdBacks", "back"]].forEach(([selector, side]) => content.querySelector(selector).addEventListener("click", () => {
-      const classId = content.querySelector("#idCardClass").value;
-      if (!classId) return toast("Choose a class first.", "error");
-      printDocument(`/documents/id-card/bulk?classId=${encodeURIComponent(classId)}&side=${side}`);
-    }));
+    const [base, roster] = await Promise.all([catalogue(), window.API.get("/students?perPage=200").catch(() => ({ students: [] }))]);
+    base.students = roster.students || [];
+    const initial = state.cache.idCardTab === "teacher" ? "teacher" : "student";
+    content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Documents</div><h2>ID Cards</h2>
+        <p>Wallet-sized cards for students and staff, each carrying a QR code that any camera can verify.</p></div>
+        <div class="dash-actions"><button class="dash-btn dash-btn-ghost" id="idCardsVerify">${I.scan} Verify a card</button></div></div>
+      <div class="idc-tabs" role="tablist">
+        <button type="button" class="idc-tab${initial === "student" ? " is-on" : ""}" role="tab" aria-selected="${initial === "student"}" data-idc-tab="student">Student cards</button>
+        <button type="button" class="idc-tab${initial === "teacher" ? " is-on" : ""}" role="tab" aria-selected="${initial === "teacher"}" data-idc-tab="teacher">Staff cards</button>
+      </div>
+      <div class="idc-grid">
+        <div class="dash-card" id="idCardBuilder"></div>
+        <div class="idc-side">
+          <div class="dash-card" id="idCardScanner"></div>
+          <div class="dash-card" id="idCardRegistry"></div>
+        </div>
+      </div>`;
+
+    const builder = content.querySelector("#idCardBuilder");
+    const registry = content.querySelector("#idCardRegistry");
+    let tab = initial;
+
+    const renderBuilder = () => {
+      if (tab === "teacher") {
+        builder.innerHTML = `<div class="dash-card-head"><h3>Print staff cards</h3><span class="hint">Every member of staff can carry a card</span></div>
+          <div class="dash-card-pad">
+            <div class="dash-form-grid">
+              <div class="dash-field"><label for="idCardStaffRole">Who</label>
+                <select id="idCardStaffRole">
+                  <option value="">All staff (teachers and administrators)</option>
+                  <option value="teacher">Teachers only</option>
+                  <option value="madrasa_admin">Administrators only</option>
+                </select></div>
+              <div class="dash-field"><label for="idCardStaffSearch">Search a name or staff ID</label>
+                <input id="idCardStaffSearch" type="search" placeholder="Leave blank for everyone active"></div>
+            </div>
+            <p class="idc-note" style="margin-top:12px">Print the fronts, then the backs, and cut along the marks. Eight cards fit on one A4 sheet.</p>
+            <div class="dash-actions" style="margin-top:14px">
+              <button class="dash-btn dash-btn-primary" id="printStaffFronts">${I.external} Print staff fronts</button>
+              <button class="dash-btn dash-btn-ghost" id="printStaffBacks">${I.external} Print staff backs</button>
+            </div>
+            <hr class="dash-hr" style="margin:18px 0">
+            <h4 class="cd-section-title">My own card</h4>
+            <p class="hint">Opens the front and back as two card-sized pages, ready for a laminator.</p>
+            <div class="dash-actions"><button class="dash-btn dash-btn-ghost" id="previewMyStaffCard" data-needs="documents.generate">${I.file} Preview my staff card</button></div>
+          </div>`;
+        const printStaff = (side) => {
+          const role = builder.querySelector("#idCardStaffRole").value;
+          const query = builder.querySelector("#idCardStaffSearch").value.trim();
+          const params = new URLSearchParams({ side });
+          if (role) params.set("role", role);
+          if (query) params.set("q", query);
+          printDocument(`/documents/staff-id-card/bulk?${params.toString()}`);
+        };
+        builder.querySelector("#printStaffFronts").addEventListener("click", () => printStaff("front"));
+        builder.querySelector("#printStaffBacks").addEventListener("click", () => printStaff("back"));
+        builder.querySelector("#previewMyStaffCard").addEventListener("click", () => {
+          const meId = (state.me && (state.me.user && state.me.user.id || state.me.id)) || "";
+          if (!meId) return toast("Sign in again and try once more.", "error");
+          printDocument(`/documents/staff-id-card/${meId}`);
+        });
+        return;
+      }
+      builder.innerHTML = `<div class="dash-card-head"><h3>Print a class set</h3><span class="hint">Eight cards per A4 sheet</span></div>
+        <div class="dash-card-pad">
+          <div class="dash-field"><label for="idCardClass">Class / level</label>
+            <select id="idCardClass"><option value="">Choose a class</option>${options(base.classes)}</select></div>
+          <div class="dash-actions" style="margin-top:16px">
+            <button id="printBulkIdCards" class="dash-btn dash-btn-primary">${I.external} Print fronts</button>
+            <button id="printBulkIdBacks" class="dash-btn dash-btn-ghost">${I.external} Print backs</button>
+          </div>
+          <p class="idc-note" style="margin-top:12px">A4 portrait, eight 85.6 × 54 mm cards per sheet with cut marks. Print the fronts, then the backs, and cut along the marks.</p>
+          <hr class="dash-hr" style="margin:18px 0">
+          <h4 class="cd-section-title">One student</h4>
+          <p class="hint">Open any student from <button type="button" class="dash-link-btn" data-nav-route="students/profiles">Student Profiles</button> and choose <strong>Print ID card</strong>, or search here.</p>
+          <div class="dash-field"><label for="idCardSingle">Student</label>
+            <select id="idCardSingle"><option value="">Choose a student</option>${(base.students || []).map((s) => `<option value="${s.id}">${esc([s.first_name, s.last_name].filter(Boolean).join(" "))} · ${esc(s.admission_no || "")}</option>`).join("")}</select></div>
+          <div class="dash-actions"><button class="dash-btn dash-btn-ghost" id="printSingleIdCard" data-needs="documents.generate">${I.file} Print this card</button></div>
+        </div>`;
+      [["#printBulkIdCards", "front"], ["#printBulkIdBacks", "back"]].forEach(([selector, side]) => builder.querySelector(selector).addEventListener("click", () => {
+        const classId = builder.querySelector("#idCardClass").value;
+        if (!classId) return toast("Choose a class first.", "error");
+        printDocument(`/documents/id-card/bulk?classId=${encodeURIComponent(classId)}&side=${side}`);
+      }));
+      builder.querySelector("#printSingleIdCard").addEventListener("click", () => {
+        const id = builder.querySelector("#idCardSingle").value;
+        if (!id) return toast("Choose a student first.", "error");
+        printDocument(`/documents/id-card/${id}`);
+      });
+      bindRouteButtons(builder);
+    };
+
+    const renderScanner = () => {
+      const host = content.querySelector("#idCardScanner");
+      host.innerHTML = `<div class="dash-card-head"><h3>Check a card</h3><span class="hint">Camera or typed code</span></div>
+        <div class="dash-card-pad">
+          <p class="hint">Point a camera at the QR on the back of the card, or type the code printed under it. The card is matched against this school's live register.</p>
+          <div class="row" data-scanner data-endpoint="/api/public/card/">
+            <input type="text" name="code" autocomplete="off" spellcheck="false" placeholder="Card code" aria-label="Card code" style="flex:1;min-width:150px;padding:9px 11px;border:1px solid #cfd9e8;border-radius:10px;font:600 14px/1.2 ui-monospace,Menlo,Consolas,monospace;text-transform:uppercase">
+            <button type="button" class="dash-btn dash-btn-primary dash-btn-sm" data-scanner-open>Scan with camera</button>
+            <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-check>Check</button>
+          </div>
+          <p class="dash-field-hint" data-scanner-error style="color:#b42318" hidden></p>
+          <div data-scanner-result></div>
+        </div>`;
+      if (window.EduScanner) window.EduScanner.initAll(host);
+      const input = host.querySelector("input[name=code]");
+      if (input) input.focus({ preventScroll: true });
+    };
+
+    const renderRegistry = async () => {
+      registry.innerHTML = `<div class="dash-card-head"><h3>Cards on file</h3><span class="hint">Status of every card this school can print</span></div><div class="dash-card-pad"><p class="hint">Loading…</p></div>`;
+      try {
+        const data = await window.API.get(`/documents/cards?holderType=${tab}`);
+        const cards = data.cards || [];
+        const isTeacher = tab === "teacher";
+        registry.innerHTML = `<div class="dash-card-head"><h3>${isTeacher ? "Staff" : "Student"} cards</h3><span class="hint">${cards.length} record(s)</span></div>
+          <div class="dash-table-wrap idc-card-table"><table class="dash-table"><thead><tr><th>Holder</th><th>Identifier</th><th>QR code</th><th>Printed</th><th>Status</th><th></th></tr></thead><tbody>
+          ${cards.length ? cards.map((card) => `<tr>
+            <td><div style="display:flex;align-items:center;gap:10px">${window.EduProfile ? window.EduProfile.avatarHtml({ photoPath: card.hasPhoto ? card.photo_path : "", name: card.name }, { size: "sm" }) : ""}<span><strong>${esc(card.name)}</strong><br><small class="hint">${esc(card.role || "")}${card.detail ? ` · ${esc(card.detail)}` : ""}</small></span></div></td>
+            <td>${esc(card.identifier || "—")}</td>
+            <td>${card.cardCode ? `<code class="idc-code">${esc(card.cardCode)}</code>` : `<span class="hint">not issued yet</span>`}</td>
+            <td>${card.printCount ? `${card.printCount}×` : `<span class="hint">—</span>`}</td>
+            <td><span class="idc-state ${card.cardStatus === "active" ? "idc-state-ok" : card.cardStatus === "revoked" ? "idc-state-warn" : "idc-state-muted"}">${esc(card.cardStatus === "not-issued" ? "not printed" : card.cardStatus)}</span></td>
+            <td><div class="dash-actions">
+              <button class="dash-btn dash-btn-ghost dash-btn-sm" data-card-print="${card.id}">${I.external} ${isTeacher ? "Card" : "Print"}</button>
+              ${card.cardCode && card.cardStatus !== "revoked" ? `<button class="dash-btn dash-btn-danger dash-btn-sm" data-card-revoke="${card.id}">Revoke</button>` : ""}
+            </div></td></tr>`).join("") : emptyRow(6, isTeacher ? "No staff records yet." : "No students to card yet.")}
+          </tbody></table></div>
+          <div class="dash-card-pad"><p class="idc-note">Revoking takes a lost or stolen card out of use immediately — the printed QR starts reporting “cancelled”. Printing the card again afterwards mints a fresh code.</p></div>`;
+
+        registry.querySelectorAll("[data-card-print]").forEach((button) => button.addEventListener("click", () => {
+          const id = button.getAttribute("data-card-print");
+          printDocument(isTeacher ? `/documents/staff-id-card/${id}` : `/documents/id-card/${id}`);
+        }));
+        registry.querySelectorAll("[data-card-revoke]").forEach((button) => button.addEventListener("click", async () => {
+          if (!window.confirm("Revoke this card? The printed QR will stop verifying immediately.")) return;
+          try {
+            await window.API.post(`/documents/card/${isTeacher ? "teacher" : "student"}/${button.getAttribute("data-card-revoke")}/status`, { status: "revoked" });
+            toast("Card revoked. The printed code no longer verifies.", "success");
+            renderRegistry();
+          } catch (error) { toast(error.message || "The card could not be revoked.", "error"); }
+        }));
+      } catch (error) {
+        registry.innerHTML = `<div class="dash-card-pad"><p class="hint">${esc(error.message || "The card list could not be loaded.")}</p></div>`;
+      }
+    };
+
+    const selectTab = (next) => {
+      tab = next;
+      state.cache.idCardTab = next;
+      content.querySelectorAll("[data-idc-tab]").forEach((button) => {
+        const on = button.getAttribute("data-idc-tab") === next;
+        button.classList.toggle("is-on", on);
+        button.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      renderBuilder();
+      renderRegistry();
+      bindRouteButtons(content);
+    };
+    content.querySelectorAll("[data-idc-tab]").forEach((button) => button.addEventListener("click", () => selectTab(button.getAttribute("data-idc-tab"))));
+    content.querySelector("#idCardsVerify").addEventListener("click", () => {
+      const input = content.querySelector("#idCardScanner input[name=code]");
+      if (input) { input.focus(); input.select(); } else renderScanner();
+    });
+
+    renderBuilder();
+    renderScanner();
+    renderRegistry();
     bindRouteButtons(content);
   }
 
@@ -2082,56 +2255,100 @@
     return data.csrfToken;
   }
 
-  function openCertificateTemplateModal(template, afterSave) {
-    const isNew = !template;
-    const modal = openModal(isNew ? "Add certificate template" : "Edit certificate template", `<form id="certificateTemplateForm"><div class="dash-form-grid"><div class="dash-field"><label>Name <span class="req">*</span></label><input name="name" required maxlength="160" value="${esc(template && template.name)}"></div><div class="dash-field"><label>Template type</label><select name="type">${["graduation", "achievement", "completion", "participation", "custom"].map((x) => `<option value="${x}" ${template && template.type === x ? "selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select></div></div><div class="certificate-editor-grid" style="margin-top:16px"><div class="dash-field"><label>HTML template</label><textarea id="certificateHtmlTemplate" name="html_template" rows="18" required placeholder="<h1>Certificate of {{custom_field_1}}</h1><p>This certifies that {{student_name}}...</p>">${esc(template && template.html_template || '<p class=\'cert-kicker\'>This certificate is proudly presented to</p><h1 class=\'cert-name\'>{{student_name}}</h1><p>for outstanding dedication and successful completion of <strong>{{class}}</strong> during the <strong>{{session}}</strong> academic session.</p><p class=\'cert-award\'>{{custom_field_1}}</p><p class=\'cert-note\'>{{custom_field_2}}</p>')}</textarea><small class="dash-field-hint">Placeholders: {{student_name}}, {{class}}, {{session}}, {{date}}, {{custom_field_1}}, {{custom_field_2}}, {{custom_field_3}}. Standard styles: cert-kicker, cert-name, cert-award, cert-note.</small></div><div class="certificate-preview-wrap"><label>Live preview</label><div id="certificatePreviewStage" class="certificate-preview-stage"><iframe id="certificatePreviewFrame" title="Certificate preview" sandbox="" referrerpolicy="no-referrer"></iframe></div><small class="dash-field-hint">Sample data is shown. The certificate prints as A4 landscape with the school's own colours and logo.</small></div></div><div class="dash-actions" style="margin-top:16px"><button type="button" class="dash-btn dash-btn-ghost" id="cancelCertificateTemplate">Cancel</button><button class="dash-btn dash-btn-primary" type="submit">${I.check} ${isNew ? "Save template" : "Save changes"}</button>${!isNew && !template.archived_at ? `<button type="button" class="dash-btn dash-btn-danger" id="archiveCertificateTemplate">Archive</button>` : ""}</div></form>`);
-    modal.querySelector(".dash-modal").style.width = "min(1100px, 100%)";
-    const textarea = modal.querySelector("#certificateHtmlTemplate");
-    const frame = modal.querySelector("#certificatePreviewFrame");
-    const stage = modal.querySelector("#certificatePreviewStage");
-    // The preview is the real certificate renderer on the server, so what the admin
-    // sees is what prints. It runs in a sandboxed frame (no scripts, isolated styles).
-    const fit = () => { const scale = stage.clientWidth / 1123; frame.style.transform = `scale(${scale})`; stage.style.height = `${Math.round(794 * scale)}px`; };
-    let timer = null; let seq = 0;
-    const renderPreview = async () => {
-      const mine = ++seq;
-      try {
-        const csrf = await csrfToken();
-        const res = await fetch(window.API.url("/documents/templates/preview"), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify({ html_template: textarea.value }) });
-        if (!res.ok) return;
-        const html = await res.text();
-        if (mine === seq) frame.srcdoc = html;
-      } catch (e) { /* keep the last good preview */ }
-    };
-    textarea.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(renderPreview, 350); });
-    window.addEventListener("resize", fit);
-    fit(); renderPreview();
-    modal.querySelector("#cancelCertificateTemplate").addEventListener("click", closeModal);
-    const archive = modal.querySelector("#archiveCertificateTemplate");
-    if (archive) archive.addEventListener("click", async () => { if (!window.confirm("Archive this template? Existing certificates will remain printable.")) return; try { await window.API.patch(`/documents/templates/${template.id}`, { archived: true }); closeModal(); toast("Certificate template archived.", "success"); afterSave(); } catch (e) { toast(e.message || "Could not archive template.", "error"); } });
-    modal.querySelector("#certificateTemplateForm").addEventListener("submit", async (e) => { e.preventDefault(); const fd = new FormData(e.target); const body = { name: fd.get("name"), type: fd.get("type"), html_template: fd.get("html_template") }; try { if (isNew) await window.API.post("/documents/templates", body); else await window.API.patch(`/documents/templates/${template.id}`, body); closeModal(); toast(isNew ? "Certificate template saved." : "Certificate template updated.", "success"); afterSave(); } catch (err) { toast(err.message || "Could not save template.", "error"); } });
-  }
-
+  /* ------------------------- certificate templates ------------------------
+     The old editor was a textarea of raw HTML, which asked a school
+     administrator to be a web developer. Templates are now chosen from a
+     gallery and filled in through a form; the designer in
+     public/js/certificate-designer.js owns the editing, and the server owns
+     the markup. This page is a list of saved designs plus a route into it.
+    ---------------------------------------------------------------------- */
   async function pageCertificateTemplates(content) {
-    const data = await window.API.get("/documents/templates");
-    const templates = data.templates || [];
-    const render = () => { content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Documents</div><h2>Certificate Templates</h2><p>Create reusable A4 landscape certificates for either Islamic or Western programmes. The same placeholders work for every category.</p></div><button id="addCertificateTemplate" data-needs="documents.generate" class="dash-btn dash-btn-primary">${I.plus} Add template</button></div><div class="dash-card"><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${templates.length ? templates.map((t) => `<tr><td><strong>${esc(t.name)}</strong><small>${esc((t.html_template || "").replace(/<[^>]+>/g, "").slice(0, 100))}</small></td><td>${esc(t.type)}</td><td><span class="dash-pill ${t.archived_at ? "danger" : "ok"}">${t.archived_at ? "archived" : "active"}</span></td><td>${fmtDate(t.created_at)}</td><td><button class="dash-btn dash-btn-ghost dash-btn-sm" data-edit-template="${t.id}">${I.edit} Edit</button>${!t.archived_at ? `<button class="dash-btn dash-btn-ghost dash-btn-sm" data-issue-template="${t.id}">Issue</button>` : ""}</td></tr>`).join("") : emptyRow(5, "No certificate templates yet.")}</tbody></table></div></div>`;
-      content.querySelector("#addCertificateTemplate").addEventListener("click", () => openCertificateTemplateModal(null, async () => { const fresh = await window.API.get("/documents/templates"); templates.splice(0, templates.length, ...(fresh.templates || [])); render(); }));
-      content.querySelectorAll("[data-edit-template]").forEach((button) => button.addEventListener("click", () => { const row = templates.find((x) => Number(x.id) === Number(button.dataset.editTemplate)); if (row) openCertificateTemplateModal(row, async () => { const fresh = await window.API.get("/documents/templates"); templates.splice(0, templates.length, ...(fresh.templates || [])); render(); }); }));
-      content.querySelectorAll("[data-issue-template]").forEach((button) => button.addEventListener("click", () => { go("documents/issue"); }));
+    const catalogue = await window.EduCertificates.loadCatalogue(window.API);
+    const designs = catalogue.designs || [];
+    const rows = await window.API.get("/documents/templates?type=certificate");
+    const templates = rows.templates || [];
+    const byDesign = new Map(designs.map((design) => [design.key, design]));
+    content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Documents</div><h2>Certificate Templates</h2>
+        <p>Choose a design, fill in what it should say, and it prints exactly as it looks here. No markup involved.</p></div>
+        <div class="dash-actions"><button class="dash-btn dash-btn-primary" id="addCertificateTemplate">${I.plus} New certificate template</button>
+        <button class="dash-btn dash-btn-ghost" id="issueFromHere">${I.file} Issue a certificate</button></div></div>
+      <div class="dash-card"><div class="dash-card-head"><h3>Saved templates</h3><span class="hint">${templates.length} template(s)</span></div>
+        ${templates.length ? `<div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Template</th><th>Design</th><th>Status</th><th></th></tr></thead><tbody>${templates.map((template) => {
+          const design = byDesign.get(template.design_key);
+          return `<tr><td><strong>${esc(template.name)}</strong><br><small class="hint">${esc((template.config && template.config.title) || "Untitled certificate")}</small></td>
+            <td>${esc(design ? design.name : template.design_key || "Classic")}</td>
+            <td><span class="dash-pill ${template.is_active ? "dash-pill-green" : "dash-pill-amber"}">${template.is_active ? "Active" : "Archived"}</span></td>
+            <td><div class="dash-actions"><button class="dash-btn dash-btn-ghost dash-btn-sm" data-edit-template="${template.id}">${I.edit} Edit design</button>
+            <button class="dash-btn dash-btn-ghost dash-btn-sm" data-issue-template="${template.id}">${I.file} Issue</button></div></td></tr>`;
+        }).join("")}</tbody></table></div>` : `<div class="dash-card-pad"><p class="hint">No certificate templates yet. Start from one of the designs and make it yours.</p></div>`}
+      </div>`;
+
+    // Signatories are staff accounts: the designer lets you attach the signature a
+    // teacher already saved on their own account, so nothing is ever re-typed.
+    const openDesigners = async () => {
+      const data = await window.API.get("/teachers").catch(() => ({ teachers: [] }));
+      return (data.teachers || []).map((teacher) => ({
+        id: teacher.user_id || teacher.id,
+        name: [teacher.first_name, teacher.last_name].filter(Boolean).join(" ") || teacher.fullName || "Staff member",
+        hasSignature: Boolean(teacher.signature_path),
+      }));
     };
-    render();
+
+    const edit = (template) => openDesigners().then((people) => window.EduCertificates.openDesigner({
+      API: window.API,
+      template,
+      people,
+      toast,
+      openModal,
+      closeModal,
+      onSaved: () => pageCertificateTemplates(content),
+    }));
+
+    content.querySelector("#addCertificateTemplate").addEventListener("click", () => edit(null));
+    content.querySelectorAll("[data-edit-template]").forEach((button) => button.addEventListener("click", () => {
+      const id = button.getAttribute("data-edit-template");
+      const found = templates.find((item) => String(item.id) === id);
+      edit(found || { id });
+    }));
+    content.querySelectorAll("[data-issue-template]").forEach((button) => button.addEventListener("click", () => {
+      state.pendingCertificateTemplate = button.getAttribute("data-issue-template");
+      nav("documents/issue");
+    }));
+    content.querySelector("#issueFromHere").addEventListener("click", () => nav("documents/issue"));
   }
 
+  /* Issuing used to be a form that printed a certificate whose verification was
+     a token valid for a quarter of an hour — useless on a piece of paper. Now
+     every certificate is minted with a permanent code and a QR that resolves to
+     this school's own verification page. */
   async function pageIssueCertificate(content) {
-    const [templateData, studentsData, issuedData] = await Promise.all([window.API.get("/documents/templates"), window.API.get("/students?perPage=200&status=active"), window.API.get("/documents/certificates")]);
-    const activeTemplates = (templateData.templates || []).filter((t) => !t.archived_at);
-    const students = studentsData.students || [];
-    const issued = issuedData.certificates || [];
-    content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Documents</div><h2>Issue Certificate</h2><p>Select one or more students, choose a template and generate printable A4 landscape certificates.</p></div><button class="dash-btn dash-btn-ghost" data-nav-route="documents/templates">Manage templates</button></div><div class="dash-card"><div class="dash-card-pad"><form id="issueCertificateForm"><div class="dash-form-grid"><div class="dash-field" style="grid-column:1/-1"><label>Student(s) <span class="req">*</span></label><select name="student_ids" id="certificateStudents" multiple size="7" required>${students.map((s) => `<option value="${s.id}">${esc(s.admission_no)} — ${esc([s.first_name, s.last_name].filter(Boolean).join(" "))} · ${esc(s.class_en || "Unassigned")}</option>`).join("")}</select><small class="dash-field-hint">Hold Ctrl or Command to select more than one student.</small></div><div class="dash-field"><label>Template <span class="req">*</span></label><select name="template_id" required><option value="">Choose template</option>${activeTemplates.map((t) => `<option value="${t.id}">${esc(t.name)} · ${esc(t.type)}</option>`).join("")}</select></div><div class="dash-field"><label>Issue date</label><input name="issued_date" type="date" value="${todayIso()}" required></div><div class="dash-field"><label>Custom field 1</label><input name="custom_field_1" maxlength="500" placeholder="e.g. Outstanding character"></div><div class="dash-field"><label>Custom field 2</label><input name="custom_field_2" maxlength="500"></div><div class="dash-field"><label>Custom field 3</label><input name="custom_field_3" maxlength="500"></div></div><button class="dash-btn dash-btn-primary" style="margin-top:16px" type="submit">${I.external} Generate certificates</button></form></div></div><div class="dash-card" style="margin-top:18px"><div class="dash-card-head"><h3>Issued certificates</h3><span class="hint">${issued.length} record(s)</span></div><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Student</th><th>Template</th><th>Issue date</th><th></th></tr></thead><tbody>${issued.length ? issued.map((c) => `<tr><td>${esc(c.student_name || `${c.first_name || ""} ${c.last_name || ""}`)}</td><td>${esc(c.template_name)}</td><td>${fmtDate(c.issued_date)}</td><td><button class="dash-btn dash-btn-ghost dash-btn-sm" data-reprint-certificate="${c.id}">${I.external} Reprint</button></td></tr>`).join("") : emptyRow(4, "No certificates have been issued yet.")}</tbody></table></div></div>`;
-    bindRouteButtons(content);
-    content.querySelector("#issueCertificateForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.target; const ids = [...form.querySelector("#certificateStudents").selectedOptions].map((option) => Number(option.value)); if (!ids.length) return toast("Select at least one student.", "error"); try { await window.API.post("/documents/certificates", { student_ids: ids, template_id: form.template_id.value, custom_fields: { custom_field_1: form.custom_field_1.value, custom_field_2: form.custom_field_2.value, custom_field_3: form.custom_field_3.value }, issued_date: form.issued_date.value }); toast(`${ids.length} certificate${ids.length === 1 ? "" : "s"} issued.`, "success"); pageIssueCertificate(content); } catch (e) { toast(e.message || "Could not issue certificate.", "error"); } });
-    content.querySelectorAll("[data-reprint-certificate]").forEach((button) => button.addEventListener("click", () => printDocument(`/documents/certificates/${button.dataset.reprintCertificate}`)));
+    const [base, roster] = await Promise.all([catalogue(), window.API.get("/students?perPage=500").catch(() => ({ students: [] }))]);
+    const rows = await window.API.get("/documents/templates?type=certificate");
+    const templates = (rows.templates || []).filter((template) => template.is_active);
+    if (!templates.length) {
+      content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Documents</div><h2>Issue Certificate</h2></div></div>
+        <div class="dash-card"><div class="dash-card-pad"><p class="hint">You need at least one certificate template before issuing. Pick a design first.</p>
+        <div class="dash-actions"><button class="dash-btn dash-btn-primary" data-nav-route="documents/templates">${I.file} Choose a template</button></div></div></div>`;
+      bindRouteButtons(content);
+      return;
+    }
+    // Rows go to the wizard as-is (it builds its own labels) so the class filter
+    // and the admission-number search work on the fields the roster uses.
+    const people = roster.students || [];
+    const picked = state.pendingCertificateTemplate || "";
+    state.pendingCertificateTemplate = null;
+    window.EduCertificates.openIssueWizard({
+      selectedTemplate: picked,
+      API: window.API,
+      templates,
+      students: people,
+      classes: base.classes || [],
+      terms: allTerms(base.sessions || []),
+      toast,
+      openModal,
+      closeModal,
+      onDone: () => pageIssueCertificate(content),
+    });
   }
 
   async function pageStudentGroups(content) {
@@ -2158,8 +2375,25 @@
 
   async function openStudentProfile(id, editMode = false, initialTab = "overview") {
     const [record, base] = await Promise.all([window.API.get(`/students/${id}`), catalogue()]); const s = record.student;
-    const modal = openModal(`${s.first_name} ${s.last_name} · profile`, `<div class="student-profile-hero"><div>${studentAvatar(s)}</div><div><h3>${esc([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(" "))}</h3><p>${esc(s.student_code || s.admission_no)} · ${esc(s.class_en || "Unassigned")} ${s.section ? `· ${esc(s.section)}` : ""}</p>${studentStatusPill(s.status)}</div><div class="dash-actions"><button type="button" class="dash-btn dash-btn-primary dash-btn-sm" id="profileEdit">${I.edit} Edit student</button><button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" id="profilePrint">Print profile</button></div></div><div class="student-profile-tabs"><button class="active" data-profile-tab="overview">Overview</button><button data-profile-tab="personal">Personal & family</button><button data-profile-tab="academic">Academic</button><button data-profile-tab="life">Student life</button><button data-profile-tab="health">Health</button><button data-profile-tab="finance">Finance</button><button data-profile-tab="documents">Documents</button><button data-profile-tab="communication">Communication</button>${canManagePortalAccounts() ? `<button data-profile-tab="portal">Portal access</button>` : ""}</div><div id="studentProfilePanel"></div>`);
+    const modal = openModal(`${s.first_name} ${s.last_name} · profile`, `<div class="student-profile-hero"><div id="profileAvatarHost">${window.EduProfile ? window.EduProfile.avatarHtml(s) : studentAvatar(s)}</div><div><h3>${esc([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(" "))}</h3><p>${esc(s.student_code || s.admission_no)} · ${esc(s.class_en || "Unassigned")} ${s.section ? `· ${esc(s.section)}` : ""}</p>${studentStatusPill(s.status)}</div><div class="dash-actions"><button type="button" class="dash-btn dash-btn-primary dash-btn-sm" id="profileEdit">${I.edit} Edit student</button><button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" id="profilePrint">Print profile</button></div></div><div class="student-profile-tabs"><button class="active" data-profile-tab="overview">Overview</button><button data-profile-tab="personal">Personal & family</button><button data-profile-tab="academic">Academic</button><button data-profile-tab="life">Student life</button><button data-profile-tab="health">Health</button><button data-profile-tab="finance">Finance</button><button data-profile-tab="documents">Documents</button><button data-profile-tab="communication">Communication</button>${canManagePortalAccounts() ? `<button data-profile-tab="portal">Portal access</button>` : ""}</div><div id="studentProfilePanel"></div>`);
     modal.querySelector(".dash-modal").style.width = "min(980px, 100%)";
+    // The portrait is editable wherever a profile is open — a parent who can
+    // only reach the portal and an administrator who can reach everything get
+    // the same picker, saving to the same field the ID card and the reports use.
+    if (window.EduProfile) {
+      const avatarHost = modal.querySelector("#profileAvatarHost");
+      const studentName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(" ");
+      const paint = (src) => { if (avatarHost) avatarHost.innerHTML = window.EduProfile.avatarHtml({ photo_path: src, first_name: s.first_name, last_name: s.last_name }); };
+      window.EduProfile.attachAvatar(avatarHost, {
+        title: `Profile picture — ${studentName}`,
+        actionLabel: "Change photo",
+        label: `Change ${studentName}'s profile picture`,
+        currentUrl: s.photo_path || "",
+        savedMessage: "Photo updated on the profile, the portal and the ID card.",
+        onSave: (dataUrl) => window.EduProfile.endpoints.studentPhoto(id).save(dataUrl).then(() => { s.photo_path = dataUrl; paint(dataUrl); }),
+        onRemove: () => window.EduProfile.endpoints.studentPhoto(id).remove().then(() => { s.photo_path = ""; paint(""); }),
+      });
+    }
     const panel = modal.querySelector("#studentProfilePanel");
     const tab = (name) => {
       // The Health tab is rendered by the health module (public/js/health.js)
@@ -2252,7 +2486,7 @@
   async function pageTeachers(content) {
     const data = await window.API.get("/teachers"); const teachers = data.teachers || [];
     content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Teachers</div><h2>All Teachers</h2><p>${teachers.length} teacher account(s). Assignments decide access to class registers and results.</p></div><button class="dash-btn dash-btn-primary" data-nav-route="teachers/add" data-needs="teachers.create">${I.plus} Add Teacher</button></div>
-      <div class="dash-card"><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Teacher</th><th>Username</th><th>Assignments</th><th>Status</th><th></th></tr></thead><tbody>${teachers.length ? teachers.map((t) => `<tr><td><strong>${esc(t.full_name)}</strong>${t.full_name_ar ? `<small class="dash-ar">${esc(t.full_name_ar)}</small>` : ""}</td><td>${esc(t.username)}</td><td>${esc((t.assignments || []).map((a) => `${a.class ? a.class.name_en : "All classes"}${a.subject ? ` · ${a.subject.name_en}` : ""}`).join(", ") || "Not assigned")}</td><td><span class="dash-pill ${t.is_active ? "ok" : "danger"}">${t.is_active ? "active" : "inactive"}</span></td><td><button class="dash-btn dash-btn-ghost dash-btn-sm" data-teacher="${t.id}">${I.edit} Manage</button></td></tr>`).join("") : emptyRow(5, "No teacher accounts yet.")}</tbody></table></div></div>`;
+      <div class="dash-card"><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Teacher</th><th>Username</th><th>Assignments</th><th>Status</th><th></th></tr></thead><tbody>${teachers.length ? teachers.map((t) => `<tr><td><div class="dash-person-cell">${window.EduProfile ? window.EduProfile.avatarHtml({ photo_path: t.photo_path, name: t.full_name }, { size: "sm" }) : ""}<span><strong>${esc(t.full_name)}</strong>${t.full_name_ar ? `<small class="dash-ar">${esc(t.full_name_ar)}</small>` : ""}</span></div></td><td>${esc(t.username)}</td><td>${esc((t.assignments || []).map((a) => `${a.class ? a.class.name_en : "All classes"}${a.subject ? ` · ${a.subject.name_en}` : ""}`).join(", ") || "Not assigned")}</td><td><span class="dash-pill ${t.is_active ? "ok" : "danger"}">${t.is_active ? "active" : "inactive"}</span></td><td><button class="dash-btn dash-btn-ghost dash-btn-sm" data-teacher="${t.id}">${I.edit} Manage</button></td></tr>`).join("") : emptyRow(5, "No teacher accounts yet.")}</tbody></table></div></div>`;
     content.querySelectorAll("[data-teacher]").forEach((b) => b.addEventListener("click", () => openTeacherModal(Number(b.dataset.teacher), data)));
     bindRouteButtons(content);
   }
@@ -2265,11 +2499,48 @@
     content.querySelector("#teacherForm").addEventListener("submit", async (e) => { e.preventDefault(); const fd = new FormData(e.target); const body = {}; ["full_name", "full_name_ar", "username", "password", "email", "phone"].forEach((k) => body[k] = fd.get(k)); body.assignments = [...content.querySelectorAll(".dash-assignment-row")].map((r) => ({ class_id: r.querySelector(".assign-class").value || null, subject_id: r.querySelector(".assign-subject").value || null })); try { await window.API.post("/teachers", body); toast("Teacher account created.", "success"); go("teachers/all"); } catch (err) { toast(err.message || "Could not create teacher.", "error"); } });
   }
 
+  /**
+   * The header chip shows the same portrait the account owns, so a photo saved in
+   * Settings is visible the moment it is saved — an initials circle that never
+   * changes is what made people conclude the feature did not exist.
+   */
+  function headerAvatarMarkup(initials) {
+    const photo = state.me && state.me.user && (state.me.user.photoPath || state.me.user.photo_path);
+    if (photo) return `<img src="${esc(photo)}" alt="">`;
+    return esc(initials || "A");
+  }
+
+  // The account card lives in profile-photo.js and does not know about the shell;
+  // it announces the new portrait and the chip repaints itself here.
+  function renderAccountChip() {
+    const chip = document.querySelector(".dash-header-avatar");
+    if (!chip) return;
+    const name = (state.me && state.me.user && (state.me.user.fullName || state.me.user.username)) || "A";
+    const initials = name.trim().split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase();
+    chip.innerHTML = headerAvatarMarkup(initials);
+  }
+
+  document.addEventListener("edusphere:self-photo", (event) => {
+    const photo = event && event.detail ? event.detail.photoPath : "";
+    if (state.me && state.me.user) state.me.user.photoPath = photo;
+    renderAccountChip();
+  });
+
   async function openTeacherModal(id, data) {
     const t = (data.teachers || []).find((row) => Number(row.id) === id); if (!t) return;
-    const modal = openModal(`Manage ${t.full_name}`, `<form id="teacherEditForm"><div class="dash-form-grid"><div class="dash-field"><label>Full Name</label><input name="full_name" value="${esc(t.full_name)}"></div><div class="dash-field"><label>Email</label><input name="email" type="email" value="${esc(t.email)}"></div><div class="dash-field"><label>Phone</label><input name="phone" value="${esc(t.phone)}"></div><div class="dash-field"><label>New password (optional)</label><input name="password" minlength="8" type="password"></div><div class="dash-field"><label>Account status</label><select name="is_active"><option value="true" ${t.is_active ? "selected" : ""}>Active</option><option value="false" ${!t.is_active ? "selected" : ""}>Inactive</option></select></div></div><div class="dash-field" style="margin-top:14px"><label>Assignments</label><div id="editAssignmentRows"></div><button class="dash-btn dash-btn-ghost dash-btn-sm" id="editAddAssignment" type="button" style="margin-top:8px">${I.plus} Add assignment</button></div><button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px">${I.check} Save Teacher</button></form>`);
+    const modal = openModal(`Manage ${t.full_name}`, `<div id="teacherIdentityHost"></div><form id="teacherEditForm"><div class="dash-form-grid"><div class="dash-field"><label>Full Name</label><input name="full_name" value="${esc(t.full_name)}"></div><div class="dash-field"><label>Email</label><input name="email" type="email" value="${esc(t.email)}"></div><div class="dash-field"><label>Phone</label><input name="phone" value="${esc(t.phone)}"></div><div class="dash-field"><label>New password (optional)</label><input name="password" minlength="8" type="password"></div><div class="dash-field"><label>Account status</label><select name="is_active"><option value="true" ${t.is_active ? "selected" : ""}>Active</option><option value="false" ${!t.is_active ? "selected" : ""}>Inactive</option></select></div></div><div class="dash-field" style="margin-top:14px"><label>Assignments</label><div id="editAssignmentRows"></div><button class="dash-btn dash-btn-ghost dash-btn-sm" id="editAddAssignment" type="button" style="margin-top:8px">${I.plus} Add assignment</button></div><button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px">${I.check} Save Teacher</button></form>`);
     const add = (assignment = {}) => { const r = document.createElement("div"); r.className = "dash-assignment-row"; r.innerHTML = `<select class="assign-class"><option value="">All classes</option>${options(data.classes, assignment.classId)}</select><select class="assign-subject"><option value="">All subjects in class</option>${options(data.subjects, assignment.subjectId)}</select><button type="button" class="dash-icon-btn" aria-label="Remove assignment">${I.close}</button>`; r.querySelector("button").addEventListener("click", () => r.remove()); modal.querySelector("#editAssignmentRows").appendChild(r); };
     (t.assignments || []).forEach(add); if (!(t.assignments || []).length) add(); modal.querySelector("#editAddAssignment").addEventListener("click", () => add());
+    // Same shared strip the staff profile screen uses: one implementation, so a
+    // picture or signature saved from either place is immediately correct in both.
+    if (window.EduProfile) {
+      window.EduProfile.attachStaffIdentity(modal.querySelector("#teacherIdentityHost"), {
+        name: t.full_name,
+        photoPath: t.photo_path,
+        signaturePath: t.signature_path,
+        userId: t.user_id || t.id,
+      }, { cardUrl: `/documents/staff-id-card/${t.user_id || t.id}`, api: window.API });
+    }
     modal.querySelector("#teacherEditForm").addEventListener("submit", async (e) => { e.preventDefault(); const fd = new FormData(e.target); const body = { full_name: fd.get("full_name"), email: fd.get("email"), phone: fd.get("phone"), is_active: fd.get("is_active") === "true", assignments: [...modal.querySelectorAll(".dash-assignment-row")].map((r) => ({ class_id: r.querySelector(".assign-class").value || null, subject_id: r.querySelector(".assign-subject").value || null })) }; if (fd.get("password")) body.password = fd.get("password"); try { await window.API.patch(`/teachers/${id}`, body); toast("Teacher details saved.", "success"); closeModal(); pageTeachers(document.querySelector("#dashContent")); } catch (err) { toast(err.message || "Could not save teacher.", "error"); } });
   }
 
@@ -3197,6 +3468,34 @@
     content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Settings</div><h2>Administrator Account & Security</h2><p>Update your own contact details and change your password securely.</p></div></div><div class="dash-grid-2"><div class="dash-card"><div class="dash-card-head"><h3>Account details</h3></div><div class="dash-card-pad"><form id="accountForm"><div class="dash-form-grid"><div class="dash-field"><label>Username</label><input disabled value="${esc(a.username)}"></div><div class="dash-field"><label>Role</label><input disabled value="${esc(a.role)}"></div><div class="dash-field"><label>Full name</label><input name="full_name" value="${esc(a.full_name)}"></div><div class="dash-field"><label>Arabic name</label><input name="full_name_ar" dir="rtl" value="${esc(a.full_name_ar)}"></div><div class="dash-field"><label>Email</label><input name="email" type="email" value="${esc(a.email)}"></div><div class="dash-field"><label>Phone</label><input name="phone" value="${esc(a.phone)}"></div></div><button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px">${I.check} Save account details</button></form></div></div><div class="dash-card"><div class="dash-card-head"><h3>Change password</h3></div><div class="dash-card-pad"><form id="pwForm"><div class="dash-form-grid"><div class="dash-field" style="grid-column:1/-1"><label>Current Password</label><input name="currentPassword" autocomplete="current-password" type="password" required></div><div class="dash-field" style="grid-column:1/-1"><label>New Password</label><input name="newPassword" autocomplete="new-password" type="password" minlength="8" required></div></div><button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px">${I.check} Update password</button></form><p class="hint" style="margin-top:14px">Use at least eight characters and keep your password private.</p></div></div></div>`;
     content.querySelector("#accountForm").addEventListener("submit", async (e) => { e.preventDefault(); try { await window.API.put("/auth/account", Object.fromEntries(new FormData(e.target))); toast("Account details saved.", "success"); } catch (err) { toast(err.message || "Could not update account.", "error"); } });
     content.querySelector("#pwForm").addEventListener("submit", async (e) => { e.preventDefault(); const fd = new FormData(e.target); try { await window.API.post("/auth/change-password", { currentPassword: fd.get("currentPassword"), newPassword: fd.get("newPassword") }); toast("Password updated.", "success"); e.target.reset(); } catch (err) { toast(err.message || "Could not update password.", "error"); } });
+
+    /* Your own picture and your own signature, without an intermediary: this is
+       the very card every portal shows its users, so an administrator is never
+       the only role that can fix its own portrait. */
+    if (window.EduProfile) {
+      const grid = content.querySelector(".dash-grid-2");
+      const card = window.EduProfile.attachAccountCard(grid, {
+        name: a.full_name,
+        account: a,
+        hint: "Used on your ID card, the portals and any certificate you sign",
+      });
+      const cardHost = document.createElement("div");
+      cardHost.style.gridColumn = "1/-1";
+      content.appendChild(cardHost);
+      if (window.EduScanner) window.EduScanner.attachCardPanel(cardHost, { api: window.API });
+      if (card) {
+        const actions = document.createElement("div");
+        actions.className = "dash-actions";
+        actions.innerHTML = `<button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" id="accountMyCard">${I.file} Preview my ID card</button>`;
+        const strip = card.querySelector(".teacher-identity");
+        if (strip) strip.appendChild(actions);
+        actions.querySelector("#accountMyCard").addEventListener("click", () => {
+          const meId = (state.me && (state.me.user && state.me.user.id || state.me.id)) || "";
+          if (!meId) return toast("Sign in again and try once more.", "error");
+          printDocument(`/documents/staff-id-card/${meId}`);
+        });
+      }
+    }
     // Pending password-reset requests (admin-mediated delivery). When an
     // email provider is configured the user gets the link directly; on
     // installs without one, this queue is how the link reaches them.

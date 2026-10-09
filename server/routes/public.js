@@ -30,9 +30,10 @@ const db = require("../db");
 const { asyncHandler, err, ok, cleanStr, validDate, validPhone, validEmail, logActivity } = require("../util");
 const tokens = require("../services/tokens");
 const reportSheet = require("../services/report-sheet");
-const { publicLimiter, publicWriteLimiter, verifyLimiter } = require("../middleware/ratelimit");
+const { publicLimiter, publicWriteLimiter, verifyLimiter, scanLimiter } = require("../middleware/ratelimit");
 const institution = require("../services/institution");
 const myInstitution = require("../services/my-institution");
+const cardCreds = require("../services/card-credentials");
 
 const router = express.Router();
 const REPORT_TTL_SECONDS = 15 * 60;
@@ -505,6 +506,61 @@ router.post("/results/verify", verifyLimiter, asyncHandler(async (req, res) => {
     reportUrl: `/api/public/results/report/${withTokens.find((t) => t.termId === Number(chosen.term_id)).token}`,
     expiresIn: REPORT_TTL_SECONDS,
   });
+}));
+
+/* ---------------------------- card verification --------------------------
+   These are the endpoints a phone reaches after scanning a printed QR code.
+   The code IS the capability: it is random, revocable, and grants nothing but
+   the fields already printed on the card. Rate limited, and every lookup is
+   written to the activity log so a school can see when a card was checked.
+-------------------------------------------------------------------------- */
+router.get("/card/:code", scanLimiter, asyncHandler(async (req, res) => {
+  const result = await cardCreds.lookupCard(req.params.code);
+  if (!result) {
+    return res.status(404).json({ error: "No card matches this code.", verdict: "unknown", valid: false });
+  }
+  const view = cardCreds.cardVerificationView(result);
+  await cardCreds.logVerification({ madrasaId: result.credential.madrasa_id, code: view.code, ip: req.ip, valid: view.valid });
+  res.set("Cache-Control", "no-store").json({ card: view });
+}));
+
+/** A certificate carries its own code, for the same reason and the same way. */
+router.get("/certificate/:code", scanLimiter, asyncHandler(async (req, res) => {
+  const clean = /^[a-z0-9]{6,64}$/.test(String(req.params.code || "").trim().toLowerCase()) ? String(req.params.code).trim().toLowerCase() : "";
+  if (!clean) return res.status(404).json({ error: "No certificate matches this code.", verdict: "unknown", valid: false });
+  const row = await db.get(`
+    SELECT c.id, c.verify_code, c.issued_date, c.config, c.custom_fields,
+           s.first_name, s.middle_name, s.last_name, s.photo_path, s.admission_no,
+           t.name AS template_name, cl.name_en AS class_name, a.label AS session_label,
+           m.name_en AS institution_name, m.motto_en, m.logo_path, m.status AS school_status, m.city, m.state_name
+      FROM certificates c
+      JOIN students s ON s.id = c.student_id AND s.madrasa_id = c.madrasa_id
+      JOIN certificate_templates t ON t.id = c.template_id AND t.madrasa_id = c.madrasa_id
+      LEFT JOIN classes cl ON cl.id = s.class_id AND cl.madrasa_id = s.madrasa_id
+      LEFT JOIN academic_sessions a ON a.id = s.session_id AND a.madrasa_id = s.madrasa_id
+      JOIN madaris m ON m.id = c.madrasa_id
+     WHERE c.verify_code = ?`, [clean]);
+  if (!row) return res.status(404).json({ error: "No certificate matches this code.", verdict: "unknown", valid: false });
+  let config = {};
+  try { config = JSON.parse(String(row.config || "{}")); } catch (e) { config = {}; }
+  const verdict = row.school_status !== "active" ? "inactive" : "valid";
+  const view = {
+    code: row.verify_code,
+    verdict,
+    valid: verdict === "valid",
+    reference: `CERT-${String(row.issued_date || "").slice(0, 4)}-${String(row.id).padStart(6, "0")}`,
+    holderName: [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" "),
+    identifier: row.admission_no || "",
+    photoPath: row.photo_path || "",
+    title: (config && config.title) || row.template_name || "Certificate",
+    award: (config && config.award) || "",
+    className: row.class_name || "",
+    session: row.session_label || "",
+    issued: String(row.issued_date || "").slice(0, 10),
+    school: { name: row.institution_name || "", motto: row.motto_en || "", logo: row.logo_path || "", city: row.city || "", state: row.state_name || "" },
+  };
+  await logActivity(db, { madrasaId: row.madrasa_id, userId: null, action: "certificate.verify", entity: "certificate", entityId: String(row.id), meta: { valid: view.valid }, ip: req.ip });
+  res.set("Cache-Control", "no-store").json({ certificate: view });
 }));
 
 /**

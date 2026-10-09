@@ -17,6 +17,8 @@ const { imageUploader, fileUploader } = require("../middleware/upload");
 const admission = require("../services/admission");
 const { requirePermission } = require("../services/permissions");
 const audit = require("../services/audit");
+const profileMedia = require("../services/profile-media");
+const cardCreds = require("../services/card-credentials");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
@@ -574,16 +576,73 @@ router.delete("/:id/documents/:documentId", requireRole("madrasa_admin"), asyncH
   ok(res, { ok: true });
 }));
 
-/* ------------------------------ photo ---------------------------------- */
+/* ------------------------------ photo ----------------------------------
+   The student portrait is the one ID cards, registers and portals print, so it
+   is written here rather than onto the login account. A student's own portal
+   account may update its own picture through /api/auth/account/photo, which
+   mirrors into this row; a parent may not (their account is a guardian view, not
+   the student's identity).
 
-router.post("/:id/photo", requireRole("madrasa_admin"), imageUploader("photos", "photo"), asyncHandler(async (req, res) => {
+   Three shapes are accepted by one endpoint so every client behaves the same:
+     • multipart file (a camera shot or a picked file)
+     • JSON { photoDataUrl } (an image cropped in the browser)
+     • DELETE (back to initials)
+-------------------------------------------------------------------------- */
+const studentPhotoUploader = imageUploader("photos", "photo");
+
+async function storeStudentPhoto(req, res, tid, student, buffer) {
+  const previous = student.photo_path || "";
+  const photoPath = await profileMedia.writeImage(buffer, "photos", { maxBytes: profileMedia.MAX_PHOTO_BYTES });
+  await db.run("UPDATE students SET photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND madrasa_id = ?", [photoPath, student.id, tid]);
+  // Keep the linked login account's avatar in step, or the portal top bar
+  // would go on showing the old face after a successful change.
+  const account = await db.get("SELECT id, photo_path FROM users WHERE student_id = ? AND madrasa_id = ? AND role = 'student'", [student.id, tid]);
+  if (account) {
+    await db.run("UPDATE users SET photo_path = ? WHERE id = ?", [photoPath, account.id]);
+    if (account.photo_path) profileMedia.deleteStored(account.photo_path);
+  }
+  if (previous) profileMedia.deleteStored(previous);
+  logActivity(db, { madrasaId: tid, userId: req.user.id, action: "student.photo.update", entity: "student", entityId: String(student.id), ip: req.ip });
+  ok(res, { ok: true, photoPath });
+}
+
+router.post("/:id/photo", requireRole("madrasa_admin"), (req, res, next) => {
+  if (req.is("multipart/form-data")) return studentPhotoUploader(req, res, next);
+  next();
+}, asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res);
   if (tid == null) return;
   const s = await db.get("SELECT * FROM students WHERE id = ? AND madrasa_id = ?", [toNum(req.params.id, 0), tid]);
   if (!s) return res.status(404).json({ error: "Student not found." });
-  if (!req.file) return err(res, 400, "No image uploaded.");
-  await db.run("UPDATE students SET photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [`/uploads/photos/${req.file.filename}`, s.id]);
-  ok(res, { ok: true, photoPath: `/uploads/photos/${req.file.filename}` });
+  if (req.file) return storeStudentPhoto(req, res, tid, s, fs.readFileSync(req.file.path));
+  const dataUrl = (req.body && (req.body.photoDataUrl || req.body.dataUrl)) || "";
+  if (!dataUrl) return err(res, 400, "No image uploaded.");
+  return storeStudentPhoto(req, res, tid, s, profileMedia.decodeDataUrl(dataUrl, { maxBytes: profileMedia.MAX_PHOTO_BYTES }));
+}));
+
+router.delete("/:id/photo", requireRole("madrasa_admin"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res);
+  if (tid == null) return;
+  const s = await db.get("SELECT id, photo_path FROM students WHERE id = ? AND madrasa_id = ?", [toNum(req.params.id, 0), tid]);
+  if (!s) return res.status(404).json({ error: "Student not found." });
+  await db.run("UPDATE students SET photo_path = '', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND madrasa_id = ?", [s.id, tid]);
+  await db.run("UPDATE users SET photo_path = '' WHERE student_id = ? AND madrasa_id = ? AND role = 'student'", [s.id, tid]);
+  if (s.photo_path) profileMedia.deleteStored(s.photo_path);
+  ok(res, { ok: true, photoPath: "" });
+}));
+
+/** A student's own signature, on file for consent forms and exam cards. */
+router.put("/:id/signature", requireRole("madrasa_admin"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res);
+  if (tid == null) return;
+  const s = await db.get("SELECT id, signature_path FROM students WHERE id = ? AND madrasa_id = ?", [toNum(req.params.id, 0), tid]);
+  if (!s) return res.status(404).json({ error: "Student not found." });
+  const dataUrl = (req.body && (req.body.signatureDataUrl || req.body.dataUrl)) || "";
+  if (!dataUrl) return err(res, 400, "Draw a signature first.");
+  const signaturePath = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES });
+  await db.run("UPDATE students SET signature_path = ? WHERE id = ? AND madrasa_id = ?", [signaturePath, s.id, tid]);
+  if (s.signature_path) profileMedia.deleteStored(s.signature_path);
+  ok(res, { ok: true, signaturePath });
 }));
 
 /* ------------------------------ portal account ------------------------- */

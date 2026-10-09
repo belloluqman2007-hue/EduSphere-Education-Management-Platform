@@ -185,7 +185,7 @@
 
   async function openTeacherProfile(id) {
     const data = await api().get(`/teachers/${id}`); const t = data.teacher || {};
-    const modal = C.openModal(`Teacher profile — ${t.full_name}`, `<div class="tc-profile-hero">${teacherAvatar(t)}<div><h3>${e(t.full_name)}</h3><p>${e(t.position || "Teacher")} · ${e(t.department || "No department")} · ${e(t.staff_id || "No Staff ID")}</p><span class="dash-pill ${pill(t.status)}">${e(teacherStatusLabels[t.status] || t.status)}</span></div><div class="dash-actions"><button id="tcProfileEdit" class="dash-btn dash-btn-ghost dash-btn-sm">${I("edit")} Edit</button><button id="tcProfileStatus" class="dash-btn dash-btn-ghost dash-btn-sm">Change status</button><button id="tcProfilePrint" class="dash-btn dash-btn-ghost dash-btn-sm">Print</button><a class="dash-btn dash-btn-ghost dash-btn-sm" href="${api().url(`/exports/teachers.csv?search=${encodeURIComponent(t.staff_id || t.full_name)}`)}" target="_blank">${I("download")} Export</a></div></div><div class="student-profile-tabs">${[["personal", "Personal information"], ["professional", "Professional information"], ["teaching", "Teaching"], ["academic", "Academic responsibilities"], ["achievements", "Achievements"], ["documents", "Documents"], ["communication", "Communication"]].map(([k, l]) => `<button type="button" data-t-tab="${k}">${e(l)}</button>`).join("")}</div><div id="tcTeacherProfilePanel"></div>`);
+    const modal = C.openModal(`Teacher profile — ${t.full_name}`, `<div class="tc-profile-hero"><span id="tcProfileAvatar">${teacherAvatar(t)}</span><div><h3>${e(t.full_name)}</h3><p>${e(t.position || "Teacher")} · ${e(t.department || "No department")} · ${e(t.staff_id || "No Staff ID")}</p><span class="dash-pill ${pill(t.status)}">${e(teacherStatusLabels[t.status] || t.status)}</span></div><div class="dash-actions"><button id="tcProfileCard" class="dash-btn dash-btn-ghost dash-btn-sm">ID card</button><button id="tcProfileEdit" class="dash-btn dash-btn-ghost dash-btn-sm">${I("edit")} Edit</button><button id="tcProfileStatus" class="dash-btn dash-btn-ghost dash-btn-sm">Change status</button><button id="tcProfilePrint" class="dash-btn dash-btn-ghost dash-btn-sm">Print</button><a class="dash-btn dash-btn-ghost dash-btn-sm" href="${api().url(`/exports/teachers.csv?search=${encodeURIComponent(t.staff_id || t.full_name)}`)}" target="_blank">${I("download")} Export</a></div></div><div class="student-profile-tabs">${[["personal", "Personal information"], ["professional", "Professional information"], ["teaching", "Teaching"], ["academic", "Academic responsibilities"], ["achievements", "Achievements"], ["documents", "Documents"], ["communication", "Communication"]].map(([k, l]) => `<button type="button" data-t-tab="${k}">${e(l)}</button>`).join("")}</div><div id="tcTeacherIdentity"></div><div id="tcTeacherProfilePanel"></div>`);
     modal.querySelector(".dash-modal").classList.add("dash-modal-wide");
     const panel = modal.querySelector("#tcTeacherProfilePanel");
     const kv = (label, value) => `<div><b>${e(label)}</b><br>${e(value || "—")}</div>`;
@@ -204,6 +204,41 @@
     modal.querySelectorAll("[data-t-tab]").forEach((b) => b.addEventListener("click", () => renderTab(b.dataset.tTab)));
     modal.querySelector("#tcProfileEdit").addEventListener("click", () => { C.closeModal(); openTeacherEditor(id, () => openTeacherProfile(id)); });
     modal.querySelector("#tcProfilePrint").addEventListener("click", () => window.print());
+    // Portrait, signature and ID card live on the account, not on the teaching
+    // row, so an administrator can fix a picture here and the teacher can fix
+    // the same field from their own portal — one value, two front doors.
+    const userId = t.user_id || t.id;
+    const identityHost = modal.querySelector("#tcTeacherIdentity");
+    if (window.EduProfile && identityHost) {
+      window.EduProfile.attachStaffIdentity(identityHost, {
+        name: t.full_name,
+        photoPath: t.photo_path,
+        signaturePath: t.signature_path,
+        userId,
+      }, { cardUrl: `/documents/staff-id-card/${userId}`, api: api() });
+    }
+    // The hero portrait is the picture people look at, so it opens the same
+    // editor as the strip below rather than a second, weaker "upload" button.
+    const heroAvatar = modal.querySelector("#tcProfileAvatar");
+    if (window.EduProfile && heroAvatar && userId) {
+      window.EduProfile.attachAvatar(heroAvatar, {
+        title: `Portrait — ${t.full_name}`,
+        actionLabel: "Change photo",
+        currentUrl: () => t.photo_path || "",
+        savedMessage: "Portrait updated on the profile, the ID card and the portal.",
+        onSave: (dataUrl) => window.EduProfile.endpoints.teacherPhoto(userId).save(dataUrl).then(() => {
+          t.photo_path = dataUrl;
+          heroAvatar.innerHTML = window.EduProfile.avatarHtml({ photoPath: dataUrl, name: t.full_name });
+        }),
+        onRemove: () => window.EduProfile.endpoints.teacherPhoto(userId).remove().then(() => {
+          t.photo_path = "";
+          heroAvatar.innerHTML = window.EduProfile.avatarHtml({ name: t.full_name });
+        }),
+      });
+    }
+    modal.querySelector("#tcProfileCard").addEventListener("click", () => {
+      window.open(api().url(`/documents/staff-id-card/${userId}`), "_blank", "noopener");
+    });
     modal.querySelector("#tcProfileStatus").addEventListener("click", () => openTeacherStatusModal(id, t.status, () => { C.closeModal(); openTeacherProfile(id); }));
     renderTab("personal");
   }

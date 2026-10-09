@@ -23,7 +23,12 @@ test("ID card HTML is tenant-scoped and print-optimised", async () => {
   const html = await own.res.text();
   assert.match(html, /@page\{size:85\.6mm 54mm/);
   assert.match(html, /Alpha One/);
-  assert.match(html, /student-profile/);
+  // The card is a durable document, so its QR must not point at a short-lived
+  // signed link: it prints a permanent code under /verify/ and the code itself
+  // as text, so a card that passes its expiry date still says what it says.
+  assert.match(html, /\/verify\/[0-9a-f]{24}/);
+  assert.match(html, /class="id-code"/);
+  assert.doesNotMatch(html, /student-profile\//);
   // Front and back are both printed, each as its own card-sized page.
   assert.equal((html.match(/class="id-card id-front/g) || []).length, 1);
   assert.equal((html.match(/class="id-card id-back/g) || []).length, 1);
@@ -89,10 +94,13 @@ test("certificate templates and issued certificates validate, render, and stay t
   assert.match(html, /Alpha One/);
   assert.match(html, /Excellent character/);
   assert.doesNotMatch(html, /\{\{student_name\}\}/);
-  // Designed frame: reference number, both signatures, an official seal.
-  assert.match(html, /Ref\. CERT-2026-\d{6}/);
+  // Designed frame: reference number, both signature blocks, an official seal.
+  assert.match(html, /Certificate No\. CERT-\d{4}-\d{6}/);
   assert.match(html, /Principal/);
-  assert.match(html, /Class teacher/);
+  assert.match(html, /Class Teacher/);
+  // An issued certificate is a snapshot: it prints its own verify code so the
+  // paper can be checked years later, without the template still existing.
+  assert.match(html, /\/verify\/certificate\/[0-9a-f]{24}/);
   assert.match(html, /cert-seal/);
   assert.match(html, /\/js\/print\.js/);
 

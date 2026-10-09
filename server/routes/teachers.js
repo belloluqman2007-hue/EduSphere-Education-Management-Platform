@@ -262,6 +262,10 @@ function teacherDto(row, assignments = []) {
     phone: row.phone || "",
     staff_id: row.staff_id || "",
     photo_path: row.photo_path || "",
+    // A teacher's certificate/card signature: their own profile first, then
+    // the account-level one set from any device.
+    signature_path: row.signature_path || row.account_signature_path || "",
+    hasSignature: Boolean(row.signature_path || row.account_signature_path),
     public_display: Number(row.public_display) === 1,
     public_bio: row.public_bio || "",
     public_subjects: row.public_subjects || "",
@@ -276,7 +280,7 @@ function teacherDto(row, assignments = []) {
 
 async function loadTeacher(tid, id, res) {
   const user = await db.get(
-    `SELECT u.*, p.id AS profile_id, p.staff_id, p.first_name, p.middle_name, p.last_name, p.photo_path,
+    `SELECT u.*, p.id AS profile_id, p.staff_id, p.first_name, p.middle_name, p.last_name, p.photo_path, p.signature_path,
             p.gender, p.date_of_birth, p.nationality, p.state_name, p.lga, p.residential_address,
             p.alternative_phone, p.emergency_contact, p.emergency_relationship, p.employment_date,
             p.employment_type, p.position, p.department, p.education_track, p.qualifications,
@@ -291,7 +295,7 @@ async function loadTeacher(tid, id, res) {
   if (!user) { if (res) err(res, 404, "Teacher not found."); return null; }
   if (!user.profile_id) await ensureProfileForUser(tid, user);
   const refreshed = user.profile_id ? user : await db.get(
-    `SELECT u.*, p.id AS profile_id, p.staff_id, p.first_name, p.middle_name, p.last_name, p.photo_path,
+    `SELECT u.*, p.id AS profile_id, p.staff_id, p.first_name, p.middle_name, p.last_name, p.photo_path, p.signature_path,
             p.gender, p.date_of_birth, p.nationality, p.state_name, p.lga, p.residential_address,
             p.alternative_phone, p.emergency_contact, p.emergency_relationship, p.employment_date,
             p.employment_type, p.position, p.department, p.education_track, p.qualifications,
@@ -368,7 +372,9 @@ router.get("/", requirePermission("teachers.view"), asyncHandler(async (req, res
   const total = await db.get(`SELECT COUNT(*) AS n FROM users u LEFT JOIN teacher_profiles p ON p.user_id = u.id AND p.madrasa_id = u.madrasa_id WHERE ${where.join(" AND ")}`, params);
   const rows = await db.all(
     `SELECT u.id, u.username, u.full_name, u.full_name_ar, u.email, u.phone, u.is_active, u.created_at,
-            p.id AS profile_id, p.staff_id, p.first_name, p.middle_name, p.last_name, p.photo_path,
+            p.id AS profile_id, p.staff_id, p.first_name, p.middle_name, p.last_name,
+            COALESCE(NULLIF(p.photo_path, ''), u.photo_path) AS photo_path,
+            COALESCE(NULLIF(p.signature_path, ''), u.signature_path) AS signature_path,
             p.gender, p.date_of_birth, p.nationality, p.state_name, p.lga, p.residential_address,
             p.alternative_phone, p.emergency_contact, p.emergency_relationship, p.employment_date,
             p.employment_type, p.position, p.department, p.education_track, p.qualifications,
@@ -883,13 +889,79 @@ router.post("/bulk-status", requirePermission("teachers.edit"), asyncHandler(asy
   ok(res, { ok: true, updated });
 }));
 
-router.post("/:id/photo", ADMIN, teacherPhotoUploader, asyncHandler(async (req, res) => {
+/* ------------------------------ photo & signature ----------------------
+   A teacher's portrait is stored twice on purpose: teacher_profiles is the
+   staff record the directory and the ID card read, users is what the portal top
+   bar and every cross-module listing read. Writing both keeps them identical
+   without a join at every read site. The account row is also written when the
+   teacher themself calls this (a staff member fixing their own picture is not
+   an administrative act), so `/:id` may equal the caller for teachers.
+-------------------------------------------------------------------------- */
+async function storeTeacherPortrait(req, res, tid, teacher, buffer) {
+  const userId = Number(teacher.id);
+  const previous = teacher.photo_path || "";
+  const photoPath = await profileMedia.writeImage(buffer, "teacher-photos", { maxBytes: profileMedia.MAX_PHOTO_BYTES });
+  await db.run("UPDATE teacher_profiles SET photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND madrasa_id = ?", [photoPath, userId, tid]);
+  await db.run("UPDATE users SET photo_path = ? WHERE id = ? AND madrasa_id = ?", [photoPath, userId, tid]);
+  if (previous) profileMedia.deleteStored(previous);
+  logActivity(db, { madrasaId: tid, userId: req.user.id, action: "teacher.photo.update", entity: "user", entityId: String(userId), ip: req.ip });
+  ok(res, { ok: true, photoPath });
+}
+
+router.post("/:id/photo", (req, res, next) => {
+  // Admin for anyone; a teacher may replace only their own portrait.
+  if (req.user && req.user.role === "teacher" && Number(req.params.id) === Number(req.user.id)) return teacherPhotoUploader(req, res, next);
+  return ADMIN(req, res, () => teacherPhotoUploader(req, res, next));
+}, asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const t = await loadTeacher(tid, req.params.id, res); if (!t) return;
-  if (!req.file) return err(res, 400, "No image uploaded.");
-  const photoPath = `/uploads/teacher-photos/${req.file.filename}`;
-  await db.run("UPDATE teacher_profiles SET photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND madrasa_id = ?", [photoPath, t.id, tid]);
-  ok(res, { ok: true, photoPath });
+  if (req.file) return storeTeacherPortrait(req, res, tid, t, fs.readFileSync(req.file.path));
+  const dataUrl = (req.body && (req.body.photoDataUrl || req.body.dataUrl)) || "";
+  if (!dataUrl) return err(res, 400, "No image uploaded.");
+  return storeTeacherPortrait(req, res, tid, t, profileMedia.decodeDataUrl(dataUrl, { maxBytes: profileMedia.MAX_PHOTO_BYTES }));
+}));
+
+router.delete("/:id/photo", (req, res, next) => {
+  if (req.user && req.user.role === "teacher" && Number(req.params.id) === Number(req.user.id)) return next();
+  return ADMIN(req, res, next);
+}, asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const t = await loadTeacher(tid, req.params.id, res); if (!t) return;
+  await db.run("UPDATE teacher_profiles SET photo_path = '', updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND madrasa_id = ?", [t.id, tid]);
+  await db.run("UPDATE users SET photo_path = '' WHERE id = ? AND madrasa_id = ?", [t.id, tid]);
+  if (t.photo_path) profileMedia.deleteStored(t.photo_path);
+  ok(res, { ok: true, photoPath: "" });
+}));
+
+/** Signature picture used on ID cards and certificates. Data URL or file. */
+router.put("/:id/signature", (req, res, next) => {
+  if (req.user && req.user.role === "teacher" && Number(req.params.id) === Number(req.user.id)) return next();
+  return ADMIN(req, res, next);
+}, asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const t = await loadTeacher(tid, req.params.id, res); if (!t) return;
+  const dataUrl = (req.body && (req.body.signatureDataUrl || req.body.dataUrl)) || "";
+  if (!dataUrl) return err(res, 400, "Draw a signature first.");
+  const signaturePath = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES });
+  await db.run("UPDATE teacher_profiles SET signature_path = ? WHERE user_id = ? AND madrasa_id = ?", [signaturePath, t.id, tid]);
+  await db.run("UPDATE users SET signature_path = ? WHERE id = ? AND madrasa_id = ?", [signaturePath, t.id, tid]);
+  if (t.signature_path) profileMedia.deleteStored(t.signature_path);
+  ok(res, { ok: true, signaturePath });
+}));
+
+/**
+ * Staff card details for the ID-card screen: the credential the printed QR
+ * carries, its status and how many times it went to the printer.
+ */
+router.get("/:id/card", (req, res, next) => {
+  if (req.user && req.user.role === "teacher" && Number(req.params.id) === Number(req.user.id)) return next();
+  return requirePermission("teachers.view")(req, res, next);
+}, asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const t = await loadTeacher(tid, req.params.id, res); if (!t) return;
+  const credential = await cardCreds.ensureCardCredential(tid, "teacher", Number(t.id));
+  if (!credential) return err(res, 404, "Card not found.");
+  ok(res, { credential: { code: credential.code, status: credential.status, printCount: Number(credential.print_count || 0), issuedAt: credential.issued_at || credential.created_at } });
 }));
 
 router.post("/:id/documents", ADMIN, teacherDocumentUploader, asyncHandler(async (req, res) => {

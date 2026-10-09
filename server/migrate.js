@@ -2728,6 +2728,82 @@ const MIGRATIONS = [
       await idx("CREATE INDEX idx_support_chat_attachments_msg ON support_chat_attachments (message_id)");
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  /* 040 — identity: profile photos + signatures for every kind of account,
+   * printable ID cards for staff as well as students, and the durable
+   * verification codes their QR codes carry.
+   *
+   * Two gaps this closes:
+   *   • users/teachers had no photo (or signature) column of their own, so
+   *     only students could carry a portrait, and nothing could sign a
+   *     certificate.
+   *   • the ID-card QR pointed at a 15-minute signed URL, so a printed card
+   *     stopped verifying minutes after it left the printer. A card now
+   *     carries a random, durable code (revocable) that any camera can read.
+   * Certificates gain a design key + JSON layout config so a template is
+   * chosen and filled in, not hand-written in HTML.
+   * ----------------------------------------------------------------------- */
+  {
+    id: "040_identity_photos_and_verified_cards",
+    up: async (api, dialect) => {
+      const nullableTs = dialect === "mysql" ? "TIMESTAMP NULL" : "TEXT";
+      const columnExists = async (table, name) => {
+        if (dialect === "sqlite") {
+          const rows = await api.all(`PRAGMA table_info(${table})`);
+          return rows.some((row) => String(row.name).toLowerCase() === String(name).toLowerCase());
+        }
+        return (await api.all(`SHOW COLUMNS FROM ${table} LIKE ?`, [name])).length > 0;
+      };
+      const addColumn = async (table, name, type) => {
+        if (!await columnExists(table, name)) await api.run(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      };
+      const idx = async (sql) => {
+        try { await api.run(sql); }
+        catch (e) { if (!/duplicate|already exists/i.test(e.message || "")) throw e; }
+      };
+
+      // Every login account can carry its own portrait and its own signature —
+      // an administrator, a teacher, a parent or a student. The linked profile
+      // (students.photo_path / teacher_profiles.photo_path) stays the official
+      // one used by ID cards, and both are written together by the API.
+      await addColumn("users", "photo_path", "VARCHAR(500) NOT NULL DEFAULT ''");
+      await addColumn("users", "signature_path", "VARCHAR(500) NOT NULL DEFAULT ''");
+      await addColumn("teacher_profiles", "signature_path", "VARCHAR(500) NOT NULL DEFAULT ''");
+      await addColumn("students", "signature_path", "VARCHAR(500) NOT NULL DEFAULT ''");
+
+      // One credential per card holder. `code` is what the printed QR encodes;
+      // it is random, tenant-owned, and revocable without reprinting a name.
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS card_credentials (
+          id ${D.autoInc(dialect)},
+          madrasa_id INT NOT NULL,
+          holder_type VARCHAR(20) NOT NULL DEFAULT 'student',
+          holder_id INT NOT NULL,
+          code VARCHAR(64) NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'active',
+          print_count INT NOT NULL DEFAULT 0,
+          issued_at ${D.ts()},
+          last_printed_at ${nullableTs},
+          revoked_at ${nullableTs},
+          revoked_by INT,
+          created_at ${D.ts()},
+          updated_at ${nullableTs},
+          ${D.fkClause(dialect, "madrasa_id", "madaris")}UNIQUE (code)
+        )${D.engine(dialect)}
+      `);
+      await idx("CREATE UNIQUE INDEX idx_card_credentials_holder ON card_credentials (madrasa_id, holder_type, holder_id)");
+      await idx("CREATE INDEX idx_card_credentials_code ON card_credentials (code)");
+
+      // Certificates: the chosen design + its layout settings, and a code that
+      // lets a third party confirm a printed certificate is genuine.
+      await addColumn("certificate_templates", "design_key", "VARCHAR(40) NOT NULL DEFAULT ''");
+      await addColumn("certificate_templates", "config", dialect === "mysql" ? "JSON NULL" : "TEXT");
+      await addColumn("certificates", "verify_code", "VARCHAR(64) NOT NULL DEFAULT ''");
+      await addColumn("certificates", "config", dialect === "mysql" ? "JSON NULL" : "TEXT");
+      await idx("CREATE INDEX idx_certificates_verify_code ON certificates (verify_code)");
+    },
+  },
 ];
 
 async function migrate(options = {}) {

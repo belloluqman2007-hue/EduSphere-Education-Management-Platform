@@ -57,7 +57,7 @@ const healthRouter = require("./routes/health");
 const adminRouter = require("./routes/admin");
 const institution = require("./services/institution");
 const perfMonitor = require("./services/perf-monitor");
-const { asyncHandler, ok, err, toNum } = require("./util");
+const { asyncHandler, ok, err, toNum, logActivity } = require("./util");
 const db = require("./db");
 
 function createApp() {
@@ -205,6 +205,78 @@ function createApp() {
   // a bookmark or shared link opens the right workspace directly.
   app.get("/teacher", schoolLinkHandler);
   app.get("/student", schoolLinkHandler);
+
+  /* --------------------- QR verification pages (/verify) -----------------
+   These are the URLs printed into a card's and a certificate's QR code, so
+   they are real paths rather than SPA hash routes: a phone camera opens them
+   directly, without a session, and they must answer correctly even in a
+   browser that runs no JavaScript at all. Content is rendered server-side by
+   services/verification-page.js.
+   ---------------------------------------------------------------------- */
+  const verificationPage = require("./services/verification-page");
+  const cardCredentials = require("./services/card-credentials");
+  const { scanLimiter } = require("./middleware/ratelimit");
+
+  app.get("/verify", scanLimiter, asyncHandler(async (req, res) => {
+    res.set("Cache-Control", "no-store").type("html").send(verificationPage.renderScanPage(null));
+  }));
+
+  app.get("/verify/card/:code", scanLimiter, asyncHandler(async (req, res) => {
+    const result = await cardCredentials.lookupCard(req.params.code);
+    const page = result
+      ? verificationPage.renderCardPage(cardCredentials.cardVerificationView(result))
+      : verificationPage.renderCardUnknownPage(req.params.code);
+    res.set("Cache-Control", "no-store").type("html").status(result ? 200 : 404).send(page);
+  }));
+
+  // The QR on a card carries the short form: /verify/<code>.
+  app.get("/verify/:code", scanLimiter, asyncHandler(async (req, res) => {
+    const result = await cardCredentials.lookupCard(req.params.code);
+    const page = result
+      ? verificationPage.renderCardPage(cardCredentials.cardVerificationView(result))
+      : verificationPage.renderCardUnknownPage(req.params.code);
+    res.set("Cache-Control", "no-store").type("html").status(result ? 200 : 404).send(page);
+  }));
+
+  app.get("/verify/certificate/:code", scanLimiter, asyncHandler(async (req, res) => {
+    const clean = String(req.params.code || "").trim().toLowerCase();
+    const row = /^[a-z0-9-]{6,64}$/.test(clean) ? await db.get(
+      `SELECT c.id, c.verify_code, c.issued_date, c.config,
+              s.first_name, s.middle_name, s.last_name, s.photo_path,
+              t.name AS template_name, cl.name_en AS class_name, a.label AS session_label,
+              m.id AS madrasa_id, m.name_en AS institution_name, m.motto_en, m.logo_path, m.status AS school_status,
+              m.city, m.state_name
+         FROM certificates c
+         JOIN students s ON s.id = c.student_id AND s.madrasa_id = c.madrasa_id
+         JOIN certificate_templates t ON t.id = c.template_id AND t.madrasa_id = c.madrasa_id
+         LEFT JOIN classes cl ON cl.id = s.class_id AND cl.madrasa_id = s.madrasa_id
+         LEFT JOIN academic_sessions a ON a.id = s.session_id AND a.madrasa_id = s.madrasa_id
+         JOIN madaris m ON m.id = c.madrasa_id
+        WHERE c.verify_code = ?`, [clean]
+    ) : null;
+    if (!row) {
+      return res.status(404).type("html").send(verificationPage.renderCertificatePage({
+        verdict: "unknown", code: clean, school: { name: "EduSphere" }, holderName: "", reference: "",
+      }));
+    }
+    let config = {};
+    try { config = JSON.parse(String(row.config || "{}")); } catch (e) { config = {}; }
+    const view = {
+      code: row.verify_code,
+      verdict: row.school_status === "active" ? "valid" : "inactive",
+      reference: `CERT-${String(row.issued_date || "").slice(0, 4)}-${String(row.id).padStart(6, "0")}`,
+      holderName: [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" "),
+      photoPath: row.photo_path || "",
+      title: (config && config.title) || row.template_name || "Certificate",
+      award: (config && config.award) || "",
+      className: row.class_name || "",
+      session: row.session_label || "",
+      issued: String(row.issued_date || "").slice(0, 10),
+      school: { name: row.institution_name, motto: row.motto_en, logo: row.logo_path, city: row.city, state: row.state_name },
+    };
+    await logActivity(db, { madrasaId: row.madrasa_id, userId: null, action: "certificate.verify.page", entity: "certificate", entityId: String(row.id), meta: { valid: view.verdict === "valid" }, ip: req.ip });
+    res.set("Cache-Control", "no-store").type("html").send(verificationPage.renderCertificatePage(view));
+  }));
 
   /* ------------------------- PUBLIC API (no login) -------------------- */
   // The logged-out public site (directory, madrasa profile, online admission,
