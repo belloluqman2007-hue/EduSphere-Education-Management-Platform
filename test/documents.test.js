@@ -152,3 +152,58 @@ test("certificate template preview is sanitised, sample-filled and never scripte
   const denied = await teacher.api("POST", "/api/documents/templates/preview", { html_template: "<p>x</p>" });
   assert.equal(denied.status, 403);
 });
+
+test("issuing many certificates at once mints every row and prints them in one batch", async () => {
+  const created = await admin.api("POST", "/api/documents/templates", {
+    name: "Batch Issue",
+    type: "custom",
+    config: { title: "Certificate of Achievement", body: "This certifies that {{holder_name}} completed the course." },
+  });
+  assert.equal(created.status, 200);
+  const batchTemplate = created.data.id;
+
+  // A third student so the batch is bigger than one (and bigger than a
+  // single-row insert) — the old code minted certificates one query at a time.
+  const third = await ctx.db.run(
+    "INSERT INTO students (madrasa_id,admission_no,first_name,last_name,class_id,session_id) VALUES (?,?,?,?,?,?)",
+    [ctx.madrasaA, "ADM-BATCH-3", "Batch", "Three", ctx.classA1, ctx.sessionA]
+  );
+  const ids = [ctx.studentA1, ctx.studentA2, Number(third.lastInsertRowid)];
+
+  const issued = await admin.api("POST", "/api/documents/certificates", {
+    student_ids: ids,
+    template_id: batchTemplate,
+    issued_date: "2026-09-17",
+    term: "First Term",
+    result: "Distinction",
+  });
+  assert.equal(issued.status, 200);
+  assert.equal(issued.data.ids.length, 3, "three certificates were minted");
+  assert.equal(issued.data.certificates.length, 3, "and each carries its id, student and verify code");
+
+  // The batched insert must map ids to the right students, not just make rows.
+  const rows = await ctx.db.all("SELECT id, student_id, verify_code FROM certificates WHERE template_id = ?", [batchTemplate]);
+  assert.equal(rows.length, 3);
+  const byId = new Map(rows.map((r) => [Number(r.id), r]));
+  for (const cert of issued.data.certificates) {
+    assert.ok(Number(cert.id) > 0);
+    assert.match(String(cert.verifyCode), /^[0-9a-f]{24}$/, "each certificate carries a permanent verification code");
+    const stored = byId.get(Number(cert.id));
+    assert.ok(stored, "the returned id exists in the database");
+    assert.equal(Number(stored.student_id), Number(cert.studentId), "and belongs to the right student");
+    assert.equal(stored.verify_code, cert.verifyCode);
+  }
+
+  // Bulk print: one page per certificate in a single printable document.
+  const bulk = await admin.req("GET", `/api/documents/certificates/bulk?ids=${issued.data.ids.join(",")}`);
+  assert.equal(bulk.status, 200);
+  const html = await bulk.res.text();
+  assert.equal((html.match(/class="cert-bulk-page"/g) || []).length, 3, "one printed page each");
+  assert.match(html, /Batch Three/);
+  assert.match(html, /print-bar/);
+
+  // A single certificate still resolves on its own.
+  const one = await admin.req("GET", `/api/documents/certificates/${issued.data.ids[1]}`);
+  assert.equal(one.status, 200);
+  assert.match(await one.res.text(), /Bravo Two/);
+});

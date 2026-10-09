@@ -2804,6 +2804,34 @@ const MIGRATIONS = [
       await idx("CREATE INDEX idx_certificates_verify_code ON certificates (verify_code)");
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  {
+    // Pictures must survive a deploy. Uploaded portraits, signatures and
+    // logos were written only to the uploads/ directory — and on hosts whose
+    // container filesystem is replaced on every deploy (Render without the
+    // attached disk, Railway, Fly, a rebuild on a fresh VM) every photo
+    // vanished while the database lived on. Now every stored image is ALSO
+    // kept in the database, keyed by the same /uploads/... web path, and the
+    // /uploads route falls back to the database when the file is missing.
+    // Existing URLs keep working; nothing else in the platform changes.
+    id: "041_media_files_persist",
+    up: async (api, dialect) => {
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS media_files (
+          id ${D.autoInc(dialect)},
+          web_path VARCHAR(400) NOT NULL,
+          madrasa_id INT,
+          context VARCHAR(64) NOT NULL DEFAULT '',
+          mime VARCHAR(80) NOT NULL DEFAULT 'application/octet-stream',
+          data ${dialect === "mysql" ? "MEDIUMTEXT" : "TEXT"},
+          bytes INT NOT NULL DEFAULT 0,
+          created_at ${D.ts()},
+          UNIQUE (web_path)
+        )${D.engine(dialect)}
+      `);
+    },
+  },
 ];
 
 async function migrate(options = {}) {

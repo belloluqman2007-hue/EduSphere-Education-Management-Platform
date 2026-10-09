@@ -258,3 +258,34 @@ test("a certificate prints the facts it was issued with, and stays checkable", a
 });
 
 function escapeRegExp(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+test("portraits are stored in the database and survive losing the uploads directory", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  const config = require("../server/config");
+  const uploaded = await admin.api("POST", `/api/students/${ctx.studentA1}/photo`, { photoDataUrl: pngDataUrl(240, 240) });
+  assert.equal(uploaded.status, 200);
+  const webPath = uploaded.data.photoPath;
+  assert.match(webPath, /^\/uploads\//);
+
+  // The durable copy: every stored image is also kept in media_files, keyed
+  // by the same web path the photo_path columns already use.
+  const row = await ctx.db.get("SELECT web_path, bytes FROM media_files WHERE web_path = ?", [webPath]);
+  assert.ok(row, "the media store holds the picture");
+  assert.ok(Number(row.bytes) > 0, "with its bytes");
+
+  // Simulate the deploy bug: the container filesystem is replaced and the
+  // uploads directory is gone. The URL must keep working from the database.
+  const abs = path.join(config.UPLOAD_DIR, webPath.replace(/^\/uploads\//, ""));
+  assert.ok(fs.existsSync(abs), "the fast-path file is on disk first");
+  fs.unlinkSync(abs);
+  const served = await admin.req("GET", webPath);
+  assert.equal(served.status, 200, "a missing file is answered from the database");
+  const bytes = Buffer.from(await served.res.arrayBuffer());
+  assert.ok(bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e, "and the PNG bytes are intact");
+
+  // Removing the picture removes the durable copy with it.
+  await admin.api("DELETE", `/api/students/${ctx.studentA1}/photo`);
+  const gone = await ctx.db.get("SELECT web_path FROM media_files WHERE web_path = ?", [webPath]);
+  assert.ok(!gone, "the media row is deleted with the picture");
+});

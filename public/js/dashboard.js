@@ -1414,7 +1414,9 @@
       if (route === "support/tickets" || route === "support/new") return await pageSupportTickets(content, route);
       return pageComingSoon(content, "Dashboard", route);
     } catch (e) {
-      content.innerHTML = `<div class="dash-coming-soon"><div class="icon">${I.close}</div><h3>Something went wrong</h3><p>${esc(e.message || "Please try again.")}</p></div>`;
+      content.innerHTML = `<div class="dash-coming-soon"><div class="icon">${I.close}</div><h3>Something went wrong</h3><p>${esc(e.message || "Please try again.")}</p>
+        <div class="dash-actions" style="justify-content:center;margin-top:14px"><button class="dash-btn dash-btn-primary" data-nav-route="${esc(state.route || "dashboard")}">Try again</button></div></div>`;
+      bindRouteButtons(content);
     }
   }
 
@@ -2321,34 +2323,67 @@
      a token valid for a quarter of an hour — useless on a piece of paper. Now
      every certificate is minted with a permanent code and a QR that resolves to
      this school's own verification page. */
-  async function pageIssueCertificate(content) {
-    const [base, roster] = await Promise.all([catalogue(), window.API.get("/students?perPage=500").catch(() => ({ students: [] }))]);
-    const rows = await window.API.get("/documents/templates?type=certificate");
-    const templates = (rows.templates || []).filter((template) => template.is_active);
-    if (!templates.length) {
-      content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Documents</div><h2>Issue Certificate</h2></div></div>
-        <div class="dash-card"><div class="dash-card-pad"><p class="hint">You need at least one certificate template before issuing. Pick a design first.</p>
-        <div class="dash-actions"><button class="dash-btn dash-btn-primary" data-nav-route="documents/templates">${I.file} Choose a template</button></div></div></div>`;
+  async function pageIssueCertificate(content, reopenWizard = true) {
+    try {
+      const [base, roster] = await Promise.all([catalogue(), window.API.get("/students?perPage=500").catch(() => ({ students: [] }))]);
+      const [templateRows, recent] = await Promise.all([
+        window.API.get("/documents/templates?type=certificate").catch(() => ({ templates: [] })),
+        window.API.get("/documents/certificates").catch(() => ({ certificates: [] })),
+      ]);
+      const templates = (templateRows.templates || []).filter((template) => template.is_active);
+      const issued = recent.certificates || [];
+      // The page must always paint SOMETHING behind the wizard: when the modal
+      // closed, users used to be left staring at the route's bare "Loading…"
+      // with the certificates they had just generated nowhere in sight.
+      content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb\">Documents</div><h2>Issue Certificate</h2><p>Generate certificates from a template for one student or a whole class. Each certificate gets a permanent verification code.</p></div>
+        <div class="dash-actions">
+          ${templates.length ? `<button class="dash-btn dash-btn-primary" id="openIssueWizard">${I.file} Issue certificates</button>` : ""}
+          ${issued.length ? `<button class="dash-btn dash-btn-ghost" id="printAllCerts">${I.external} Print all shown</button>` : ""}
+        </div></div>
+        ${!templates.length ? `<div class="dash-card"><div class="dash-card-pad"><p class="hint">You need at least one certificate template before issuing. Pick a design first.</p>
+        <div class="dash-actions"><button class="dash-btn dash-btn-primary" data-nav-route="documents/templates">${I.file} Choose a template</button></div></div></div>` : ""}
+        <div class="dash-card" style="margin-top:14px"><div class="dash-card-head"><h3>Recently issued</h3><span class="hint">${issued.length} certificate${issued.length === 1 ? "" : "s"}</span></div>
+        ${issued.length ? `<div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Student</th><th>Template</th><th>Issued</th><th>Code</th><th></th></tr></thead><tbody>
+          ${issued.map((c) => `<tr><td><strong>${esc(c.student_name || "Student")}</strong></td><td>${esc(c.template_name || "—")}</td><td>${fmtDate(c.issued_date)}</td><td><span class="idc-code">${esc(String(c.verify_code || "").slice(0, 8))}…</span></td>
+            <td><div class="dash-actions"><button class="dash-btn dash-btn-ghost dash-btn-sm" data-cert-print="${Number(c.id)}">${I.external} Print</button></div></td></tr>`).join("")}
+        </tbody></table></div>` : `<div class="dash-card-pad"><p class="hint">No certificates issued yet. They will be listed here with their verification codes.</p></div>`}
+        </div>`;
+      content.querySelectorAll("[data-cert-print]").forEach((button) => button.addEventListener("click", () => printDocument(`/documents/certificates/${Number(button.getAttribute("data-cert-print"))}`)));
+      const printAll = content.querySelector("#printAllCerts");
+      if (printAll) printAll.addEventListener("click", () => {
+        const ids = issued.slice(0, 200).map((c) => Number(c.id)).filter(Boolean);
+        if (ids.length) printDocument(`/documents/certificates/bulk?ids=${ids.join(",")}`);
+      });
       bindRouteButtons(content);
-      return;
+      if (!templates.length) return;
+      const openWizardButton = content.querySelector("#openIssueWizard");
+      if (openWizardButton) openWizardButton.addEventListener("click", () => pageIssueCertificate(content, true));
+      if (!reopenWizard) return;
+      // Rows go to the wizard as-is (it builds its own labels) so the class filter
+      // and the admission-number search work on the fields the roster uses.
+      const people = roster.students || [];
+      const picked = state.pendingCertificateTemplate || "";
+      state.pendingCertificateTemplate = null;
+      window.EduCertificates.openIssueWizard({
+        selectedTemplate: picked,
+        API: window.API,
+        templates,
+        students: people,
+        classes: base.classes || [],
+        terms: allTerms(base.sessions || []),
+        toast,
+        openModal,
+        closeModal,
+        onDone: (result, again) => pageIssueCertificate(content, Boolean(again)),
+      });
+    } catch (error) {
+      // A failed load must say so — the route's "Loading…" placeholder stays
+      // on screen forever otherwise, which reads as a frozen app.
+      content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb\">Documents</div><h2>Issue Certificate</h2></div></div>
+        <div class="dash-card"><div class="dash-card-pad"><p class="hint">Could not open this screen: ${esc(error.message || "something went wrong.")}</p>
+        <div class="dash-actions"><button class="dash-btn dash-btn-primary" data-nav-route="documents/issue">Try again</button></div></div></div>`;
+      bindRouteButtons(content);
     }
-    // Rows go to the wizard as-is (it builds its own labels) so the class filter
-    // and the admission-number search work on the fields the roster uses.
-    const people = roster.students || [];
-    const picked = state.pendingCertificateTemplate || "";
-    state.pendingCertificateTemplate = null;
-    window.EduCertificates.openIssueWizard({
-      selectedTemplate: picked,
-      API: window.API,
-      templates,
-      students: people,
-      classes: base.classes || [],
-      terms: allTerms(base.sessions || []),
-      toast,
-      openModal,
-      closeModal,
-      onDone: () => pageIssueCertificate(content),
-    });
   }
 
   async function pageStudentGroups(content) {

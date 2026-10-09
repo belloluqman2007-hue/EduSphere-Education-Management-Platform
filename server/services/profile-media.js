@@ -24,6 +24,7 @@ const fsp = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
 const config = require("../config");
+const mediaStore = require("./media-store");
 
 /* Signatures are line art at ~2× and rarely exceed a few tens of kilobytes;
    the cap exists to stop a request turning into an unbounded disk write. */
@@ -76,7 +77,11 @@ async function writeImage(buffer, context, options = {}) {
   await fsp.mkdir(dir, { recursive: true });
   const name = newName(kind.ext);
   await fsp.writeFile(path.join(dir, name), buffer);
-  return `/uploads/${context}/${name}`;
+  const webPath = `/uploads/${context}/${name}`;
+  // Also persist to the database: the disk copy is the fast path, the row is
+  // what survives a deploy that replaces the container filesystem.
+  await mediaStore.put(webPath, buffer, kind.mime);
+  return webPath;
 }
 
 /**
@@ -123,10 +128,13 @@ function deleteStored(webPath) {
   if (!abs.startsWith(path.resolve(config.UPLOAD_DIR) + path.sep)) return false;
   try {
     if (fs.existsSync(abs)) fs.unlinkSync(abs);
-    return true;
   } catch (e) {
-    return false;
+    /* fall through — the database copy still gets removed */
   }
+  // Fire-and-forget: deleting the durable copy must not block the request,
+  // but a leftover row is harmless (the path is already unlinked everywhere).
+  Promise.resolve(mediaStore.remove(value)).catch(() => {});
+  return true;
 }
 
 /** Path of a file multer already stored for this request. */

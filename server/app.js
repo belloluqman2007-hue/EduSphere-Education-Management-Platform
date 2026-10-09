@@ -123,6 +123,23 @@ function createApp() {
   // Static frontend + uploads
   app.use(express.static(path.join(__dirname, "..", "public")));
   app.use("/uploads", express.static(config.UPLOAD_DIR, { maxAge: "1h", fallthrough: true }));
+  // The durable copy: every upload is also stored in the media_files table, so
+  // a deploy that replaces the container filesystem (no persistent disk) no
+  // longer wipes portraits, signatures and logos. The disk stays the fast
+  // path; this answers only when the file is gone.
+  app.use("/uploads", async (req, res, next) => {
+    try {
+      const mediaStore = require("./services/media-store");
+      const webPath = "/uploads" + (req.path === "/" ? "" : req.path);
+      const found = await mediaStore.get(webPath);
+      if (!found) return next();
+      res.set("Cache-Control", "public, max-age=3600");
+      res.type(found.mime);
+      return res.send(found.data);
+    } catch (e) {
+      return next();
+    }
+  });
   // Uploads are files, never pages. Without this terminator a missing file
   // (a photo/logo path that outlived its file — restored backup, ephemeral
   // disk) fell through to the SPA fallback below, so <img src="/uploads/…">

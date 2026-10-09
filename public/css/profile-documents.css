@@ -59,7 +59,11 @@
 .pp-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 240;
+  /* Must sit ABOVE the dashboard modal (.dash-modal-backdrop, z-index 400):
+     the student and teacher profile photos open this editor from inside that
+     modal. At 240 the dialog rendered underneath it — a dead, blurred screen
+     the user could not interact with. Below the toast stack (500). */
+  z-index: 460;
   display: grid;
   place-items: center;
   padding: 16px;

@@ -487,7 +487,9 @@
         const ids = Array.prototype.slice.call(modal.querySelectorAll("[data-issue-student]:checked")).map((input) => Number(input.value));
         if (!ids.length) { toast("Tick at least one student.", "error"); return; }
         const button = event.target.closest("[data-issue-go]");
+        const buttonLabel = button.textContent;
         button.disabled = true;
+        button.textContent = "Generating…";
         try {
           const result = await API.post("/documents/certificates", {
             student_ids: ids,
@@ -499,15 +501,69 @@
           });
           context.closeModal();
           toast(`${ids.length} certificate${ids.length === 1 ? "" : "s"} ready to print.`, "success");
-          if (onDone) onDone(result);
+          // Show what was minted — names, numbers, print buttons — instead of
+          // silently dropping the user on an empty screen.
+          openIssueResults(context, API, result, students || []);
         } catch (error) {
           button.disabled = false;
+          button.textContent = buttonLabel;
           toast(error.message || "The certificates could not be issued.", "error");
         }
       }
     });
     filter();
     updateCount();
+  }
+
+  /* --------------------------- after issuing ---------------------------- */
+  /* One screen that shows the freshly minted certificates: who, which number,
+     and how to print — single or the whole batch on one A4-landscape sheet
+     stack. Printing is a real user click, so browsers allow the pop-up.
+  ---------------------------------------------------------------------------- */
+  function openIssueResults(context, API, result, roster) {
+    const { toast, onDone } = context;
+    const certs = (result && result.certificates) || (result && result.ids ? result.ids.map((id) => ({ id })) : []);
+    const nameOf = (studentId) => {
+      const found = (roster || []).find((s) => Number(s.id) === Number(studentId));
+      return found ? [found.first_name, found.middle_name, found.last_name].filter(Boolean).join(" ") : "";
+    };
+    const rows = certs.map((cert) => `<tr>
+        <td><strong>${esc(nameOf(cert.studentId) || "Student")}</strong></td>
+        <td class="idc-code">CERT-${new Date().getFullYear()}-${String(cert.id).padStart(6, "0")}</td>
+        <td><button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-cert-print="${Number(cert.id)}">Print</button></td>
+      </tr>`).join("");
+    const body = `
+      <div class="cd-issue">
+        <p class="hint">${certs.length} certificate${certs.length === 1 ? "" : "s"} generated. Each one keeps its permanent verification code — print now or any time from here.</p>
+        <div class="dash-table-wrap" style="max-height:320px;overflow:auto">
+          <table class="dash-table"><thead><tr><th>Student</th><th>Certificate</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+        </div>
+        <div class="dash-actions" style="margin-top:16px">
+          <button type="button" class="dash-btn dash-btn-primary" data-cert-print-all>Print all (${certs.length})</button>
+          <button type="button" class="dash-btn dash-btn-ghost" data-cert-issue-more>Issue more</button>
+          <span style="flex:1"></span>
+          <button type="button" class="dash-btn dash-btn-ghost" data-cert-done>Done</button>
+        </div>
+      </div>`;
+    const modal = context.openModal("Certificates ready", body);
+    const openUrl = (path) => window.open(API.url(path), "_blank", "noopener");
+    modal.addEventListener("click", (event) => {
+      const one = event.target.closest("[data-cert-print]");
+      if (one) { openUrl(`/documents/certificates/${Number(one.getAttribute("data-cert-print"))}`); return; }
+      if (event.target.closest("[data-cert-print-all]")) {
+        openUrl(`/documents/certificates/bulk?ids=${certs.map((c) => Number(c.id)).join(",")}`);
+        return;
+      }
+      if (event.target.closest("[data-cert-issue-more]")) {
+        context.closeModal();
+        if (onDone) onDone(result, true); // true = open the wizard again
+        return;
+      }
+      if (event.target.closest("[data-cert-done]")) {
+        context.closeModal();
+        if (onDone) onDone(result, false);
+      }
+    });
   }
 
   window.EduCertificates = {
