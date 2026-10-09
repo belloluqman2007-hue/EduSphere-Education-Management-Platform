@@ -16,6 +16,7 @@ const { asyncHandler, err, ok, cleanStr, toNum, validDate, logActivity } = requi
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { effectiveTenantId, getTeacherAssignments } = require("../middleware/tenant");
 const { requireStaffPermission } = require("../services/permissions");
+const institution = require("../services/institution");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
@@ -66,17 +67,20 @@ function studentName(student) {
   return [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(" ").trim();
 }
 
-async function studentDocumentRow(tid, studentId) {
-  return db.get(`
+/* Columns shared by every printable student card, so the single and bulk
+   layouts cannot drift apart. Tenant scoping is applied by each caller. */
+const STUDENT_DOC_SELECT = `
     SELECT s.*, c.name_en AS class_name, a.label AS session_label,
-           m.name_en AS institution_name, m.logo_path, m.slug AS institution_slug,
-           m.motto_en, m.category
+           m.name_en AS institution_name, m.name_ar AS institution_name_ar, m.logo_path,
+           m.slug AS institution_slug, m.motto_en, m.category, m.brand_color,
+           m.address, m.city, m.state_name, m.phone
     FROM students s
     LEFT JOIN classes c ON c.id = s.class_id AND c.madrasa_id = s.madrasa_id
     LEFT JOIN academic_sessions a ON a.id = s.session_id AND a.madrasa_id = s.madrasa_id
-    JOIN madaris m ON m.id = s.madrasa_id
-    WHERE s.id = ? AND s.madrasa_id = ?
-  `, [studentId, tid]);
+    JOIN madaris m ON m.id = s.madrasa_id`;
+
+async function studentDocumentRow(tid, studentId) {
+  return db.get(`${STUDENT_DOC_SELECT} WHERE s.id = ? AND s.madrasa_id = ?`, [studentId, tid]);
 }
 
 async function assertTeacherCanSee(req, res, tid, student) {
@@ -229,6 +233,18 @@ function qrMatrix(text, mask) {
     else if (i < 9) matrix[8][15 - i - 1 + 1] = bit;
     else matrix[8][15 - i - 1] = bit;
   }
+  // Versions 7+ carry an 18-bit version code in two 3×6 blocks (top-right and
+  // bottom-left). Without it a scanner cannot read the larger profile URLs.
+  if (version >= 7) {
+    const info = (version << 12) | qrBch(version << 12, 0x1f25);
+    for (let i = 0; i < 18; i++) {
+      const bit = ((info >>> i) & 1) === 1;
+      const r = Math.floor(i / 3);
+      const c = (i % 3) + size - 11;
+      matrix[r][c] = bit;
+      matrix[c][r] = bit;
+    }
+  }
   const data = [];
   for (const word of encoded.codewords) for (let i = 7; i >= 0; i--) data.push((word >>> i) & 1);
   let bitIndex = 0; let row = size - 1; let direction = -1;
@@ -292,6 +308,82 @@ function signedProfileUrl(req, student) {
   return `${proto}://${host}${path}`;
 }
 
+/* --------------------------- shared print design ------------------------- */
+// The palette matches the term report sheets (services/report-sheet.js):
+// forest green + old gold for Islamic madaris, navy + slate blue for Western
+// academies. A school's own brand colour (Settings) overrides the base brand.
+const DOC_PALETTE = {
+  islamic: { brand: "#14532d", accent: "#a87f2b" },
+  western: { brand: "#0a2342", accent: "#3f6fa6" },
+};
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+function mixHex(hex, target, ratio) {
+  const from = parseInt(hex.slice(1), 16);
+  const to = parseInt(target.slice(1), 16);
+  const channel = (shift) => {
+    const a = (from >> shift) & 255;
+    const b = (to >> shift) & 255;
+    return Math.round(a + (b - a) * ratio).toString(16).padStart(2, "0");
+  };
+  return `#${channel(16)}${channel(8)}${channel(0)}`;
+}
+
+/** Visual identity for one school, derived from its existing category field. */
+function documentTheme(school) {
+  const key = institution.normalizeCategory(school.category, "") === "western" ? "western" : "islamic";
+  const palette = DOC_PALETTE[key];
+  const brand = HEX_COLOR.test(String(school.brandColor || "")) ? school.brandColor : palette.brand;
+  return {
+    western: key === "western",
+    brand,
+    brandDark: mixHex(brand, "#000000", 0.3),
+    brandSoft: mixHex(brand, "#ffffff", 0.9),
+    tint: mixHex(brand, "#ffffff", 0.96),
+    accent: palette.accent,
+    accentSoft: mixHex(palette.accent, "#ffffff", 0.6),
+  };
+}
+
+function themeStyle(theme) {
+  return `--brand:${theme.brand};--brand-dark:${theme.brandDark};--brand-soft:${theme.brandSoft};--tint:${theme.tint};--accent:${theme.accent};--accent-soft:${theme.accentSoft}`;
+}
+
+/** Faint geometric star lattice (Islamic themes only). Colour is a constant. */
+function patternUrl(color, opacity) {
+  const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'>"
+    + `<g fill='none' stroke='${color}' stroke-opacity='${opacity}' stroke-width='1'>`
+    + "<rect x='10' y='10' width='20' height='20'/>"
+    + "<rect x='10' y='10' width='20' height='20' transform='rotate(45 20 20)'/></g></svg>";
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+const ISLAMIC_LATTICE = patternUrl(DOC_PALETTE.islamic.accent, 0.2);
+const ISLAMIC_LATTICE_CERT = patternUrl(DOC_PALETTE.islamic.accent, 0.11);
+
+/** Normalises a school row (aliased by the queries below) for every renderer. */
+function schoolIdentity(row) {
+  return {
+    name: row.institution_name || "",
+    nameAr: row.institution_name_ar || "",
+    logo: safeAssetPath(row.logo_path),
+    motto: row.motto_en || "",
+    address: [row.address, row.city, row.state_name].filter(Boolean).join(", "),
+    phone: row.phone || "",
+    category: row.category || "",
+    brandColor: row.brand_color || "",
+  };
+}
+
+function schoolMark(school) {
+  return school.logo
+    ? `<img src="${escapeHtml(school.logo)}" alt="">`
+    : `<span>${escapeHtml(String(school.name || "S").trim().slice(0, 1).toUpperCase() || "S")}</span>`;
+}
+
+function noStore(res) {
+  res.set("Cache-Control", "no-store");
+}
+
 /* ------------------------------- ID cards -------------------------------- */
 async function loadIdCardStudent(req, res, tid, id) {
   const student = await studentDocumentRow(tid, id);
@@ -300,35 +392,156 @@ async function loadIdCardStudent(req, res, tid, id) {
   return student;
 }
 
-function idCardMarkup(student, qrUrl = "") {
-  const photo = safeAssetPath(student.photo_path);
-  const logo = safeAssetPath(student.logo_path);
+function qrFigure(url) {
+  const svg = qrSvg(url);
+  if (!svg) return "";
+  return `<figure class="id-qr" data-profile-url="${escapeHtml(url)}"><a href="${escapeHtml(url)}" aria-label="Open public student profile">${svg}</a><figcaption>Scan to verify</figcaption></figure>`;
+}
+
+function idCardClasses(theme, name, side) {
+  return ["id-card", side, theme.western ? "category-western" : "category-islamic", name.length > 24 ? "is-long" : ""]
+    .filter(Boolean).join(" ");
+}
+
+/** Front of the card: identity, photo and (optionally) the profile QR. */
+function idCardFrontMarkup(student, qrUrl, issuedLabel) {
+  const school = schoolIdentity(student);
+  const theme = documentTheme(school);
   const name = studentName(student);
-  const categoryClass = String(student.category || "").toLowerCase() === "western" ? "category-western" : "category-islamic";
-  return `<article class="id-card ${categoryClass}">
-    <div class="id-card-band"><div class="id-school-mark">${logo ? `<img src="${escapeHtml(logo)}" alt="School logo">` : ""}</div><div class="id-school-name">${escapeHtml(student.institution_name)}</div></div>
-    <div class="id-card-main">
-      <div class="id-photo">${photo ? `<img src="${escapeHtml(photo)}" alt="${escapeHtml(name)}">` : `<span>${escapeHtml((name || "S").slice(0, 1).toUpperCase())}</span>`}</div>
-      <div class="id-details"><h2>${escapeHtml(name)}</h2><dl><div><dt>Admission No.</dt><dd>${escapeHtml(student.admission_no)}</dd></div><div><dt>Class</dt><dd>${escapeHtml(student.class_name || "Not assigned")}</dd></div><div><dt>Session</dt><dd>${escapeHtml(student.session_label || "Not set")}</dd></div><div><dt>Issued</dt><dd>${escapeHtml(dateLabel(student.issue_date))}</dd></div></dl></div>
-      ${qrUrl ? `<div class="id-qr" data-profile-url="${escapeHtml(qrUrl)}"><a href="${escapeHtml(qrUrl)}" aria-label="Open public student profile">${qrSvg(qrUrl)}</a><small>Scan profile</small></div>` : ""}
+  const photo = safeAssetPath(student.photo_path);
+  const fields = [
+    ["Admission no.", student.admission_no],
+    ["Class", student.class_name || "Not assigned"],
+    ["Session", student.session_label || "Not set"],
+  ];
+  return `<article class="${idCardClasses(theme, name, "id-front")}" style="${themeStyle(theme)}">
+    <header class="id-head"><div class="id-mark">${schoolMark(school)}</div><div class="id-school"><strong>${escapeHtml(school.name || "School")}</strong><span>Student identity card</span></div></header>
+    <div class="id-body">
+      <div class="id-photo">${photo ? `<img src="${escapeHtml(photo)}" alt="${escapeHtml(name)}">` : `<div class="id-photo-empty">${escapeHtml(String(name || "S").slice(0, 1).toUpperCase())}</div>`}</div>
+      <div class="id-info">
+        <span class="id-role">Student</span>
+        <h2 class="id-name">${escapeHtml(name)}</h2>
+        <dl class="id-fields">${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+      </div>
+      ${qrUrl ? qrFigure(qrUrl) : ""}
     </div>
-    <div class="id-card-footer"><span>${escapeHtml(student.motto_en || "Student identification card")}</span><b>${escapeHtml(String(student.category || "").toLowerCase() === "western" ? "STUDENT ID" : "STUDENT ID")}</b></div>
+    <footer class="id-foot"><span>${escapeHtml(school.motto || "Official student identification")}</span><span>Issued ${escapeHtml(issuedLabel)}</span></footer>
   </article>`;
 }
 
-function printShell(title, css, body, pageSize) {
-  return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${css}\n@media print{.print-bar{display:none!important}}\n</style></head><body><div class="print-bar"><button id="printPageBtn" type="button">Print / Save as PDF</button></div>${body}<script src="/js/print.js"></script></body></html>`;
+/** Back of the card: terms, school contact, emergency contact, signatures. */
+function idCardBackMarkup(student, issuedLabel) {
+  const school = schoolIdentity(student);
+  const theme = documentTheme(school);
+  const name = studentName(student);
+  const contacts = [
+    ["School", school.address],
+    ["Phone", school.phone],
+    ["Emergency", student.emergency_contact || student.parent_phone || ""],
+  ].filter(([, value]) => value);
+  const subtitle = !theme.western && school.nameAr
+    ? `<span dir="rtl" lang="ar">${escapeHtml(school.nameAr)}</span>`
+    : "<span>Student identity card</span>";
+  return `<article class="${idCardClasses(theme, name, "id-back")}" style="${themeStyle(theme)}">
+    <header class="id-head"><div class="id-mark">${schoolMark(school)}</div><div class="id-school"><strong>${escapeHtml(school.name || "School")}</strong>${subtitle}</div></header>
+    <div class="id-body">
+      <p class="id-terms">This card remains the property of ${escapeHtml(school.name || "the school")}. Carry it on school premises and show it when asked. If found, please return it to the school office.</p>
+      <dl class="id-contact">${contacts.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+      <div class="id-signs"><span>Holder's signature</span><span>Principal's signature</span></div>
+    </div>
+    <footer class="id-foot"><span>${escapeHtml(student.admission_no)} · ${escapeHtml(name)}</span><span>Issued ${escapeHtml(issuedLabel)}</span></footer>
+  </article>`;
 }
 
-const ID_CARD_CSS = `
-@page{size:85mm 54mm;margin:0}
+const idSlot = (inner) => `<div class="id-slot">${inner}</div>`;
+
+function printShell(title, css, body, { interactive = true } = {}) {
+  const bar = interactive
+    ? `<div class="print-bar"><span>${escapeHtml(title)}</span><button id="printPageBtn" type="button">Print / Save as PDF</button></div>`
+    : "";
+  const script = interactive ? '<script src="/js/print.js"></script>' : "";
+  return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${PRINT_BASE_CSS}\n${css}</style></head><body>${bar}${body}${script}</body></html>`;
+}
+
+const PRINT_BASE_CSS = `
 *{box-sizing:border-box}
-body{margin:0;background:#edf0f5;color:#182133;font-family:Arial,"Segoe UI",sans-serif}
-.print-bar{padding:12px;text-align:center}.print-bar button{border:0;border-radius:7px;background:#1f3154;color:#fff;padding:9px 16px;font-weight:700;cursor:pointer}
-.id-card{width:85mm;height:54mm;overflow:hidden;margin:16px auto;background:#fff;border:1px solid #c6d1e1;border-radius:3mm;box-shadow:0 3px 15px #172b4d22;display:flex;flex-direction:column;break-inside:avoid}
-.id-card-band{height:12mm;display:flex;align-items:center;gap:2.5mm;padding:2mm 3mm;background:linear-gradient(110deg,#182b4d,#31588c);color:#fff}.id-card.category-islamic .id-card-band{background:linear-gradient(110deg,#200a3d,#5b2a86)}.id-card.category-western .id-card-band{background:linear-gradient(110deg,#0a2342,#0d5a8a)}.id-school-mark{width:8mm;height:8mm;border-radius:50%;background:#fff;display:grid;place-items:center;overflow:hidden;flex:none}.id-school-mark img{width:100%;height:100%;object-fit:contain}.id-school-name{font-size:3.2mm;font-weight:800;line-height:1.15;letter-spacing:.02em;max-width:66mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.id-card-main{display:flex;gap:2.5mm;align-items:center;flex:1;padding:2.5mm 3mm 1.5mm}.id-photo{width:18mm;height:22mm;flex:none;border:1px solid #d2dae5;background:#eef2f7;display:grid;place-items:center;overflow:hidden;border-radius:1.5mm;color:#70809a;font-size:7mm;font-weight:800}.id-photo img{width:100%;height:100%;object-fit:cover}.id-details{min-width:0;flex:1}.id-details h2{margin:0 0 1.5mm;font-size:4mm;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#182b4d}.id-details dl{margin:0}.id-details dl div{display:flex;gap:1mm;line-height:1.25}.id-details dt{width:18mm;flex:none;font-size:2.2mm;color:#6c7890}.id-details dd{margin:0;font-size:2.45mm;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.id-qr{width:14mm;flex:none;text-align:center}.qr-code{display:block;width:13mm;height:13mm}.id-qr small{font-size:1.8mm;color:#66748a;display:block;margin-top:.5mm}.id-card-footer{border-top:1px solid #dce3ec;padding:1.4mm 3mm;display:flex;justify-content:space-between;gap:2mm;font-size:1.9mm;color:#67758c;white-space:nowrap}.id-card-footer span{overflow:hidden;text-overflow:ellipsis}.id-card-footer b{color:#31588c;font-size:2mm}
-@media print{body{background:#fff}.print-bar{display:none}.id-card{margin:0;box-shadow:none}}
+html,body{margin:0;padding:0}
+body{background:#e6ebf2;color:#172033;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.print-bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:#1f3154;color:#fff;font:600 13px/1.3 Arial,"Segoe UI",sans-serif}
+.print-bar span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.9}
+.print-bar button{flex:none;border:0;border-radius:7px;background:#fff;color:#1f3154;padding:8px 14px;font:700 13px Arial,sans-serif;cursor:pointer}
+.print-bar button:focus-visible{outline:2px solid #a87f2b;outline-offset:2px}
+@media print{body{background:#fff}.print-bar{display:none!important}}`;
+
+const ID_CARD_CSS = `
+.id-slot{position:relative;width:85.6mm;height:54mm;margin:12px auto}
+.id-card{position:relative;display:flex;flex-direction:column;width:85.6mm;height:54mm;overflow:hidden;border-radius:3.2mm;background:#fff;color:#1b2538;break-inside:avoid;box-shadow:0 1px 2px rgba(16,24,40,.14),0 6px 18px rgba(16,24,40,.16)}
+.id-head{position:relative;flex:none;display:flex;align-items:center;gap:2.6mm;height:12.6mm;padding:0 3.4mm;background:linear-gradient(118deg,var(--brand-dark) 0%,var(--brand) 62%,var(--brand) 100%);color:#fff}
+.id-head::after{content:"";position:absolute;left:0;right:0;bottom:0;height:.9mm;background:var(--accent)}
+.id-mark{flex:none;width:8.6mm;height:8.6mm;border-radius:50%;background:#fff;display:grid;place-items:center;overflow:hidden;box-shadow:0 0 0 .5mm var(--accent)}
+.id-mark img{width:100%;height:100%;object-fit:contain;padding:.8mm}
+.id-mark span{font:700 3.8mm/1 Georgia,"Times New Roman",serif;color:var(--brand)}
+.id-school{min-width:0;flex:1}
+.id-school strong{display:block;font:800 3.1mm/1.15 Arial,"Segoe UI",sans-serif;letter-spacing:.035em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.id-school span{display:block;margin-top:.7mm;font:600 2mm/1.2 Arial,"Segoe UI",sans-serif;letter-spacing:.14em;text-transform:uppercase;opacity:.86}
+.id-body{position:relative;flex:1;min-height:0;display:flex;align-items:center;gap:3.2mm;padding:2.8mm 3.4mm 2mm;background:linear-gradient(180deg,#fff 0%,var(--tint) 100%);overflow:hidden}
+.id-body::before{content:"";position:absolute;inset:0;pointer-events:none;background-size:9mm 9mm}
+.category-islamic .id-body::before{background-image:${ISLAMIC_LATTICE}}
+.category-western .id-body::before{background-image:repeating-linear-gradient(135deg,rgba(10,35,66,.05) 0 .25mm,transparent .25mm 3mm)}
+.id-photo{position:relative;z-index:1;flex:none;width:19.5mm;height:24.5mm;padding:.7mm;border-radius:2.2mm;background:#fff;box-shadow:0 0 0 .3mm var(--accent),0 .7mm 1.8mm rgba(16,24,40,.2)}
+.id-photo img,.id-photo-empty{display:block;width:100%;height:100%;border-radius:1.5mm;object-fit:cover}
+.id-photo-empty{display:grid;place-items:center;background:var(--brand-soft);color:var(--brand);font:800 8mm Georgia,serif}
+.id-info{position:relative;z-index:1;min-width:0;flex:1;display:flex;flex-direction:column;gap:1.3mm}
+.id-role{align-self:flex-start;padding:.5mm 1.9mm;border-radius:1mm;background:var(--accent);color:#fff;font:800 1.9mm/1.2 Arial,sans-serif;letter-spacing:.2em;text-transform:uppercase}
+.id-name{margin:0;font:700 3.5mm/1.15 Georgia,"Times New Roman",serif;color:var(--brand-dark);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.is-long .id-name{font-size:2.8mm}
+.id-fields{margin:0;display:grid;gap:.8mm}
+.id-fields div,.id-contact div{display:grid;grid-template-columns:19mm minmax(0,1fr);align-items:baseline;gap:1mm}
+.id-fields dt,.id-contact dt{white-space:nowrap;font:700 1.9mm/1.25 Arial,sans-serif;letter-spacing:.05em;text-transform:uppercase;color:#6b7689}
+.id-fields dd,.id-contact dd{margin:0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:700 2.4mm/1.25 Arial,sans-serif;color:#1b2538}
+.id-qr{position:relative;z-index:1;flex:none;width:14mm;margin:0;text-align:center}
+.id-qr a{display:block;width:14mm;height:14mm}
+.id-qr svg{display:block;width:14mm;height:14mm}
+.id-qr figcaption{margin-top:.7mm;font:700 1.6mm/1.2 Arial,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:#6b7689}
+.id-foot{position:relative;flex:none;display:flex;justify-content:space-between;align-items:center;gap:2mm;height:6.2mm;padding:0 3.4mm;background:var(--brand-soft);border-top:.25mm solid var(--accent-soft);font:600 2mm/1 Arial,sans-serif;color:#44506a;letter-spacing:.02em}
+.id-foot span{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.id-foot span:last-child{flex:none;color:var(--brand);font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.id-back .id-body{flex-direction:column;align-items:stretch;justify-content:flex-start;gap:1.7mm;padding:2.9mm 3.4mm 2mm}
+.id-terms{position:relative;z-index:1;margin:0;font:400 2.2mm/1.42 Georgia,"Times New Roman",serif;color:#354057}
+.id-contact{position:relative;z-index:1;margin:0;display:grid;gap:.9mm}
+.id-signs{position:relative;z-index:1;margin-top:auto;display:flex;justify-content:space-between;gap:6mm}
+.id-signs span{flex:1;padding-top:.9mm;border-top:.3mm solid #475467;font:700 1.8mm/1.2 Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#6b7689}
+.id-side-label{margin:14px 0 2px;text-align:center;font:700 11px/1 Arial,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#667085}
+`;
+
+const ID_SINGLE_CSS = `
+@page{size:85.6mm 54mm;margin:0}
+.id-single{padding:0 0 18px}
+.id-single .id-slot{margin:0 auto 14px}
+.id-single .id-slot:first-of-type{margin-top:4px}
+@media screen{.id-single .id-card{box-shadow:0 1px 2px rgba(16,24,40,.14),0 10px 26px rgba(16,24,40,.22)}}
+@media print{body{background:#fff}.id-side-label{display:none}.id-single{padding:0}.id-single .id-slot,.id-single .id-slot:first-of-type{margin:0;break-after:page;page-break-after:always}.id-single .id-slot:last-of-type{break-after:auto;page-break-after:auto}.id-card{box-shadow:none}}
+`;
+
+// Eight cards per A4 portrait sheet (two columns by four rows) with crop
+// marks drawn just outside every card so the cut lines are easy to find.
+const ID_SHEET_CSS = `
+@page{size:A4 portrait;margin:10mm}
+.id-sheet{width:190mm;height:276mm;margin:0 auto;display:grid;grid-template-columns:repeat(2,85.6mm);grid-template-rows:repeat(4,54mm);gap:8mm 10mm;align-content:center;justify-content:center;break-after:page;page-break-after:always}
+.id-sheet:last-of-type{break-after:auto;page-break-after:auto}
+.id-sheet .id-slot{margin:0}
+.id-sheet .id-card{box-shadow:none}
+.id-sheet .id-slot::before{content:"";position:absolute;inset:-4mm;pointer-events:none;background:
+  linear-gradient(#777,#777) 0 3.5mm/2.5mm .2mm no-repeat,
+  linear-gradient(#777,#777) 3.5mm 0/.2mm 2.5mm no-repeat,
+  linear-gradient(#777,#777) 91.1mm 3.5mm/2.5mm .2mm no-repeat,
+  linear-gradient(#777,#777) 90.1mm 0/.2mm 2.5mm no-repeat,
+  linear-gradient(#777,#777) 0 58.5mm/2.5mm .2mm no-repeat,
+  linear-gradient(#777,#777) 3.5mm 59.5mm/.2mm 2.5mm no-repeat,
+  linear-gradient(#777,#777) 91.1mm 58.5mm/2.5mm .2mm no-repeat,
+  linear-gradient(#777,#777) 90.1mm 59.5mm/.2mm 2.5mm no-repeat}
+@media screen{.id-sheet{margin:16px auto;background:#fff;box-shadow:0 2px 14px rgba(16,24,40,.12)}}
+@media print{body{background:#fff}.id-sheet{margin:0}}
 `;
 
 router.get("/id-card/bulk", STAFF, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
@@ -341,37 +554,35 @@ router.get("/id-card/bulk", STAFF, requireStaffPermission("documents.generate"),
     const scope = await getTeacherAssignments(tid, req.user.id);
     if (!scope.anyClassAnySubject && !scope.assignedClassIds.has(classId)) return err(res, 404, "Class not found.");
   }
-  const students = await db.all(`
-    SELECT s.*, c.name_en AS class_name, a.label AS session_label,
-           m.name_en AS institution_name, m.logo_path, m.motto_en, m.category
-    FROM students s
-    LEFT JOIN classes c ON c.id=s.class_id AND c.madrasa_id=s.madrasa_id
-    LEFT JOIN academic_sessions a ON a.id=s.session_id AND a.madrasa_id=s.madrasa_id
-    JOIN madaris m ON m.id=s.madrasa_id
-    WHERE s.madrasa_id=? AND s.class_id=? AND s.status NOT IN ('withdrawn','inactive')
-    ORDER BY s.last_name,s.first_name,s.id`, [tid, classId]);
-  if (req.user.role === "teacher") {
-    const scope = await getTeacherAssignments(tid, req.user.id);
-    if (!scope.anyClassAnySubject && !scope.assignedClassIds.has(classId)) return err(res, 404, "Class not found.");
-  }
+  const side = String(req.query.side || "front").toLowerCase() === "back" ? "back" : "front";
+  const students = await db.all(`${STUDENT_DOC_SELECT}
+    WHERE s.madrasa_id = ? AND s.class_id = ? AND s.status NOT IN ('withdrawn','inactive')
+    ORDER BY s.last_name, s.first_name, s.id`, [tid, classId]);
   if (!students.length) return err(res, 404, "No students found in this class.");
+  const issued = dateLabel(today());
+  const cards = students.map((student) => (side === "back"
+    ? idCardBackMarkup(student, issued)
+    : idCardFrontMarkup(student, "", issued)));
   const sheets = [];
-  for (let i = 0; i < students.length; i += 4) {
-    sheets.push(`<section class="id-card-sheet">${students.slice(i, i + 4).map((student) => { student.issue_date = today(); return idCardMarkup(student, ""); }).join("")}</section>`);
+  for (let i = 0; i < cards.length; i += 8) {
+    sheets.push(`<section class="id-sheet">${cards.slice(i, i + 8).map(idSlot).join("")}</section>`);
   }
-  const bulkCss = ID_CARD_CSS.replace("@page{size:85mm 54mm;margin:0}", "@page{size:A4 portrait;margin:10mm}") + `
-.id-card-sheet{width:190mm;min-height:277mm;margin:0 auto;display:grid;grid-template-columns:repeat(2,85mm);grid-auto-rows:54mm;gap:8mm 10mm;align-content:start;justify-content:center;break-after:page;page-break-after:always}.id-card-sheet:last-child{break-after:auto;page-break-after:auto}.id-card-sheet .id-card{margin:0}
-@media print{.id-card-sheet{margin:0;min-height:277mm}}
-`;
-  res.type("html").send(printShell(`ID cards — ${klass.name_en}`, bulkCss, sheets.join(""), "A4"));
+  noStore(res);
+  res.type("html").send(printShell(`ID cards — ${klass.name_en} (${side === "back" ? "backs" : "fronts"})`, ID_CARD_CSS + ID_SHEET_CSS, sheets.join("")));
 }));
 
 router.get("/id-card/:studentId", STAFF, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const student = await loadIdCardStudent(req, res, tid, toNum(req.params.studentId, 0)); if (!student) return;
-  student.issue_date = today();
-  const qrUrl = ["1", "true", "yes"].includes(String(req.query.qr || "").toLowerCase()) ? signedProfileUrl(req, student) : "";
-  res.type("html").send(printShell(`ID card — ${studentName(student)}`, ID_CARD_CSS, idCardMarkup(student, qrUrl), "85mm 54mm"));
+  const issued = dateLabel(today());
+  const withQr = ["1", "true", "yes"].includes(String(req.query.qr || "").toLowerCase());
+  const qrUrl = withQr ? signedProfileUrl(req, student) : "";
+  const body = `<section class="id-single">
+    <p class="id-side-label">Front</p>${idSlot(idCardFrontMarkup(student, qrUrl, issued))}
+    <p class="id-side-label">Back</p>${idSlot(idCardBackMarkup(student, issued))}
+  </section>`;
+  noStore(res);
+  res.type("html").send(printShell(`ID card — ${studentName(student)}`, ID_CARD_CSS + ID_SINGLE_CSS, body));
 }));
 
 /* -------------------------- certificate templates ----------------------- */
@@ -449,7 +660,7 @@ async function certificateRow(tid, id) {
            s.first_name, s.middle_name, s.last_name, s.admission_no, s.class_id, s.session_id,
            cl.name_en AS class_name, a.label AS session_label,
            m.name_en AS institution_name, m.name_ar AS institution_name_ar, m.logo_path,
-           m.motto_en, m.address, m.city, m.state_name, m.category
+           m.motto_en, m.address, m.city, m.state_name, m.category, m.brand_color
     FROM certificates c
     JOIN certificate_templates t ON t.id=c.template_id AND t.madrasa_id=c.madrasa_id
     JOIN students s ON s.id=c.student_id AND s.madrasa_id=c.madrasa_id
@@ -467,15 +678,128 @@ function certificateValues(row) {
     date: dateLabel(row.issued_date),
   }, normalizeCustomFields(row.custom_fields));
 }
-function renderCertificate(row) {
-  const html = replacePlaceholders(row.html_template, certificateValues(row));
-  const logo = safeAssetPath(row.logo_path);
-  return printShell(`Certificate — ${studentName(row)}`, `
-@page{size:A4 landscape;margin:0}
-*{box-sizing:border-box}body{margin:0;background:#eef1f5;color:#172033;font-family:Georgia,"Times New Roman",serif}.print-bar{padding:12px;text-align:center;font-family:Arial,sans-serif}.print-bar button{border:0;border-radius:7px;background:#1f3154;color:#fff;padding:9px 16px;font-weight:700;cursor:pointer}.certificate-page{width:297mm;min-height:210mm;margin:0 auto;padding:18mm;position:relative;background:#fff}.certificate-frame{min-height:174mm;border:3px double #1f3154;padding:14mm;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.certificate-brand{position:absolute;top:24mm;left:28mm;right:28mm;display:flex;align-items:center;justify-content:center;gap:4mm;font-family:Arial,sans-serif}.certificate-brand img{height:16mm;max-width:24mm;object-fit:contain}.certificate-brand strong{font-size:6mm;letter-spacing:.04em;color:#1f3154}.certificate-content{width:100%;margin-top:18mm}.certificate-content img{max-width:150mm}.certificate-footer{margin-top:10mm;font:3.5mm Arial,sans-serif;color:#667085}
-@media print{body{background:#fff}.print-bar{display:none}.certificate-page{margin:0}}
-`, `<main class="certificate-page"><div class="certificate-brand">${logo ? `<img src="${escapeHtml(logo)}" alt="School logo">` : ""}<strong>${escapeHtml(row.institution_name)}</strong></div><div class="certificate-frame"><div class="certificate-content">${html}</div><div class="certificate-footer">Issued ${escapeHtml(dateLabel(row.issued_date))} · ${escapeHtml(row.template_name)}</div></div></main>`, "A4 landscape");
+function certificateReference(row) {
+  const year = String(row.issued_date || today()).slice(0, 4);
+  return `CERT-${year}-${String(row.id).padStart(6, "0")}`;
 }
+
+const CERT_CSS = `
+@page{size:A4 landscape;margin:0}
+.cert-page{position:relative;width:297mm;height:210mm;margin:0 auto;padding:9mm;background:#fff;overflow:hidden;color:#1d2433}
+.cert-frame{position:relative;height:192mm;padding:3mm;border:.8mm solid var(--brand)}
+.cert-frame::before{content:"";position:absolute;inset:2.2mm;border:.28mm solid var(--accent);pointer-events:none}
+.cert-inner{position:relative;height:100%;display:flex;flex-direction:column;padding:8mm 15mm 5.5mm;overflow:hidden;background:linear-gradient(180deg,#fff 0%,var(--tint) 100%)}
+.is-islamic .cert-inner::before{content:"";position:absolute;inset:0;pointer-events:none;background-image:${ISLAMIC_LATTICE_CERT};background-size:12mm 12mm}
+.cert-inner>*{position:relative}
+.cert-head{display:flex;align-items:center;justify-content:center;gap:6mm}
+.cert-mark{flex:none;width:19mm;height:19mm;border-radius:50%;background:#fff;display:grid;place-items:center;overflow:hidden;box-shadow:0 0 0 .6mm var(--accent)}
+.cert-mark img{width:100%;height:100%;object-fit:contain;padding:1.6mm}
+.cert-mark span{font:700 8mm/1 Georgia,"Times New Roman",serif;color:var(--brand)}
+.cert-school-name{margin:0;font:700 6.8mm/1.1 Georgia,"Times New Roman",serif;letter-spacing:.05em;text-transform:uppercase;color:var(--brand-dark)}
+.cert-school-ar{margin:1.2mm 0 0;font:600 5mm/1.2 "Noto Naskh Arabic","Traditional Arabic",Georgia,serif;color:var(--brand)}
+.cert-motto{margin:1.2mm 0 0;font:italic 3.4mm/1.2 Georgia,"Times New Roman",serif;color:#5b6474}
+.cert-rule{display:flex;align-items:center;justify-content:center;height:6mm;margin:3mm 0 1mm}
+.cert-rule::before,.cert-rule::after{content:"";flex:1;border-top:.3mm solid var(--accent-soft)}
+.cert-rule span{flex:none;width:2.6mm;height:2.6mm;margin:0 3mm;background:var(--accent);transform:rotate(45deg)}
+.cert-body{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;padding:0 8mm;color:#1d2433}
+.cert-body h1{margin:0 0 2mm;font:700 13mm/1.05 Georgia,"Times New Roman",serif;letter-spacing:.01em;color:var(--brand-dark)}
+.cert-body h2{margin:0 0 2mm;font:600 6.4mm/1.2 Georgia,"Times New Roman",serif;color:var(--brand)}
+.cert-body p{margin:1.6mm 0;font:400 4.2mm/1.55 Georgia,"Times New Roman",serif;color:#344054}
+.cert-body strong,.cert-body b{font-weight:700;color:var(--brand-dark)}
+.cert-body .cert-kicker{margin:0 0 2.5mm;font:700 3.1mm/1.2 Arial,"Segoe UI",sans-serif;letter-spacing:.3em;text-transform:uppercase;color:var(--accent)}
+.cert-body .cert-name{margin:0 0 3mm;padding:0 6mm 2mm;border-bottom:.35mm solid var(--accent);font:700 12mm/1.1 Georgia,"Times New Roman",serif;color:var(--brand-dark)}
+.cert-body .cert-award{margin:3mm 0 1mm;font:700 6mm/1.2 Georgia,"Times New Roman",serif;color:var(--brand)}
+.cert-body .cert-note{margin:0;font-size:3.6mm;color:#667085}
+.cert-foot{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:end;gap:8mm;padding:0 10mm;margin-top:2mm}
+.cert-sign{display:flex;flex-direction:column;align-items:center;gap:1.4mm}
+.cert-sign-line{display:block;width:62mm;height:0;border-top:.3mm solid #475467}
+.cert-sign-label{font:700 2.6mm/1 Arial,"Segoe UI",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#475467}
+.cert-seal{width:25mm;height:25mm;border-radius:50%;border:.9mm double var(--accent);background:radial-gradient(circle at 50% 35%,#fff 0%,var(--brand-soft) 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.9mm;box-shadow:0 .8mm 2mm rgba(16,24,40,.18)}
+.cert-seal .cert-mark{width:12.5mm;height:12.5mm;box-shadow:none;background:transparent}
+.cert-seal .cert-mark span{font-size:6mm}
+.cert-seal small{font:700 1.7mm/1 Arial,"Segoe UI",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--brand)}
+.cert-meta{flex:none;display:flex;justify-content:space-between;gap:6mm;margin:3mm 0 0;font:600 2.5mm/1 Arial,"Segoe UI",sans-serif;letter-spacing:.03em;color:#667085}
+.cert-corner{position:absolute;z-index:2;pointer-events:none}
+.is-western .cert-corner{width:11mm;height:11mm;border:0 solid var(--accent)}
+.is-western .cert-corner.tl{top:-.8mm;left:-.8mm;border-top-width:1.4mm;border-left-width:1.4mm}
+.is-western .cert-corner.tr{top:-.8mm;right:-.8mm;border-top-width:1.4mm;border-right-width:1.4mm}
+.is-western .cert-corner.bl{bottom:-.8mm;left:-.8mm;border-bottom-width:1.4mm;border-left-width:1.4mm}
+.is-western .cert-corner.br{bottom:-.8mm;right:-.8mm;border-bottom-width:1.4mm;border-right-width:1.4mm}
+.is-islamic .cert-corner{width:10mm;height:10mm;background:#fff;border:.9mm solid var(--accent);transform:rotate(45deg)}
+.is-islamic .cert-corner.tl{top:-5mm;left:-5mm}
+.is-islamic .cert-corner.tr{top:-5mm;right:-5mm}
+.is-islamic .cert-corner.bl{bottom:-5mm;left:-5mm}
+.is-islamic .cert-corner.br{bottom:-5mm;right:-5mm}
+@media print{body{background:#fff}.cert-page{margin:0}}
+`;
+
+/** Full A4-landscape certificate: frame, school identity, template body, signatures. */
+function certificateDocument({ title, school, body, ref, issued, templateName, interactive }) {
+  const theme = documentTheme(school);
+  const corners = ["tl", "tr", "bl", "br"].map((p) => `<span class="cert-corner ${p}"></span>`).join("");
+  const markup = `<main class="cert-page ${theme.western ? "is-western" : "is-islamic"}" style="${themeStyle(theme)}">
+    <div class="cert-frame">${corners}<div class="cert-inner">
+      <header class="cert-head">
+        <div class="cert-mark">${schoolMark(school)}</div>
+        <div class="cert-school">
+          <p class="cert-school-name">${escapeHtml(school.name || "School")}</p>
+          ${school.nameAr ? `<p class="cert-school-ar" dir="rtl" lang="ar">${escapeHtml(school.nameAr)}</p>` : ""}
+          ${school.motto ? `<p class="cert-motto">${escapeHtml(school.motto)}</p>` : ""}
+        </div>
+      </header>
+      <div class="cert-rule" aria-hidden="true"><span></span></div>
+      <div class="cert-body">${body}</div>
+      <footer class="cert-foot">
+        <div class="cert-sign"><span class="cert-sign-line"></span><span class="cert-sign-label">Principal</span></div>
+        <div class="cert-seal" aria-label="Official seal"><div class="cert-mark">${schoolMark(school)}</div><small>Official seal</small></div>
+        <div class="cert-sign"><span class="cert-sign-line"></span><span class="cert-sign-label">Class teacher</span></div>
+      </footer>
+      <p class="cert-meta"><span>Ref. ${escapeHtml(ref)}</span><span>${escapeHtml(templateName || "Certificate")}</span><span>Issued ${escapeHtml(issued)}</span></p>
+    </div></div>
+  </main>`;
+  return printShell(title, CERT_CSS, markup, { interactive });
+}
+
+function renderCertificate(row) {
+  return certificateDocument({
+    title: `Certificate — ${studentName(row)}`,
+    school: schoolIdentity(row),
+    body: replacePlaceholders(row.html_template, certificateValues(row)),
+    ref: certificateReference(row),
+    issued: dateLabel(row.issued_date),
+    templateName: row.template_name,
+    interactive: true,
+  });
+}
+
+/** Live preview in the template editor: same renderer, sample data, no print bar. */
+function renderCertificatePreview(school, html) {
+  const issued = dateLabel(today());
+  const values = {
+    student_name: "Amina Yusuf", class: "Class 6", session: "2026/2027", date: issued,
+    custom_field_1: "Outstanding character", custom_field_2: "Principal's Award", custom_field_3: "",
+  };
+  return certificateDocument({
+    title: "Certificate preview",
+    school,
+    body: replacePlaceholders(html, values),
+    ref: `CERT-${today().slice(0, 4)}-000001`,
+    issued,
+    templateName: "Preview",
+    interactive: false,
+  });
+}
+
+router.post(["/templates/preview", "/certificate-templates/preview"], ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const raw = (req.body && req.body.html_template) || "";
+  if (String(raw).length > MAX_TEMPLATE_LENGTH) return err(res, 400, "HTML template is too large.");
+  const madrasa = await db.get(`SELECT name_en AS institution_name, name_ar AS institution_name_ar, logo_path,
+      motto_en, address, city, state_name, phone, category, brand_color FROM madaris WHERE id = ?`, [tid]);
+  if (!madrasa) return err(res, 404, "Madrasa not found.");
+  noStore(res);
+  res.type("html").send(renderCertificatePreview(schoolIdentity(madrasa), cleanTemplateHtml(raw)));
+}));
 
 router.post("/certificates", ADMIN, requireStaffPermission("documents.generate"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
@@ -524,4 +848,4 @@ router.get("/certificates/:id", STAFF, requireStaffPermission("documents.view"),
 }));
 
 module.exports = router;
-module.exports._private = { qrSvg, replacePlaceholders, renderCertificate, idCardMarkup };
+module.exports._private = { qrSvg, replacePlaceholders, renderCertificate, renderCertificatePreview, idCardFrontMarkup, idCardBackMarkup, documentTheme };
