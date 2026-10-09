@@ -63,6 +63,18 @@ const persistence = require("./services/persistence");
     // super-admin password".
     await seedPlans();
     await seedSuperAdmin();
+    // Pictures live in the database as well as on disk (migration 041). On
+    // the first boot after upgrading, copy whatever files are still on disk
+    // into media_files so the NEXT deploy cannot lose them either.
+    try {
+      const mediaStore = require("./services/media-store");
+      const hydrated = await mediaStore.hydrateFromDisk();
+      if (hydrated.copied) {
+        console.log(`Media store: copied ${hydrated.copied} existing upload(s) into the database (${hydrated.skipped} already present).`);
+      }
+    } catch (e) {
+      console.warn("⚠ Media hydration failed (" + (e.message || e) + "). New uploads are still stored in the database.");
+    }
     // Safety net: a JSON snapshot of the whole database on a timer, so a lost
     // container can always be restored from Platform -> Backups.
     backup.startAutoBackup(db);

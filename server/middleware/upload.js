@@ -7,10 +7,12 @@
    • stored under uploads/<context>/
    ========================================================================== */
 const fs = require("fs");
+const fsp = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
 const multer = require("multer");
 const config = require("../config");
+const mediaStore = require("../services/media-store");
 
 /* The extension written to disk is chosen from this map, NOT from the name the
    client supplied. A browser-uploaded name is attacker-controlled, and multer's
@@ -50,6 +52,33 @@ function rejectUpload(message) {
   return Object.assign(new Error(message), { status: 400, expose: true });
 }
 
+/* Dual-write: every stored file is also persisted in the media_files table so
+   it survives deploys that replace the container filesystem. Very large files
+   (the backup importer) stay disk-only — they are restored from backups and
+   would bloat the database. */
+const PERSIST_MAX_BYTES = 10 * 1024 * 1024;
+
+function persistToMediaStore(file) {
+  if (!file || !file.path || !file.filename) return Promise.resolve();
+  if (Number(file.size || 0) > PERSIST_MAX_BYTES) return Promise.resolve();
+  return fsp.readFile(file.path).then((buffer) => {
+    const context = path.basename(path.dirname(file.path));
+    const webPath = `/uploads/${context}/${file.filename}`;
+    return mediaStore.put(webPath, buffer, file.mimetype).catch(() => false);
+  }).catch(() => false);
+}
+
+/** Wraps a multer single-file middleware with the media-store copy. */
+function withMediaPersistence(up) {
+  return (req, res, next) => {
+    up(req, res, (err) => {
+      if (err) return next(err);
+      const file = (req.files && (Array.isArray(req.files) ? req.files[0] : req.files)) || req.file;
+      Promise.resolve(persistToMediaStore(file)).then(() => next()).catch(next);
+    });
+  };
+}
+
 const imageFilter = (req, file, cb) => {
   if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
   cb(rejectUpload("Only JPG, PNG or WEBP images are allowed."));
@@ -62,7 +91,7 @@ function imageUploader(context, field) {
     limits: { fileSize: config.MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
     fileFilter: imageFilter,
   });
-  return up.single(field || "file");
+  return withMediaPersistence(up.single(field || "file"));
 }
 
 /**
@@ -95,7 +124,7 @@ function fileUploader(context, field, options = {}) {
       cb(null, true);
     },
   });
-  return up.single(field || "file");
+  return withMediaPersistence(up.single(field || "file"));
 }
 
 module.exports = { imageUploader, fileUploader };

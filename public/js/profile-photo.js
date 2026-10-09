@@ -178,15 +178,43 @@
       node.classList.toggle("is-error", kind === "error");
     };
 
+    // Focus bookkeeping: this dialog often opens on top of a dashboard modal
+    // (student/teacher profile) that has its own focus trap and Escape
+    // handler. Remember where focus was, take it for the editor, and hand it
+    // back on close — and swallow key events so the modal underneath cannot
+    // close itself while the editor is up.
+    const previousFocus = document.activeElement;
     const close = () => {
       backdrop.remove();
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
       if (opts.onClose) opts.onClose();
+      try {
+        if (previousFocus && previousFocus.focus && document.contains(previousFocus)) previousFocus.focus();
+      } catch (e) { /* focus target gone — not fatal */ }
     };
-    function onKey(event) { if (event.key === "Escape") { event.preventDefault(); close(); } }
-    document.addEventListener("keydown", onKey);
+    function onKey(event) {
+      // Never let Escape/Tab reach the page or modal behind this dialog.
+      event.stopPropagation();
+      if (event.key === "Escape") { event.preventDefault(); close(); return; }
+      if (event.key !== "Tab") return;
+      const list = Array.from(backdrop.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )).filter((el) => el.offsetParent !== null || el === document.activeElement);
+      if (!list.length) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    document.addEventListener("keydown", onKey, true);
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
     backdrop.querySelectorAll("[data-pp-close]").forEach((node) => node.addEventListener("click", close));
+    // Move focus into the dialog so keyboard users are not stranded on the
+    // page behind it. The ✕ button is always present and focusable.
+    try {
+      const focusTarget = backdrop.querySelector(".pp-x") || backdrop.querySelector("[data-pp-close]") || backdrop.querySelector("[data-pp-save]");
+      if (focusTarget && focusTarget.focus) focusTarget.focus();
+    } catch (e) { /* non-fatal */ }
 
     /* --- crop preview ---------------------------------------------------- */
     const preview = $(".pp-crop");
@@ -381,6 +409,9 @@
       catch (error) { remove.disabled = false; status(error.message || "Could not remove it.", "error"); }
     });
 
+    // Marks the dialog as fully wired. If setup threw earlier, the caller
+    // removes every un-marked backdrop so no dead blur screen survives.
+    backdrop.dataset.ppReady = "1";
     return { close };
   }
 
@@ -435,22 +466,36 @@
     let hover = null;
     const open = () => {
       hover = { host };
-      openAvatarEditor({
-        title: opts.title,
-        signature: opts.signature,
-        currentUrl: typeof opts.currentUrl === "function" ? opts.currentUrl() : (opts.currentUrl || ""),
-        onSave: (dataUrl) => Promise.resolve(opts.onSave(dataUrl)).then(() => {
-          toast(opts.savedMessage || "Picture updated.", "success");
-          if (opts.onDone) opts.onDone();
-        }),
-        onRemove: opts.onRemove ? () => Promise.resolve(opts.onRemove()).then(() => {
-          toast("Picture removed.", "success");
-          if (opts.onDone) opts.onDone();
-        }) : null,
-        onClose: () => { hover = null; },
-      });
+      try {
+        openAvatarEditor({
+          title: opts.title,
+          signature: opts.signature,
+          currentUrl: typeof opts.currentUrl === "function" ? opts.currentUrl() : (opts.currentUrl || ""),
+          onSave: (dataUrl) => Promise.resolve(opts.onSave(dataUrl)).then(() => {
+            toast(opts.savedMessage || "Picture updated.", "success");
+            if (opts.onDone) opts.onDone();
+          }),
+          onRemove: opts.onRemove ? () => Promise.resolve(opts.onRemove()).then(() => {
+            toast("Picture removed.", "success");
+            if (opts.onDone) opts.onDone();
+          }) : null,
+          onClose: () => { hover = null; },
+        });
+      } catch (error) {
+        // A failure while building the dialog must never leave the caller
+        // stuck behind a dead overlay — clear it and say what happened.
+        hover = null;
+        document.querySelectorAll(".pp-backdrop:not([data-pp-ready])").forEach((node) => node.remove());
+        toast(error.message || "The photo editor could not be opened.", "error");
+      }
     };
-    host.addEventListener("click", (event) => { event.preventDefault(); open(); });
+    host.addEventListener("click", (event) => {
+      event.preventDefault();
+      // Keep the click here: the avatar often sits inside a row or card that
+      // navigates on click, which would re-render the page mid-edit.
+      event.stopPropagation();
+      open();
+    });
     host.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") { event.preventDefault(); open(); }
     });

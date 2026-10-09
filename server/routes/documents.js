@@ -652,6 +652,27 @@ async function certificateRow(tid, id) {
   `, [id, tid]);
 }
 
+/** The same rows for a list of ids — one query, used by the bulk print sheet. */
+async function certificateRows(tid, ids) {
+  const ph = ids.map(() => "?").join(",");
+  return db.all(`
+    SELECT c.*, t.name AS template_name, t.type AS template_type, t.html_template, t.design_key, t.config AS template_config,
+           s.first_name, s.middle_name, s.last_name, s.admission_no, s.student_code, s.class_id, s.session_id,
+           s.photo_path, s.program, s.islamic_program, s.western_program, s.education_track, s.signature_path,
+           cl.name_en AS class_name, a.label AS session_label,
+           m.name_en AS institution_name, m.name_ar AS institution_name_ar, m.logo_path,
+           m.motto_en, m.address, m.city, m.state_name, m.phone, m.category, m.brand_color, m.institution_type,
+           m.head_name, m.head_title
+    FROM certificates c
+    JOIN certificate_templates t ON t.id=c.template_id AND t.madrasa_id=c.madrasa_id
+    JOIN students s ON s.id=c.student_id AND s.madrasa_id=c.madrasa_id
+    LEFT JOIN classes cl ON cl.id=s.class_id AND cl.madrasa_id=s.madrasa_id
+    LEFT JOIN academic_sessions a ON a.id=s.session_id AND a.madrasa_id=s.madrasa_id
+    JOIN madaris m ON m.id=c.madrasa_id
+    WHERE c.id IN (${ph}) AND c.madrasa_id=?
+  `, [...ids, tid]);
+}
+
 function certificateReference(row) {
   const year = String(row.issued_date || today()).slice(0, 4);
   return `CERT-${year}-${String(row.id).padStart(6, "0")}`;
@@ -705,7 +726,9 @@ function certificateUrl(req, code) {
   return `${proto}://${host}${path}`;
 }
 
-async function renderCertificate(row, req, { interactive = true } = {}) {
+/** Renders the printable certificate body (no shell). Shared by the single
+ *  view and the bulk print sheet so both stay byte-identical. */
+async function renderCertificateBody(row, req) {
   const templateConfig = await readTemplateConfig({
     config: row.template_config,
     html_template: row.html_template,
@@ -748,11 +771,16 @@ async function renderCertificate(row, req, { interactive = true } = {}) {
     issued: dateLabel(row.issued_date),
     templateName: row.template_name,
     verifyUrl,
-    forPreview: !interactive,
+    forPreview: false,
   });
-  return print.printShell(`Certificate — ${studentName(row)}`, certDesigns.CERTIFICATE_CSS, rendered.markup, {
+  return { markup: rendered.markup, badge: merged.title || row.template_name || "Certificate", name: studentName(row) };
+}
+
+async function renderCertificate(row, req, { interactive = true } = {}) {
+  const body = await renderCertificateBody(row, req);
+  return print.printShell(`Certificate — ${body.name}`, certDesigns.CERTIFICATE_CSS, body.markup, {
     interactive,
-    badge: merged.title || row.template_name || "Certificate",
+    badge: body.badge,
   });
 }
 
@@ -842,27 +870,61 @@ router.post("/certificates", ADMIN, requireStaffPermission("documents.generate")
     ? certDesigns.normaliseConfig(Object.assign({}, b.overrides, { customFields }), { type: template.type, designKey: template.design_key })
     : null;
   const students = [];
-  for (const id of ids) {
-    const row = await db.get("SELECT id FROM students WHERE id=? AND madrasa_id=?", [id, tid]);
-    if (!row) return err(res, 400, "One or more students were not found in this madrasa.");
-    students.push(row.id);
+  // One round-trip to validate the roster instead of one query per student:
+  // issuing a whole class used to spend hundreds of sequential SELECTs before
+  // writing anything, which is what made "Generate certificates" look frozen.
+  if (ids.length) {
+    const ph = ids.map(() => "?").join(",");
+    const rows = await db.all(`SELECT id FROM students WHERE id IN (${ph}) AND madrasa_id=?`, [...ids, tid]);
+    const found = new Set(rows.map((row) => Number(row.id)));
+    if (ids.some((id) => !found.has(id))) return err(res, 400, "One or more students were not found in this madrasa.");
+    students.push(...ids);
   }
   const created = await db.transaction(async (tx) => {
     const out = [];
-    for (const id of students) {
-      // The code is minted here, not at print time, so re-issuing the same
-      // certificate keeps the QR that may already be in someone's hand.
-      const verifyCode = crypto.randomBytes(12).toString("hex");
+    const CHUNK = 80; // 80 rows × 7 columns = 560 placeholders — under every engine's parameter cap
+    const dialect = await db.dialect();
+    for (let i = 0; i < students.length; i += CHUNK) {
+      const chunk = students.slice(i, i + CHUNK);
+      const values = [];
+      const codes = [];
+      const tuples = chunk.map((id) => {
+        // The code is minted here, not at print time, so re-issuing the same
+        // certificate keeps the QR that may already be in someone's hand.
+        const verifyCode = crypto.randomBytes(12).toString("hex");
+        codes.push(verifyCode);
+        values.push(tid, id, templateId, JSON.stringify(customFields), issuedDate, verifyCode, ownConfig ? JSON.stringify(ownConfig) : null);
+        return "(?,?,?,?,?,?,?)";
+      }).join(",");
       const r = await tx.run(
-        "INSERT INTO certificates (madrasa_id,student_id,template_id,custom_fields,issued_date,verify_code,config) VALUES (?,?,?,?,?,?,?)",
-        [tid, id, templateId, JSON.stringify(customFields), issuedDate, verifyCode, ownConfig ? JSON.stringify(ownConfig) : null]
+        `INSERT INTO certificates (madrasa_id,student_id,template_id,custom_fields,issued_date,verify_code,config) VALUES ${tuples}`,
+        values
       );
-      out.push({ id: Number(r.lastInsertRowid), verifyCode });
+      // Auto-increment ids are contiguous within one statement, but the
+      // anchor differs by engine: MySQL reports the FIRST generated id,
+      // SQLite the LAST.
+      const firstId = dialect === "mysql"
+        ? Number(r.lastInsertRowid)
+        : Number(r.lastInsertRowid) - chunk.length + 1;
+      chunk.forEach((id, idx) => out.push({ id: firstId + idx, verifyCode: codes[idx], studentId: id }));
     }
     return out;
   });
-  for (const row of created) logActivity(db, { madrasaId: tid, userId: req.user.id, action: "certificate.issue", entity: "certificate", entityId: String(row.id), meta: { templateId, issuedDate }, ip: req.ip });
-  ok(res, { ok: true, id: created[0].id, ids: created.map((row) => row.id), verifyCode: created[0].verifyCode, verifyUrl: certificateUrl(req, created[0].verifyCode) });
+  // One summary entry instead of one write per certificate: the audit trail
+  // keeps who issued what and how many, without N more round-trips.
+  logActivity(db, {
+    madrasaId: tid, userId: req.user.id, action: "certificate.issue", entity: "certificate",
+    entityId: created.length === 1 ? String(created[0].id) : "",
+    meta: { templateId, issuedDate, count: created.length, ids: created.map((row) => row.id).slice(0, 50) }, ip: req.ip,
+  });
+  ok(res, {
+    ok: true,
+    id: created[0].id,
+    ids: created.map((row) => row.id),
+    verifyCode: created[0].verifyCode,
+    verifyUrl: certificateUrl(req, created[0].verifyCode),
+    certificates: created,
+  });
 }));
 
 router.get("/certificates", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
@@ -883,6 +945,35 @@ router.get("/certificates", STAFF, requireStaffPermission("documents.view"), asy
       verifyUrl: row.verify_code ? certificateUrl(req, row.verify_code) : "",
     })),
   });
+}));
+
+router.get("/certificates/bulk", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const ids = String(req.query.ids || "").split(",").map((x) => toNum(x, 0)).filter((x) => x > 0);
+  const unique = [...new Set(ids)].slice(0, 200);
+  if (!unique.length) return err(res, 400, "List at least one certificate id.");
+  const rows = await certificateRows(tid, unique);
+  const byId = new Map(rows.map((row) => [Number(row.id), row]));
+  const visible = [];
+  for (const id of unique) {
+    const row = byId.get(id);
+    if (!row) continue;
+    if (!await assertTeacherCanSee(req, res, tid, row)) return;
+    visible.push(row);
+  }
+  if (!visible.length) return err(res, 404, "No certificates found.");
+  const parts = [];
+  for (const row of visible) {
+    const body = await renderCertificateBody(row, req);
+    parts.push(`<div class="cert-bulk-page">${body.markup}</div>`);
+  }
+  const css = `${certDesigns.CERTIFICATE_CSS}
+.cert-bulk-page{break-after:page;page-break-after:always;}
+.cert-bulk-page:last-child{break-after:auto;page-break-after:auto;}`;
+  res.type("html").send(print.printShell(`Certificates (${visible.length})`, css, parts.join("\n"), {
+    interactive: true,
+    badge: `${visible.length} certificate${visible.length === 1 ? "" : "s"}`,
+  }));
 }));
 
 router.get("/certificates/:id", STAFF, requireStaffPermission("documents.view"), asyncHandler(async (req, res) => {
