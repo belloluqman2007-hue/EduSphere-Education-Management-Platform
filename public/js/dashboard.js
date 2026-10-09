@@ -2065,39 +2065,47 @@
 
   async function pageIdCards(content) {
     const base = await catalogue();
-    content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Students</div><h2>ID Cards</h2><p>Print one wallet-sized card or prepare four cards per A4 sheet for cutting.</p></div></div>
-      <div class="dash-grid-2"><div class="dash-card"><div class="dash-card-head"><h3>Print a class set</h3></div><div class="dash-card-pad"><div class="dash-field"><label for="idCardClass">Class / level</label><select id="idCardClass"><option value="">Choose a class</option>${options(base.classes)}</select></div><button id="printBulkIdCards" class="dash-btn dash-btn-primary" style="margin-top:16px">${I.external} Print all</button><p class="hint" style="margin-top:12px">The bulk layout uses A4 portrait paper with four 85 × 54 mm cards per sheet.</p></div></div>
+    content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Students</div><h2>ID Cards</h2><p>Print a two-sided wallet card (front and back) or prepare eight cards per A4 sheet for cutting.</p></div></div>
+      <div class="dash-grid-2"><div class="dash-card"><div class="dash-card-head"><h3>Print a class set</h3></div><div class="dash-card-pad"><div class="dash-field"><label for="idCardClass">Class / level</label><select id="idCardClass"><option value="">Choose a class</option>${options(base.classes)}</select></div><div class="dash-actions" style="margin-top:16px"><button id="printBulkIdCards" class="dash-btn dash-btn-primary">${I.external} Print fronts</button><button id="printBulkIdBacks" class="dash-btn dash-btn-ghost">${I.external} Print backs</button></div><p class="hint" style="margin-top:12px">A4 portrait, eight 85.6 × 54 mm cards per sheet with cut marks. Print the fronts, then the backs, and cut along the marks.</p></div></div>
       <div class="dash-card"><div class="dash-card-head"><h3>Print an individual card</h3></div><div class="dash-card-pad"><p class="hint">Open any student profile from <button type="button" class="dash-link-btn" data-nav-route="students/profiles">Student Profiles</button>, then choose <strong>Print ID card</strong> in Quick actions.</p></div></div></div>`;
-    content.querySelector("#printBulkIdCards").addEventListener("click", () => {
+    [["#printBulkIdCards", "front"], ["#printBulkIdBacks", "back"]].forEach(([selector, side]) => content.querySelector(selector).addEventListener("click", () => {
       const classId = content.querySelector("#idCardClass").value;
       if (!classId) return toast("Choose a class first.", "error");
-      printDocument(`/documents/id-card/bulk?classId=${encodeURIComponent(classId)}`);
-    });
+      printDocument(`/documents/id-card/bulk?classId=${encodeURIComponent(classId)}&side=${side}`);
+    }));
     bindRouteButtons(content);
   }
 
-  function safeTemplatePreview(value) {
-    return String(value || "")
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-      .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-      .replace(/\{\{\s*student_name\s*\}\}/gi, "Amina Yusuf")
-      .replace(/\{\{\s*class\s*\}\}/gi, "Class 6")
-      .replace(/\{\{\s*session\s*\}\}/gi, "2026/2027")
-      .replace(/\{\{\s*date\s*\}\}/gi, todayIso())
-      .replace(/\{\{\s*custom_field_1\s*\}\}/gi, "Outstanding character")
-      .replace(/\{\{\s*custom_field_2\s*\}\}/gi, "Principal's Award")
-      .replace(/\{\{\s*custom_field_3\s*\}\}/gi, "")
-      .slice(0, 200000);
+  async function csrfToken() {
+    const res = await fetch(window.API.url("/csrf-token"), { credentials: "same-origin" });
+    const data = await res.json();
+    return data.csrfToken;
   }
 
   function openCertificateTemplateModal(template, afterSave) {
     const isNew = !template;
-    const modal = openModal(isNew ? "Add certificate template" : "Edit certificate template", `<form id="certificateTemplateForm"><div class="dash-form-grid"><div class="dash-field"><label>Name <span class="req">*</span></label><input name="name" required maxlength="160" value="${esc(template && template.name)}"></div><div class="dash-field"><label>Template type</label><select name="type">${["graduation", "achievement", "completion", "participation", "custom"].map((x) => `<option value="${x}" ${template && template.type === x ? "selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select></div></div><div class="certificate-editor-grid" style="margin-top:16px"><div class="dash-field"><label>HTML template</label><textarea id="certificateHtmlTemplate" name="html_template" rows="18" required placeholder="<h1>Certificate of {{custom_field_1}}</h1><p>This certifies that {{student_name}}...</p>">${esc(template && template.html_template || "<div style=\"border:8px double #1f3154;padding:60px;text-align:center\"><p>Certificate of</p><h1>{{custom_field_1}}</h1><h2>{{student_name}}</h2><p>{{class}} · {{session}}</p><p>Issued {{date}}</p></div>")}</textarea><small class="dash-field-hint">Placeholders: {{student_name}}, {{class}}, {{session}}, {{date}}, {{custom_field_1}}, {{custom_field_2}}, {{custom_field_3}}</small></div><div class="certificate-preview-wrap"><label>Preview</label><div id="certificateTemplatePreview" class="certificate-template-preview"></div></div></div><div class="dash-actions" style="margin-top:16px"><button type="button" class="dash-btn dash-btn-ghost" id="cancelCertificateTemplate">Cancel</button><button class="dash-btn dash-btn-primary" type="submit">${I.check} ${isNew ? "Save template" : "Save changes"}</button>${!isNew && !template.archived_at ? `<button type="button" class="dash-btn dash-btn-danger" id="archiveCertificateTemplate">Archive</button>` : ""}</div></form>`);
+    const modal = openModal(isNew ? "Add certificate template" : "Edit certificate template", `<form id="certificateTemplateForm"><div class="dash-form-grid"><div class="dash-field"><label>Name <span class="req">*</span></label><input name="name" required maxlength="160" value="${esc(template && template.name)}"></div><div class="dash-field"><label>Template type</label><select name="type">${["graduation", "achievement", "completion", "participation", "custom"].map((x) => `<option value="${x}" ${template && template.type === x ? "selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select></div></div><div class="certificate-editor-grid" style="margin-top:16px"><div class="dash-field"><label>HTML template</label><textarea id="certificateHtmlTemplate" name="html_template" rows="18" required placeholder="<h1>Certificate of {{custom_field_1}}</h1><p>This certifies that {{student_name}}...</p>">${esc(template && template.html_template || '<p class=\'cert-kicker\'>This certificate is proudly presented to</p><h1 class=\'cert-name\'>{{student_name}}</h1><p>for outstanding dedication and successful completion of <strong>{{class}}</strong> during the <strong>{{session}}</strong> academic session.</p><p class=\'cert-award\'>{{custom_field_1}}</p><p class=\'cert-note\'>{{custom_field_2}}</p>')}</textarea><small class="dash-field-hint">Placeholders: {{student_name}}, {{class}}, {{session}}, {{date}}, {{custom_field_1}}, {{custom_field_2}}, {{custom_field_3}}. Standard styles: cert-kicker, cert-name, cert-award, cert-note.</small></div><div class="certificate-preview-wrap"><label>Live preview</label><div id="certificatePreviewStage" class="certificate-preview-stage"><iframe id="certificatePreviewFrame" title="Certificate preview" sandbox="" referrerpolicy="no-referrer"></iframe></div><small class="dash-field-hint">Sample data is shown. The certificate prints as A4 landscape with the school's own colours and logo.</small></div></div><div class="dash-actions" style="margin-top:16px"><button type="button" class="dash-btn dash-btn-ghost" id="cancelCertificateTemplate">Cancel</button><button class="dash-btn dash-btn-primary" type="submit">${I.check} ${isNew ? "Save template" : "Save changes"}</button>${!isNew && !template.archived_at ? `<button type="button" class="dash-btn dash-btn-danger" id="archiveCertificateTemplate">Archive</button>` : ""}</div></form>`);
     modal.querySelector(".dash-modal").style.width = "min(1100px, 100%)";
     const textarea = modal.querySelector("#certificateHtmlTemplate");
-    const preview = modal.querySelector("#certificateTemplatePreview");
-    const renderPreview = () => { preview.innerHTML = safeTemplatePreview(textarea.value); };
-    textarea.addEventListener("input", renderPreview); renderPreview();
+    const frame = modal.querySelector("#certificatePreviewFrame");
+    const stage = modal.querySelector("#certificatePreviewStage");
+    // The preview is the real certificate renderer on the server, so what the admin
+    // sees is what prints. It runs in a sandboxed frame (no scripts, isolated styles).
+    const fit = () => { const scale = stage.clientWidth / 1123; frame.style.transform = `scale(${scale})`; stage.style.height = `${Math.round(794 * scale)}px`; };
+    let timer = null; let seq = 0;
+    const renderPreview = async () => {
+      const mine = ++seq;
+      try {
+        const csrf = await csrfToken();
+        const res = await fetch(window.API.url("/documents/templates/preview"), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify({ html_template: textarea.value }) });
+        if (!res.ok) return;
+        const html = await res.text();
+        if (mine === seq) frame.srcdoc = html;
+      } catch (e) { /* keep the last good preview */ }
+    };
+    textarea.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(renderPreview, 350); });
+    window.addEventListener("resize", fit);
+    fit(); renderPreview();
     modal.querySelector("#cancelCertificateTemplate").addEventListener("click", closeModal);
     const archive = modal.querySelector("#archiveCertificateTemplate");
     if (archive) archive.addEventListener("click", async () => { if (!window.confirm("Archive this template? Existing certificates will remain printable.")) return; try { await window.API.patch(`/documents/templates/${template.id}`, { archived: true }); closeModal(); toast("Certificate template archived.", "success"); afterSave(); } catch (e) { toast(e.message || "Could not archive template.", "error"); } });

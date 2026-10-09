@@ -791,13 +791,13 @@ body.dash-western .dash-western-insight { border-color:#cdeaff; }
 .certificate-editor-grid textarea { min-height:360px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.8rem; line-height:1.5; }
 .certificate-preview-wrap { display:flex; flex-direction:column; gap:6px; min-width:0; }
 .certificate-preview-wrap > label { font-size:.78rem; font-weight:700; color:var(--d-text); }
-.certificate-template-preview { min-height:360px; overflow:auto; border:1px solid var(--d-line); border-radius:10px; background:#fff; color:#182133; padding:18px; line-height:1.5; }
-.certificate-template-preview img { max-width:100%; }
+.certificate-preview-stage { position:relative; width:100%; height:300px; overflow:hidden; border:1px solid var(--d-line); border-radius:10px; background:#e6ebf2; }
+.certificate-preview-stage iframe { position:absolute; top:0; left:0; width:1123px; height:794px; border:0; background:#fff; transform-origin:0 0; }
 .dash-field select[multiple] { min-height:150px; }
 
 @media (max-width:720px) {
   .certificate-editor-grid { grid-template-columns:1fr; }
-  .certificate-editor-grid textarea, .certificate-template-preview { min-height:240px; }
+  .certificate-editor-grid textarea { min-height:240px; }
   .dash-modal-backdrop { padding:10px; }
   .dash-modal-body { padding:16px; }
 }
