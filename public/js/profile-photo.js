@@ -45,9 +45,17 @@
   }
 
   function toast(message, kind) {
-    const host = document.querySelector(".dash-toast-host, #dashToasts, body");
+    // Same fixed toast stack the dashboard and the portals use; appending to
+    // <body> directly would drop the toast inline in the page, where nobody
+    // sees the confirmation that a picture was saved.
+    let host = document.querySelector(".dash-toasts");
+    if (!host) {
+      host = document.createElement("div");
+      host.className = "dash-toasts";
+      document.body.appendChild(host);
+    }
     const node = document.createElement("div");
-    node.className = `dash-toast dash-toast-${kind === "error" ? "error" : "success"}`;
+    node.className = `dash-toast${kind === "error" ? " error" : " success"}`;
     node.setAttribute("role", kind === "error" ? "alert" : "status");
     node.textContent = message;
     host.appendChild(node);
@@ -182,7 +190,10 @@
 
     /* --- crop preview ---------------------------------------------------- */
     const preview = $(".pp-crop");
-    const previewImage = $(".pp-image");
+    // The stage markup gives the <img> a data-pp-image attribute, not a class;
+    // querying ".pp-image" finds nothing and every pick then died painting the
+    // preview with "Cannot set properties of null".
+    const previewImage = $("[data-pp-image]");
     let previewImg = null;
 
     function paintPreview() {
@@ -206,7 +217,7 @@
     function setImage(img) {
       state.image = img;
       state.zoom = 1; state.offsetY = 0;
-      const zoomInput = $(".pp-range[data-nope]") || backdrop.querySelector('[data-pp-zoom]');
+      const zoomInput = backdrop.querySelector("[data-pp-zoom]");
       if (zoomInput) zoomInput.value = "1";
       const yInput = backdrop.querySelector("[data-pp-y]");
       if (yInput) yInput.value = "0";
