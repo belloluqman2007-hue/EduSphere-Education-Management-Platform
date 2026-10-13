@@ -20,6 +20,14 @@ const { requireAuth, requireTenant, requireRole } = require("../middleware/auth"
 const { requirePermission } = require("../services/permissions");
 const { effectiveTenantId, getTeacherAssignments } = require("../middleware/tenant");
 const { imageUploader, fileUploader } = require("../middleware/upload");
+// Portraits and signatures arrive either as a multipart file or as a canvas
+// data URL; both are written through this service (magic-byte check, generated
+// name, disk + media_files double write). Every photo/signature route below
+// refers to it, so it is imported here rather than inline.
+const profileMedia = require("../services/profile-media");
+// The staff ID card that prints the portrait above is issued and looked up
+// through the same credential service students.js and documents.js use.
+const cardCreds = require("../services/card-credentials");
 const staff = require("../services/staff");
 
 const router = express.Router();
