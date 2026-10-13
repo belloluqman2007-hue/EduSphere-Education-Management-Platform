@@ -32,8 +32,36 @@
 .pp-avatar-lg { width: 88px; height: 88px; border-radius: 22px; }
 .pp-avatar-lg .pp-avatar-mono { font-size: 30px; }
 
-/* A picture you can click has to look clickable, or nobody tries. */
-.pp-trigger { cursor: pointer; transition: box-shadow .16s ease, transform .16s ease; isolation: isolate; }
+/* A picture you can click has to look clickable, or nobody tries — but the
+   clickable box has to be the PICTURE and nothing else. Two things below are
+   load-bearing rather than decorative:
+   • `position: relative` makes the trigger the containing block for the
+     .pp-overlay film. A statically positioned host sends that `inset: 0` film
+     to the nearest positioned ancestor instead — inside a dashboard modal that
+     is .dash-modal-backdrop (position: fixed, the full viewport), so an
+     invisible layer covered the entire screen, swallowed every click "near" the
+     portrait and re-fired it on this element. That is the reported bug: clicking
+     beside the picture opened the picker. attachAvatar() pins this one inline
+     too, because a skin that rewrote this rule must not be able to re-open the
+     whole page.
+   • the shrink-wrap below keeps the trigger exactly as large as the avatar, so
+     a stretched grid or flex cell cannot widen the hit area — and the ring, the
+     pointer cursor and the film — into the padding around it. */
+.pp-trigger {
+  position: relative;
+  cursor: pointer;
+  transition: box-shadow .16s ease, transform .16s ease; isolation: isolate;
+  display: inline-flex;
+  /* Both axes shrink-wrapped: `align-self: stretch` in a flex row or a grid cell
+     would otherwise make the box as tall as the row, and a hit area taller than
+     the picture is the same complaint one dimension over. fit-content keeps the
+     box on the avatar without touching how the page aligns it. */
+  width: -moz-fit-content;
+  width: fit-content;
+  height: -moz-fit-content;
+  height: fit-content;
+  max-width: 100%;
+}
 .pp-trigger:hover, .pp-trigger:focus-visible { box-shadow: 0 0 0 3px rgba(31, 49, 84, .18); outline: none; }
 .pp-trigger:focus-visible { box-shadow: 0 0 0 3px var(--dash-accent, #a87f2b); }
 .pp-trigger.is-drop { box-shadow: 0 0 0 3px var(--dash-ok, #178a52); transform: scale(1.02); }
@@ -48,6 +76,10 @@
   opacity: 0;
   transition: opacity .16s ease;
   text-align: center;
+  /* The film is a hint, never a target. It must not decide what a click means:
+     pointer events have to reach the picture underneath it (or, outside the
+     picture, whatever the page actually has there). */
+  pointer-events: none;
 }
 .pp-overlay-text { font: 700 10px/1.2 Arial, sans-serif; letter-spacing: .09em; text-transform: uppercase; }
 .pp-trigger:hover .pp-overlay, .pp-trigger:focus-visible .pp-overlay { opacity: 1; }

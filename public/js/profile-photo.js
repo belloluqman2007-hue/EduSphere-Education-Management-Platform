@@ -455,13 +455,50 @@
     if (!host || host.dataset.ppBound === "1") return null;
     host.dataset.ppBound = "1";
     host.classList.add("pp-trigger");
+    /* The trigger must be its own containing block: the film appended below is
+       `position: absolute; inset: 0`, and an absolutely positioned box is sized
+       against the nearest POSITIONED ancestor. With a statically positioned host
+       inside a dashboard modal that ancestor is .dash-modal-backdrop (position:
+       fixed — the whole viewport), so an invisible full-screen layer reported
+       every stray click near the portrait as "change my picture". `position:
+       relative` is pinned inline (not only in profile-documents.css) because a
+       skin that rewrites that rule must not be able to re-open the whole page;
+       the rest of the sizing — shrink-wrapping the trigger to the avatar — stays
+       in CSS where a skin may legitimately tune it, and the click handler below
+       enforces the picture's own rectangle regardless. */
+    host.style.position = "relative";
     host.setAttribute("role", "button");
     host.setAttribute("tabindex", "0");
-    if (!host.getAttribute("aria-label")) host.setAttribute("aria-label", opts.label || "Change profile picture");
+    if (!host.getAttribute("aria-label")) {
+      host.setAttribute("aria-label", opts.label || opts.actionLabel || "Change profile picture");
+    }
     const overlay = document.createElement("span");
     overlay.className = "pp-overlay";
+    overlay.setAttribute("aria-hidden", "true");
     overlay.innerHTML = `<span class="pp-overlay-text">${escapeAttr(opts.actionLabel || "Change photo")}</span>`;
     host.appendChild(overlay);
+
+    /**
+     * True when the pointer landed on the portrait. The picture element is the
+     * button; the padding around it belongs to whatever card or row contains
+     * it, so a click there must fall through instead of opening the editor.
+     * With no layout to measure (jsdom, a detached host) this stays permissive
+     * and behaves exactly as the CSS dictates.
+     */
+    function isPictureHit(event) {
+      if (!event || typeof event.clientX !== "number" || !host.getBoundingClientRect) return true;
+      // A click with no coordinates at all (0,0) is an activation, not a
+      // pointer: keyboard focus + Enter, or element.click() from a script. Those
+      // are always for the trigger itself and must never be swallowed.
+      if (event.clientX === 0 && event.clientY === 0) return true;
+      const picture = host.querySelector(".pp-avatar, .tc-avatar, img");
+      if (!picture || !picture.getBoundingClientRect) return true;
+      const box = picture.getBoundingClientRect();
+      if (!box.width || !box.height) return true;
+      const pad = 2;
+      return event.clientX >= box.left - pad && event.clientX <= box.right + pad
+        && event.clientY >= box.top - pad && event.clientY <= box.bottom + pad;
+    }
 
     let hover = null;
     const open = () => {
@@ -490,9 +527,10 @@
       }
     };
     host.addEventListener("click", (event) => {
-      event.preventDefault();
       // Keep the click here: the avatar often sits inside a row or card that
       // navigates on click, which would re-render the page mid-edit.
+      if (!isPictureHit(event)) return;
+      event.preventDefault();
       event.stopPropagation();
       open();
     });
