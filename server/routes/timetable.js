@@ -446,8 +446,9 @@ router.get("/print", asyncHandler(async (req, res) => {
 <div class="m2" style="text-align:center;margin-bottom:6px">${term ? esc(term.label) + " — " + esc(term.name_en) : ""}</div>
 <table><thead><tr><th>Day</th>${grid.periods.map((p) => `<th>P${p.period}<div class="time">${esc(p.start)}–${esc(p.end)}</div></th>`).join("")}</tr></thead>
 <tbody>${body}</tbody></table>
-<div class="noprint"><button onclick="window.print()">Print timetable</button></div>
+<div class="noprint"><button type="button" id="printPageBtn">Print timetable</button></div>
 <div class="foot">Generated ${esc(new Date().toLocaleString())} • EduSphere Education Platform</div>
+<script src="/js/print.js"></script>
 </body></html>`);
 }));
 

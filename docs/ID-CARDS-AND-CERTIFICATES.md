@@ -103,6 +103,63 @@ code is read, and degrades to "type the code" where no detector exists (older
 Safari). No video frame ever leaves the device — there is no remote decoding
 service, deliberately: a child's face is not something to POST to a third party.
 
+### A scan that does something: verify *and* mark
+
+Verification alone answers "is this card real?". A gate, a bus or a register
+needs the next sentence: *who is this, and are they here today?*
+
+`POST /api/attendance/scan` does both in one call. The dashboard screen is
+**Attendance → Scan & Mark** (`public/js/dashboard.js`, `pageAttendanceScan`),
+which drives a `[data-scanner]` block with `data-mark-endpoint`:
+
+| Attribute | Meaning |
+| --- | --- |
+| `data-mark-endpoint="/api/attendance/scan"` | verify + mark (POST) |
+| `data-mark-auto="1"` | mark on every scan (a gate); without it, the block verifies and offers the actions |
+| `data-mark-status="late"` | the status a scan records (present/late/excused/absent) |
+| `data-scan-date="2026-10-13"` | the register day to mark — a shift that crosses midnight still marks the day the operator chose |
+| `data-sequential="1"` | reopen the camera for the next card |
+
+Rules the endpoint enforces, all of them tenant-scoped:
+
+- The code must belong to a card **this** school minted; a code from another
+  institution is a 404, never "valid".
+- A **cancelled** card marks nothing and says so. An inactive holder or a
+  closed school marks nothing and says so.
+- A learner is marked in the register for the operator's chosen day
+  (present/late/excused/absent), idempotently — the second scan of the same card
+  reports *already marked* instead of writing a duplicate.
+- A **teacher** may only mark a class they are assigned to (the same rule as the
+  hand-typed register). **Staff** attendance stays an administrator action: a
+  teacher scanning a colleague's card sees the card verified and nothing marked.
+- Writing a register is a **staff action**: `madrasa_admin`, `super_admin` and
+  `teacher` may call `/scan`, `/mark` and the single-record `PATCH`. A learner
+  cannot mark themselves present and a parent cannot mark their child (403) —
+  and verification without an account remains open to anyone holding the card
+  (`/verify/<code>`, `/api/public/card/<code>`).
+- Staff cards record a **check-in time on the school's own clock**
+  (`madaris.timezone`), so a gate log is honest about when the person arrived.
+- The answer returns the holder, the verdict, the attendance row and the class
+  position for the day (`3 of 28 marked · 25 to go`), plus links to the public
+  verification page and a reprint of the card.
+- Every scan (including a blocked one) is written to the activity log, so
+  "who checked this card, and when" is answerable.
+
+The same endpoint powers the scanner panel inside **Documents → ID Cards**: the
+block verifies first (`data-mark-endpoint` without `data-mark-auto`) and the
+result card offers *Mark present / late / excused / absent*.
+
+### The QR itself is tested, not assumed
+
+`print-documents.js` draws its own QR symbols, so `test/qr-encodes.test.js`
+decodes every symbol the encoder can emit — versions 1 to 10, the largest
+payload each can hold — with **jsQR**, an independent QR decoder, exactly as a
+phone camera would. The test also pulls the QR out of a rendered ID card and
+asserts it opens that holder's `/verify/<code>` page, and that the same code is
+printed in text beneath it. Version 10 (the first version whose Reed–Solomon
+blocks are not all the same length) is covered explicitly: it used to be mis-sized
+and produced a symbol no scanner could read.
+
 ## Certificates
 
 Certificates are **chosen, not coded**. There is no HTML editor: the old
@@ -158,6 +215,39 @@ afterwards therefore cannot rewrite documents people already hold.
 to settle, capped at 4 seconds, before opening the print dialog — otherwise a
 sheet could print with empty photo boxes. The print bar is CSS and that script
 only; no printed page has ever contained inline JavaScript.
+
+Every server-rendered printable document loads it: cards, certificates, report
+sheets (`/js/report-sheet-viewer.js`, which also wires the `[data-print]`
+buttons), payslips, **fee receipts** and **timetables**. The receipt and the
+timetable used to end with an inline `<script>window.print()</script>` or an
+`onclick="window.print()"`, which the platform CSP (`script-src 'self'`,
+`script-src-attr 'none'`) silently drops — nothing printed and there was no
+button to press. Both now use the shared helper.
+
+### Printing the screen, not the application
+
+A print button inside the dashboard prints the browser's current document, so
+the document has to be worth printing. `public/css/print.css` (print-only rules)
+and `public/js/print-page.js` (`window.EduPrint`) do that:
+
+- the sidebar, header, toasts, filters, pagination, bulk bars, table action
+  buttons and any support-chat widget are never printed;
+- a printed heading carries the school's name, the document's title and the
+  date, and `document.title` is set for the duration of the job so the browser's
+  header/footer and the saved PDF are named after the document rather than
+  "EduSphere — Education Management Platform";
+- `EduPrint.print({ title, scope: "modal" })` prints an open dialog as the whole
+  document (no dimmed backdrop, no 88vh clip);
+- `EduPrint.area(node, { title })` prints one element — a generated attendance
+  report — by cloning it into `#printStage`;
+- tables repeat their head on every page and never split a row, and a table
+  inside an `overflow:auto` wrapper no longer stops after the fold.
+
+Call sites: `#printStudents`, the student profile dialog, `#printAttendanceReport`
+(`public/js/dashboard.js`), `#tcPrintTeachers`, `#tcPrintClasses`,
+`#tcPrintRegister`, the teacher profile dialog (`public/js/admin-teacher-classes.js`)
+and `#ptmPrint` (`public/js/ptm.js`). `test/attendance-scan.test.js` fails if a
+bare `window.print()` returns to any of them.
 
 ## Legacy templates
 

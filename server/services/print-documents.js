@@ -150,22 +150,30 @@ function schoolMark(school, sizeClass = "") {
 /* --------------------------------- QR code --------------------------------
    A dependency-free encoder, kept in-process because printable pages must
    work offline and adding a package for a QR code is not worth it. It covers
-   byte-mode versions 1–10 at error-correction level L — up to 295 bytes, far
-   more than a `/verify/<code>` URL needs.
+   byte-mode versions 1–10 at error-correction level L — up to 271 bytes, far
+   more than a `/verify/<code>` URL needs. Every symbol it emits is decoded by
+   test/qr-encodes.test.js with an independent QR decoder (jsQR), because a QR
+   that a phone cannot read is worse than no QR at all.
 ---------------------------------------------------------------------------- */
+// Error-correction level L, versions 1–10 (ISO/IEC 18004 table 9). `data` lists
+// the data codewords of every block in order — RS blocks are not always equal,
+// and version 10 is the first that differs (2 × 68 + 2 × 69). Getting that
+// wrong produced a symbol no phone could read, so the sizes are written out
+// rather than derived.
 const QR_BLOCKS_L = [
   null,
-  { version: 1, blocks: 1, total: 26, data: 19, ecc: 7 },
-  { version: 2, blocks: 1, total: 44, data: 34, ecc: 10 },
-  { version: 3, blocks: 1, total: 70, data: 55, ecc: 15 },
-  { version: 4, blocks: 1, total: 100, data: 80, ecc: 20 },
-  { version: 5, blocks: 1, total: 134, data: 108, ecc: 26 },
-  { version: 6, blocks: 2, total: 86, data: 68, ecc: 18 },
-  { version: 7, blocks: 2, total: 98, data: 78, ecc: 20 },
-  { version: 8, blocks: 2, total: 121, data: 97, ecc: 24 },
-  { version: 9, blocks: 2, total: 146, data: 116, ecc: 30 },
-  { version: 10, blocks: 2, total: 86, data: 68, ecc: 18 },
+  { version: 1, blocks: 1, data: [19], ecc: 7 },
+  { version: 2, blocks: 1, data: [34], ecc: 10 },
+  { version: 3, blocks: 1, data: [55], ecc: 15 },
+  { version: 4, blocks: 1, data: [80], ecc: 20 },
+  { version: 5, blocks: 1, data: [108], ecc: 26 },
+  { version: 6, blocks: 2, data: [68, 68], ecc: 18 },
+  { version: 7, blocks: 2, data: [78, 78], ecc: 20 },
+  { version: 8, blocks: 2, data: [97, 97], ecc: 24 },
+  { version: 9, blocks: 2, data: [116, 116], ecc: 30 },
+  { version: 10, blocks: 4, data: [68, 68, 69, 69], ecc: 18 },
 ];
+const QR_DATA_CAPACITY = QR_BLOCKS_L.map((entry) => (entry ? entry.data.reduce((a, b) => a + b, 0) : 0));
 const QR_ALIGNMENT = [[], [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
 
 function gfTables() {
@@ -231,7 +239,8 @@ function qrBitsFor(data, version, capacity) {
 }
 function qrDataCodewords(text) {
   const bytes = Buffer.byteLength(String(text), "utf8");
-  const entry = QR_BLOCKS_L.find((x) => x && bytes <= x.data * x.blocks - (x.version < 10 ? 2 : 3));
+  // 3 bytes of overhead at version 10+ (16-bit length field), 2 below it.
+  const entry = QR_BLOCKS_L.find((x, index) => x && bytes <= QR_DATA_CAPACITY[index] - (x.version < 10 ? 2 : 3));
   if (!entry) return null;
   return { bytes: Buffer.from(String(text), "utf8"), entry };
 }
@@ -239,16 +248,20 @@ function qrInterleaved(text) {
   const selected = qrDataCodewords(text);
   if (!selected) return null;
   const { bytes, entry } = selected;
-  const dataWords = qrBitsFor(text, entry.version, entry.data * entry.blocks);
+  const capacity = entry.data.reduce((a, b) => a + b, 0);
+  const dataWords = qrBitsFor(text, entry.version, capacity);
   const blocks = [];
   let offset = 0;
-  for (let i = 0; i < entry.blocks; i++) {
-    const block = Uint8Array.from(dataWords.slice(offset, offset + entry.data));
-    offset += entry.data;
+  for (const size of entry.data) {
+    const block = Uint8Array.from(dataWords.slice(offset, offset + size));
+    offset += size;
     blocks.push({ data: block, ecc: qrEcc(block, entry.ecc) });
   }
   const out = [];
-  for (let i = 0; i < entry.data; i++) for (const block of blocks) if (i < block.data.length) out.push(block.data[i]);
+  // Interleave by column: block 1 word 1, block 2 word 1, … then the ECC
+  // words in the same order. Blocks may differ in length by one codeword.
+  const longest = Math.max(...blocks.map((block) => block.data.length));
+  for (let i = 0; i < longest; i++) for (const block of blocks) if (i < block.data.length) out.push(block.data[i]);
   for (let i = 0; i < entry.ecc; i++) for (const block of blocks) out.push(block.ecc[i]);
   return { version: entry.version, bytes, codewords: out };
 }
@@ -361,7 +374,7 @@ function qrSvg(text, options = {}) {
 }
 
 /** Byte capacity of the encoder, used by tests and by the size guard below. */
-const QR_MAX_BYTES = 295;
+const QR_MAX_BYTES = QR_DATA_CAPACITY[10] - 3; // 271 bytes at version 10-L
 
 /* ----------------------------- print page shell -------------------------- */
 const PRINT_BASE_CSS = `

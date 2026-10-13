@@ -230,7 +230,15 @@ test("a printable weekly schedule is a standalone document", async () => {
   assert.match(html, /Class A1/);
   assert.match(html, /Fiqh/);
   assert.match(html, /@media print/, "print rules, so it goes on the notice board cleanly");
-  assert.ok(!/<script/i.test(html), "the printable page carries no executable script");
+  // The button used to open the dialog from an inline `onclick`, which the
+  // platform CSP (script-src-attr 'none') drops without a word: the button did
+  // nothing and no sheet came out. The page now carries exactly one script —
+  // the shared same-origin print helper — and no inline code at all. Ctrl+P
+  // still prints it with scripting switched off; the script only saves the
+  // visitor the keystroke.
+  assert.doesNotMatch(html, /onclick=/i, "no inline handler for the CSP to drop");
+  assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)/i, "no inline script on a printable page");
+  assert.match(html, /<script src="\/js\/print\.js"><\/script>/, "the same-origin helper opens the dialog");
 });
 
 test("a super admin inspects any class by naming the tenant", async () => {

@@ -242,7 +242,7 @@
       <p class="hint" style="margin-top:12px">Parents book from their own portal; teachers confirm availability from theirs. Cancelling here notifies both the parent and the teacher.</p>`;
 
     content.querySelector("#ptmBack").addEventListener("click", () => listPage(ctx, content));
-    content.querySelector("#ptmPrint").addEventListener("click", () => window.print());
+    content.querySelector("#ptmPrint").addEventListener("click", () => { if (window.EduPrint) window.EduPrint.print({ title: "Parent-teacher meeting schedule", meta: `Printed ${window.EduPrint.stamp()}` }); else window.print(); });
     content.querySelectorAll("[data-ptm-cancel]").forEach((btn) => btn.addEventListener("click", async () => {
       if (!window.confirm("Cancel this booking? The parent and the teacher are both notified.")) return;
       try {

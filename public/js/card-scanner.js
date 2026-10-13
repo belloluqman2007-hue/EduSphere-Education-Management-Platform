@@ -1,28 +1,47 @@
 "use strict";
 /* ============================================================================
-   EduSphere — camera verification (scan a card, check a code)
+   EduSphere — camera verification and marking (scan a card, act on it)
    ----------------------------------------------------------------------------
-   The printed QR on an ID card is only useful if a phone can read it. Two
-   paths, one module:
+   The printed QR on a card is only useful if a phone can read it and the person
+   on the other side can DO something with the answer. Two paths, one module:
 
      1. The camera decodes the QR. `BarcodeDetector` is built into Chrome, Edge,
         Android WebView and Safari 17+ — no library, no WASM download, nothing
         to fail on a school's flaky connection. It is also the only browser API
         that decodes video at reasonable speed.
-     2. Where it is not available (older browsers, a desktop with no camera, or
-        a lens that cannot focus on a scratched card) the code printed under the
-        QR is typed in. Both routes end at the same verification page, so the
-        answer never depends on which one you used.
+     2. Where it is not available (older browsers, a desktop with no camera, or a
+        lens that cannot focus on a scratched card) the code printed under the
+        QR is typed in. Both routes end at the same answer, so nothing depends
+        on which one you used.
 
    There is no fallback to a remote decoding service on purpose: a stranger's
    API must never be handed a photograph of a child's face.
 
+   What a block can do, from its attributes:
+
+     data-scanner                                  the block itself
+     data-endpoint="/api/public/card/"             verification lookup (GET)
+     data-mark-endpoint="/api/attendance/scan"     verify AND mark (POST)
+     data-mark-auto="1"                            mark on every scan (otherwise
+                                                   only the action buttons mark)
+     data-mark-status="late"                       the status a scan records
+     data-scan-date="2026-10-13"                   the register day to mark
+     data-sequential="1"                           keep scanning the next card
+     data-scanner-result                           where the answer is rendered
+     data-scanner-error                            where a message is rendered
+
+   The marking answer renders inline — the holder's name, class, whether they
+   were already marked, how many learners are still unmarked today — with the
+   actions a gate needs: mark late, excused or absent, open the public
+   verification page, print the card again. No screen is left without a path.
+
    This file is loaded by the public verification page (no session) and by the
-   signed-in dashboard. It therefore touches no app state and assumes only
-   `data-scanner` markup plus a JSON endpoint.
+   signed-in dashboard, so it touches no app state beyond `window.API` when it
+   is there.
    ========================================================================== */
 (function () {
-  const CODE_PATTERN = /(?:https?:\/\/[^\s"']+\/verify\/(?:card\/|certificate\/)?|code[:\s]+)?([a-z0-9]{6,64})/i;
+  const CODE_PATTERN = /(?:https?:\/\/[^\s"']+\/verify\/(?:card\/|certificate\/)?|code[:\s]+)?([a-z0-9][a-z0-9-]{5,63})/i;
+  const STATUS_LABELS = { present: "present", late: "late", excused: "excused", absent: "absent" };
 
   function qrPayloadToCode(text) {
     const match = CODE_PATTERN.exec(String(text || "").trim());
@@ -31,6 +50,20 @@
 
   function supportsDetection() {
     return typeof window.BarcodeDetector === "function";
+  }
+
+  /** Escape anything that came from the server before it enters the DOM. */
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  /** API-relative path → URL, with or without the dashboard's API helper. */
+  function apiUrl(path) {
+    const clean = String(path || "");
+    if (!clean) return "";
+    if (window.API && typeof window.API.url === "function") return window.API.url(clean);
+    return /^https?:/i.test(clean) ? clean : `/api${clean.startsWith("/") ? "" : "/"}${clean}`;
   }
 
   /**
@@ -43,12 +76,21 @@
     const openButton = block.querySelector("[data-scanner-open]");
     const checkButton = block.querySelector("[data-scanner-check]");
     const errorNode = block.querySelector("[data-scanner-error]");
+    const resultNode = block.querySelector("[data-scanner-result]");
     const endpoint = block.getAttribute("data-endpoint") || "";
+    const markEndpoint = block.getAttribute("data-mark-endpoint") || "";
+    const markAuto = block.getAttribute("data-mark-auto") === "1";
+    const markStatus = String(block.getAttribute("data-mark-status") || "present").toLowerCase();
+    const markDate = String(block.getAttribute("data-scan-date") || "").trim();
+    const sequential = block.getAttribute("data-sequential") === "1";
     const redirect = block.getAttribute("data-redirect") === "1";
+    const idleLabel = openButton ? String(openButton.textContent || "Scan with camera").trim() : "Scan with camera";
     let stream = null;
     let raf = 0;
     let detector = null;
     let stopped = false;
+    let lastStatus = markStatus;
+    let resumeTimer = 0;
 
     const say = (message) => {
       if (!errorNode) return;
@@ -60,12 +102,13 @@
       stopped = true;
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
+      if (resumeTimer) { window.clearTimeout(resumeTimer); resumeTimer = 0; }
       if (stream) stream.getTracks().forEach((track) => track.stop());
       stream = null;
       const video = block.querySelector("video");
       if (video) { video.pause(); video.srcObject = null; video.remove(); }
       block.classList.remove("is-scanning");
-      if (openButton) openButton.textContent = "Scan with camera";
+      if (openButton) { openButton.textContent = idleLabel; delete openButton.dataset.scannerRunning; }
     }
 
     async function scanLoop(video) {
@@ -77,7 +120,7 @@
           if (code) {
             stop();
             if (input) input.value = code;
-            finish(code);
+            finish(code, { fromCamera: true });
             return;
           }
         }
@@ -129,7 +172,7 @@
       video.srcObject = stream;
       block.appendChild(video);
       block.classList.add("is-scanning");
-      if (openButton) openButton.textContent = "Stop camera";
+      if (openButton) { openButton.textContent = "Stop camera"; openButton.dataset.scannerRunning = "1"; }
       video.addEventListener("loadedmetadata", () => {
         if (detector && supportsDetection()) {
           scanLoop(video);
@@ -138,19 +181,60 @@
           say("Line the QR up in the frame, then type the code it shows if it will not read automatically.");
         }
       }, { once: true });
-      const close = () => stop();
-      video.addEventListener("error", close, { once: true });
-      if (openButton) openButton.dataset.scannerRunning = "1";
+      video.addEventListener("error", () => stop(), { once: true });
     }
 
-    async function finish(code) {
+    /**
+     * Where every path ends. With a marking endpoint the code is sent to the
+     * server, which verifies it, marks the register and answers with everything
+     * the person at the gate needs to say out loud.
+     */
+    async function finish(rawCode, options) {
+      const opts = options || {};
       say("");
-      const value = String(code || (input && input.value) || "").trim().toLowerCase();
-      if (!/^[a-z0-9]{6,64}$/.test(value)) {
+      const value = String(rawCode || (input && input.value) || "").trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9-]{5,63}$/.test(value)) {
         say("That is not a card code. Codes are the 24 characters printed under the QR.");
         if (input) input.focus();
         return;
       }
+
+      if (markEndpoint) {
+        if (checkButton) checkButton.disabled = true;
+        try {
+          const body = { code: value };
+          if (lastStatus) body.status = lastStatus;
+          if (markDate) body.date = markDate;
+          // A block that only checks does not change a register: marking happens
+          // when the block asks for it on every scan, or when an action button is
+          // pressed.
+          if (opts.mark !== true && !markAuto) body.mark = false;
+          const response = await fetch(markEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify(body),
+          });
+          const data = await response.json().catch(() => null);
+          if (!response.ok) {
+            say((data && data.error) || "That card could not be checked. Try again.");
+            return;
+          }
+          renderResult(resultNode, data, { canMark: true, code: value });
+          // Listeners (a gate log, a counter, a sound) can react to every scan
+          // without this module knowing anything about them.
+          block.dispatchEvent(new CustomEvent("eduscanner:result", { detail: data, bubbles: true }));
+          if (sequential && data && data.marked) {
+            resumeTimer = window.setTimeout(() => { resumeTimer = 0; start(); }, 1400);
+          }
+        } catch (error) {
+          say("The check could not be completed. Check the connection and scan again.");
+        } finally {
+          if (checkButton) checkButton.disabled = false;
+        }
+        return;
+      }
+
       if (redirect) { window.location.href = `/verify/${encodeURIComponent(value)}`; return; }
       if (!endpoint) { window.location.href = `/verify/${encodeURIComponent(value)}`; return; }
       if (checkButton) checkButton.disabled = true;
@@ -163,8 +247,8 @@
         }
         // A check inside an app panel renders the answer inline rather than
         // sending the operator away from the screen they were on.
-        if (block.querySelector("[data-scanner-result]")) {
-          renderInline(block.querySelector("[data-scanner-result]"), data);
+        if (resultNode) {
+          renderResult(resultNode, data, { canMark: false, code: value });
           return;
         }
         window.location.href = `/verify/${encodeURIComponent(value)}`;
@@ -175,27 +259,57 @@
       }
     }
 
-    function renderInline(node, data) {
+    /** The answer, as a card a gatekeeper can read at arm's length. */
+    function renderResult(node, data, options) {
+      if (!node) return;
+      const opts = options || {};
       const card = data && data.card;
       if (!card) { node.innerHTML = ""; return; }
       const tone = card.valid ? "ok" : card.verdict === "revoked" ? "bad" : "warn";
+      const marked = Boolean(data.marked);
       const rows = [
         ["Name", card.name],
         [card.holderType === "teacher" ? "Staff ID" : "Admission no.", card.identifier],
-        [card.holderType === "teacher" ? "Department" : "Class", card.department],
+        [card.holderType === "teacher" ? "Department" : "Class", (data.holder && data.holder.className) || card.department],
         ["School", card.school && card.school.name],
         ["Card status", card.verdict],
+        data.attendance && data.attendance.status ? ["Attendance", STATUS_LABELS[data.attendance.status] || data.attendance.status] : ["", ""],
+        data.attendance && data.attendance.checkIn ? ["Checked in", data.attendance.checkIn] : ["", ""],
+        data.classToday ? ["Today in class", `${data.classToday.marked} of ${data.classToday.total} marked · ${data.classToday.remaining} to go`] : ["", ""],
       ].filter(([, value]) => value);
-      node.innerHTML = `<div class="scan-result scan-result-${tone}">
-        <p class="scan-result-title">${tone === "ok" ? "✓ Card is valid" : tone === "bad" ? "✕ " + (card.verdict === "revoked" ? "Card cancelled" : "Not valid") : "! Check the details"}</p>
-        <dl>${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${String(value).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</dd></div>`).join("")}</dl>
-        <a class="dash-btn dash-btn-ghost dash-btn-sm" href="/verify/${card.code}" target="_blank" rel="noopener">Open the public page</a></div>`;
+      const headline = marked
+        ? (data.alreadyMarked ? `Already marked ${STATUS_LABELS[data.attendance && data.attendance.status] || ""}` : `Marked ${STATUS_LABELS[data.attendance && data.attendance.status] || ""}`)
+        : (tone === "ok" ? "Card is valid" : tone === "bad" ? "Card cancelled" : "Check the details");
+      const symbol = marked ? "✓" : tone === "ok" ? "✓" : tone === "bad" ? "✕" : "!";
+      const actions = [];
+      if (opts.canMark && card.valid) {
+        for (const status of ["present", "late", "excused", "absent"]) {
+          if (marked && data.attendance && data.attendance.status === status) continue;
+          actions.push(`<button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scan-mark="${status}">Mark ${STATUS_LABELS[status]}</button>`);
+        }
+      }
+      actions.push(`<a class="dash-btn dash-btn-ghost dash-btn-sm" href="/verify/${encodeURIComponent(card.code || opts.code || "")}" target="_blank" rel="noopener">Open the public page</a>`);
+      if (data.printPath) {
+        actions.push(`<a class="dash-btn dash-btn-ghost dash-btn-sm" href="${esc(apiUrl(data.printPath))}" target="_blank" rel="noopener">Print this card</a>`);
+      }
+      node.innerHTML = `<div class="scan-result scan-result-${marked ? "ok" : tone}">
+        <p class="scan-result-title">${symbol} ${esc(headline)}</p>
+        ${data.message ? `<p class="hint" style="margin:0 0 8px">${esc(data.message)}</p>` : ""}
+        <dl>${rows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
+        <div class="dash-actions" style="margin-top:10px">${actions.join("")}</div></div>`;
+      node.querySelectorAll("[data-scan-mark]").forEach((button) => {
+        button.addEventListener("click", () => {
+          lastStatus = String(button.getAttribute("data-scan-mark") || "present").toLowerCase();
+          finish(card.code || opts.code, { mark: true });
+        });
+      });
     }
 
     if (openButton) openButton.addEventListener("click", () => {
-      if (openButton.dataset.scannerRunning === "1") { stop(); delete openButton.dataset.scannerRunning; } else start();
+      if (openButton.dataset.scannerRunning === "1") stop();
+      else start();
     });
-    if (checkButton) checkButton.addEventListener("click", () => finish());
+    if (checkButton) checkButton.addEventListener("click", () => finish(input ? input.value : ""));
     if (input) input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") { event.preventDefault(); finish(input.value); }
     });
@@ -205,7 +319,7 @@
       if (code) input.value = code;
     }, 0));
 
-    return { stop };
+    return { stop, mark: (code, status) => { if (status) lastStatus = String(status).toLowerCase(); return finish(code); } };
   }
 
   function initAll(root) {
@@ -280,6 +394,7 @@
           <p class="hint">Anyone who scans this QR sees only what is printed on the card — your name, class and whether the card is still live. Nothing else is revealed, and the link never expires.</p>
           <div class="row" data-scanner data-endpoint="/api/public/card/">
             <input type="text" name="code" value="${escapeText(credential.code)}" autocomplete="off" spellcheck="false" aria-label="Card code" style="flex:1;min-width:140px;padding:9px 11px;border:1px solid #cfd9e8;border-radius:10px;font:600 14px/1.2 ui-monospace,Menlo,Consolas,monospace">
+            <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-open>Scan with camera</button>
             <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-check>Check it</button>
           </div>
           <p class="dash-field-hint" data-scanner-error style="color:#b42318" hidden></p>

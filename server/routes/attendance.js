@@ -6,10 +6,18 @@ const { asyncHandler, err, ok, toNum, cleanStr, validDate, logActivity } = requi
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { effectiveTenantId, getTeacherAssignments, teacherCanMarkAttendance } = require("../middleware/tenant");
 const communication = require("../services/communication");
+const cardCreds = require("../services/card-credentials");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
 const ADMIN = requireRole("madrasa_admin", "super_admin");
+/* Writing a register is a staff action and only a staff action. A learner who
+   could POST their own attendance would make every register worthless, and a
+   parent — whose account is a read-only window on their own children — must
+   not be able to mark a class either. Reading a card needs no account at all
+   (/verify/<code>, /api/public/card/<code>), so verification is still open to
+   anyone holding the card. */
+const STAFF_ROLE = requireRole("madrasa_admin", "super_admin", "teacher");
 
 const STUDENT_STATUSES = new Set(["present", "absent", "late", "excused"]);
 const TEACHER_STATUSES = new Set(["present", "absent", "late", "on_leave", "excused"]);
@@ -59,6 +67,203 @@ async function checkClassAccess(req, res, tid, classId) {
   return cls;
 }
 
+/* ------------------------------ scan to mark ------------------------------
+   The other half of the QR code on every card. Verification answers "is this
+   card real?"; this endpoint answers the question a gate, a bus or a register
+   actually asks: "who is this, and are they here today?"
+
+   One scan does all of it:
+
+     • resolves the code inside THIS school only (a code from another tenant is
+       not found, never "valid")
+     • reports the verdict — valid / cancelled / inactive / school closed
+     • marks the holder present (or late / absent / excused) in the register for
+       the school's own calendar day, idempotently: scanning the same card twice
+       updates nothing and says "already marked"
+     • for staff cards, lets an administrator check a member of staff in at the
+       school's local clock time
+     • returns the roster position for the holder's class today, so a gate
+       operator can see how many learners are still unmarked
+
+   A cancelled card marks nothing. A teacher may only mark a class they are
+   assigned to (the same rule as the hand-typed register), and staff attendance
+   stays an administrator action. Every scan is written to the activity log.
+-------------------------------------------------------------------------- */
+async function notifyAttendanceOutcome(tid, studentId, status, day, userId) {
+  if (status !== "absent" && status !== "late") return;
+  const recipients = await db.all("SELECT user_id FROM parent_links WHERE madrasa_id = ? AND student_id = ?", [tid, studentId]);
+  const studentUser = await db.get("SELECT id FROM users WHERE madrasa_id = ? AND student_id = ? AND is_active = 1", [tid, studentId]);
+  const recipientIds = [...new Set(recipients.map((r) => Number(r.user_id)).concat(studentUser ? [Number(studentUser.id)] : []))];
+  const title = status === "absent" ? "Student absent" : "Student late";
+  await communication.createNotifications(tid, recipientIds, {
+    type: status === "absent" ? "student_absent" : "student_late",
+    title,
+    body: `Attendance recorded as ${status} for ${day}.`,
+    entity_type: "attendance",
+    entity_id: studentId,
+  });
+  for (const recipientId of recipientIds) {
+    await communication.recordCommunication(tid, {
+      student_id: studentId, recipient_user_id: recipientId, parent_user_id: recipientId,
+      channel: "in_app", message_type: "attendance_alert", subject: "Attendance alert",
+      message: `Attendance recorded as ${status} for ${day}.`, sent_by: userId,
+    });
+  }
+}
+
+/** The wall clock the school actually reads, so a check-in time is honest. */
+function schoolClock(timezone, when) {
+  const date = when ? new Date(when) : new Date();
+  try {
+    return new Intl.DateTimeFormat("en-GB", { timeZone: timezone || "Africa/Lagos", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+  } catch (e) {
+    return date.toISOString().slice(11, 16);
+  }
+}
+
+router.post("/scan", STAFF_ROLE, asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const b = req.body || {};
+  const code = cardCreds.normaliseCode(b.code || b.card_code || b.card);
+  if (!code) return err(res, 400, "Scan a card or type the code printed under its QR.");
+  const day = validDate(b.date) || new Date().toISOString().slice(0, 10);
+  const mark = !(b.mark === false || b.mark === 0 || b.mark === "0");
+
+  // The code is the capability, but only inside the school that minted it.
+  const credential = await db.get("SELECT * FROM card_credentials WHERE madrasa_id = ? AND code = ?", [tid, code]);
+  if (!credential) return err(res, 404, "That code does not belong to a card issued by this school.");
+  const resolved = await cardCreds.lookupCard(code);
+  if (!resolved) return err(res, 404, "The holder of that card is no longer on this school's register.");
+
+  const card = cardCreds.cardVerificationView(resolved);
+  const holder = resolved.holder;
+  const isTeacher = card.holderType === "teacher";
+  const school = await db.get("SELECT timezone FROM madaris WHERE id = ?", [tid]);
+  const payload = {
+    ok: true,
+    day,
+    card,
+    verifyUrl: `/verify/${encodeURIComponent(card.code)}`,
+    holder: {
+      type: card.holderType,
+      id: Number(holder.id),
+      name: card.name,
+      identifier: card.identifier,
+      photoPath: card.photoPath,
+      role: card.role,
+      className: isTeacher ? "" : (holder.class_name || ""),
+      classId: isTeacher ? null : (holder.class_id ? Number(holder.class_id) : null),
+      department: isTeacher ? (holder.department || "") : "",
+    },
+    printPath: isTeacher ? `/documents/staff-id-card/${Number(holder.id)}` : `/documents/id-card/${Number(holder.id)}`,
+  };
+
+  // A card that no longer vouches for its holder cannot mark anything.
+  if (!card.valid) {
+    if (credential.status === "revoked") {
+      await logActivity(db, { madrasaId: tid, userId: req.user.id, action: "attendance.scan.blocked", entity: "card_credentials", entityId: String(credential.id), meta: { code: card.code, verdict: card.verdict }, ip: req.ip });
+      return res.json(Object.assign(payload, {
+        marked: false, reason: "revoked",
+        message: "This card was cancelled — it cannot mark attendance. Ask for another form of identification.",
+      }));
+    }
+    return res.json(Object.assign(payload, {
+      marked: false, reason: card.verdict,
+      message: card.verdict === "closed"
+        ? "The issuing school is not active, so attendance cannot be marked from this card."
+        : "This holder is not currently active, so nothing was marked. Check the office record.",
+    }));
+  }
+
+  const context = await termContext(tid, day, b.termId || b.term_id, b.sessionId || b.session_id);
+  if (context.error) return err(res, 400, context.error);
+
+  /* --------------------------- a member of staff -------------------------- */
+  if (isTeacher) {
+    if (!["madrasa_admin", "super_admin"].includes(req.user.role)) {
+      return res.json(Object.assign(payload, {
+        marked: false, reason: "staff_admin_only",
+        message: "The card is valid. Staff attendance is recorded by an administrator.",
+      }));
+    }
+    if (!mark) return res.json(Object.assign(payload, { marked: false, reason: "verify_only", message: "Card checked. Nothing was marked." }));
+    const status = TEACHER_STATUSES.has(String(b.status || "").toLowerCase()) ? String(b.status).toLowerCase() : "present";
+    const checkIn = b.checkIn || b.check_in ? timeOrBlank(b.checkIn || b.check_in) : schoolClock(school && school.timezone);
+    if (checkIn === null) return err(res, 400, "Check-in must use HH:MM.");
+    const existing = await db.get("SELECT * FROM teacher_attendance WHERE madrasa_id = ? AND user_id = ? AND day = ?", [tid, holder.id, day]);
+    const alreadyMarked = Boolean(existing && existing.status === status && String(existing.check_in || "") === String(checkIn || ""));
+    if (existing) {
+      await db.run(
+        "UPDATE teacher_attendance SET status = ?, term_id = ?, session_id = ?, check_in = ?, notes = ?, recorded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND madrasa_id = ?",
+        [status, context.termId, context.sessionId, checkIn, cleanStr(b.note || b.notes, 2000), req.user.id, existing.id, tid]
+      );
+    } else {
+      await db.run(
+        "INSERT INTO teacher_attendance (madrasa_id, user_id, day, term_id, session_id, status, check_in, check_out, notes, recorded_by) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [tid, holder.id, day, context.termId, context.sessionId, status, checkIn, cleanStr(b.check_out, 5), cleanStr(b.note || b.notes, 2000), req.user.id]
+      );
+    }
+    await logActivity(db, { madrasaId: tid, userId: req.user.id, action: "attendance.scan", entity: "teacher_attendance", entityId: String(holder.id), meta: { code: card.code, day, status, checkIn }, ip: req.ip });
+    return res.json(Object.assign(payload, {
+      marked: true, alreadyMarked, status, checkIn, message: alreadyMarked ? `${card.name} was already checked in at ${checkIn}.` : `${card.name} checked in at ${checkIn}.`,
+      attendance: { status, day, checkIn },
+    }));
+  }
+
+  /* ------------------------------ a learner ------------------------------- */
+  const classId = Number(holder.class_id || 0);
+  if (!classId) {
+    return res.json(Object.assign(payload, {
+      marked: false, reason: "no_class",
+      message: "This learner is not assigned to a class, so there is no register to mark. Assign a class in the student profile first.",
+    }));
+  }
+  if (req.user.role === "teacher") {
+    const cls = await checkClassAccess(req, res, tid, classId);
+    if (!cls) return;
+  }
+  if (!mark) return res.json(Object.assign(payload, { marked: false, reason: "verify_only", message: "Card checked. Nothing was marked." }));
+
+  const status = STUDENT_STATUSES.has(String(b.status || "").toLowerCase()) ? String(b.status).toLowerCase() : "present";
+  const existing = await db.get("SELECT * FROM attendance WHERE madrasa_id = ? AND student_id = ? AND day = ?", [tid, holder.id, day]);
+  const alreadyMarked = Boolean(existing && existing.status === status);
+  if (existing) {
+    await db.run(
+      "UPDATE attendance SET status = ?, class_id = ?, term_id = ?, session_id = ?, attendance_note = ?, recorded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND madrasa_id = ?",
+      [status, classId, context.termId, context.sessionId, cleanStr(b.note || b.notes, 2000) || existing.attendance_note || "", req.user.id, existing.id, tid]
+    );
+  } else {
+    await db.run(
+      "INSERT INTO attendance (madrasa_id, student_id, class_id, term_id, session_id, day, status, attendance_note, recorded_by) VALUES (?,?,?,?,?,?,?,?,?)",
+      [tid, holder.id, classId, context.termId, context.sessionId, day, status, cleanStr(b.note || b.notes, 2000) || "Marked from an ID card scan", req.user.id]
+    );
+  }
+  await notifyAttendanceOutcome(tid, holder.id, status, day, req.user.id);
+
+  const totals = await db.get(
+    "SELECT COUNT(*) AS marked, COALESCE(SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END), 0) AS present FROM attendance WHERE madrasa_id = ? AND class_id = ? AND day = ?",
+    [tid, classId, day]
+  );
+  const roster = await db.get(
+    "SELECT COUNT(*) AS total FROM students WHERE madrasa_id = ? AND class_id = ? AND status NOT IN ('withdrawn','inactive')",
+    [tid, classId]
+  );
+  await logActivity(db, { madrasaId: tid, userId: req.user.id, action: "attendance.scan", entity: "student", entityId: String(holder.id), meta: { code: card.code, day, status, classId, alreadyMarked }, ip: req.ip });
+
+  const markedNow = Number(totals && totals.marked || 0);
+  const total = Number(roster && roster.total || 0);
+  return res.json(Object.assign(payload, {
+    marked: true,
+    alreadyMarked,
+    status,
+    message: alreadyMarked
+      ? `${card.name} was already marked ${status} today.`
+      : `${card.name} marked ${status} for ${day}.`,
+    attendance: { status, day, classId, className: holder.class_name || "" },
+    classToday: { marked: markedNow, present: Number(totals && totals.present || 0), total, remaining: Math.max(0, total - markedNow) },
+  }));
+}));
+
 /** Daily student register. */
 router.get("/", asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
@@ -77,7 +282,7 @@ router.get("/", asyncHandler(async (req, res) => {
 }));
 
 /** Save or edit a complete daily class register. */
-router.post("/mark", asyncHandler(async (req, res) => {
+router.post("/mark", STAFF_ROLE, asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {}; const classId = toNum(b.classId || b.class_id, 0); const day = validDate(b.date);
   if (!classId || !day) return err(res, 400, "classId and date are required.");
@@ -104,20 +309,14 @@ router.post("/mark", asyncHandler(async (req, res) => {
     } else {
       await db.run("INSERT INTO attendance (madrasa_id, student_id, class_id, term_id, session_id, day, status, attendance_note, recorded_by) VALUES (?,?,?,?,?,?,?,?,?)", [tid, studentId, classId, context.termId, context.sessionId, day, value.status, value.note, req.user.id]);
     }
-    if (value.status === "absent" || value.status === "late") {
-      const recipients = await db.all("SELECT user_id FROM parent_links WHERE madrasa_id = ? AND student_id = ?", [tid, studentId]);
-      const studentUser = await db.get("SELECT id FROM users WHERE madrasa_id = ? AND student_id = ? AND is_active = 1", [tid, studentId]);
-      const recipientIds = recipients.map((r) => r.user_id).concat(studentUser ? [studentUser.id] : []);
-      await communication.createNotifications(tid, recipientIds, { type: value.status === "absent" ? "student_absent" : "student_late", title: value.status === "absent" ? "Student absent" : "Student late", body: `Attendance recorded as ${value.status} for ${day}.`, entity_type: "attendance", entity_id: studentId });
-      for (const recipientId of [...new Set(recipientIds)]) await communication.recordCommunication(tid, { student_id: studentId, recipient_user_id: recipientId, parent_user_id: recipientId, channel: "in_app", message_type: value.status === "absent" ? "attendance_alert" : "attendance_alert", subject: "Attendance alert", message: `Attendance recorded as ${value.status} for ${day}.`, sent_by: req.user.id });
-    }
+    await notifyAttendanceOutcome(tid, studentId, value.status, day, req.user.id);
     saved++;
   }
   logActivity(db, { madrasaId: tid, userId: req.user.id, action: "attendance.mark", entity: "class", entityId: String(classId), meta: { date: day, saved }, ip: req.ip });
   ok(res, { ok: true, saved, date: day, termId: context.termId, sessionId: context.sessionId });
 }));
 
-router.patch("/:id", asyncHandler(async (req, res) => {
+router.patch("/:id", STAFF_ROLE, asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await db.get("SELECT * FROM attendance WHERE id = ? AND madrasa_id = ?", [toNum(req.params.id, 0), tid]);
   if (!row) return err(res, 404, "Attendance record not found.");

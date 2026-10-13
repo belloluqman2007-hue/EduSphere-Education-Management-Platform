@@ -1,0 +1,147 @@
+/* ============================================================================
+   EduSphere — printing from inside the app
+   ----------------------------------------------------------------------------
+   Every "Print" button in the dashboard is a browser print of the screen the
+   staff member is looking at. Without rules here the printer received the
+   sidebar, the header, the search filters, the pagination buttons and every
+   toast on screen — and, more often than not, the list was cut off after the
+   first page because the table sat inside an overflow:auto wrapper.
+
+   This file fixes exactly that, for screens and for documents that are already
+   present in the page:
+
+     • the app chrome is never printed
+     • a printed header carries the school, the title and the date
+     • tables repeat their head on every page and never split a row
+     • an open dialog prints as the document (body[data-print-scope="modal"])
+     • one element can be printed alone (body[data-print-scope="element"],
+       the cloned copy lives in #printStage — see public/js/print-page.js)
+
+   Screen appearance is untouched: everything below is inside @media print.
+   ========================================================================== */
+
+/* The print-only header EduPrint() writes into the document. */
+.print-doc-head { display: none; }
+.print-doc-head .print-doc-school { margin: 0 0 2px; font-size: 10.5pt; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+.print-doc-head .print-doc-title { margin: 0; font-size: 15pt; font-weight: 800; line-height: 1.22; }
+.print-doc-head .print-doc-meta { margin: 3px 0 0; font-size: 9.5pt; color: #4b5563; }
+
+#printStage { display: none; }
+
+@page { margin: 12mm; }
+
+@media print {
+  html, body { background: #fff !important; }
+  body {
+    margin: 0 !important;
+    color: #111827 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ------------------------- app chrome never prints ---------------------- */
+  .skip-link,
+  .dash-sidebar,
+  .dash-header,
+  .dash-menu-btn,
+  .dash-toasts,
+  .toast,
+  .noprint,
+  [data-no-print],
+  .support-chat-launcher,
+  .support-chat-widget,
+  .support-chat-panel,
+  .support-chat-fab,
+  .school-topbar,
+  .school-nav,
+  .site-header,
+  .site-footer,
+  .student-bulk-bar,
+  .student-filter-card,
+  .tc-filter-card,
+  .student-pagination,
+  .dash-table-actions,
+  .dash-page-head .dash-actions,
+  .dash-actions,
+  .dash-crumb,
+  .dash-modal-close,
+  .dash-modal-foot,
+  .dash-modal-actions,
+  .student-loading,
+  .dash-check-grid,
+  .idc-tabs,
+  .idc-side,
+  .ptm-cell .dash-btn,
+  .dash-table-wrap .dash-btn,
+  .dash-empty .dash-btn,
+  .dash-btn,
+  button,
+  [role="tablist"],
+  [data-scanner-open],
+  [data-scanner-check],
+  .print-only-no { display: none !important; }
+
+  /* Everything that matters stays visible, even inside a hidden shell. */
+  .dash-shell { display: block !important; min-height: 0 !important; }
+  .dash-content { display: block !important; padding: 0 !important; }
+  .dash-content-inner { max-width: none !important; }
+
+  /* ------------------------------ paper layout --------------------------- */
+  .print-doc-head { display: block; margin: 0 0 6mm; padding-bottom: 3mm; border-bottom: 1.5pt solid #111827; }
+  .print-doc-head + * { margin-top: 0 !important; }
+
+  .dash-card,
+  .tc-mobile-card,
+  .tc-profile-card,
+  .dash-modal,
+  .tt-card {
+    box-shadow: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .dash-card-head { border-bottom: 1pt solid #d1d5db !important; }
+  .dash-card-pad,
+  .dash-card-head { padding-left: 0 !important; padding-right: 0 !important; }
+
+  /* A table inside a scroll wrapper lost every row past the fold on paper. */
+  .dash-table-wrap { overflow: visible !important; max-height: none !important; border: 0 !important; }
+  .dash-table { width: 100% !important; border-collapse: collapse !important; font-size: 9.5pt; }
+  .dash-table thead { display: table-header-group; }
+  .dash-table tfoot { display: table-footer-group; }
+  .dash-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .dash-table th,
+  .dash-table td { border-bottom: .5pt solid #cbd5e1 !important; padding: 5px 7px !important; }
+  .dash-table th { background: #f3f4f6 !important; color: #111827 !important; }
+  .dash-table tr:nth-child(even) td { background: #fbfbfd !important; }
+
+  .dash-stats-grid > * { break-inside: avoid; page-break-inside: avoid; }
+  img { max-width: 100% !important; }
+  a { color: #111827 !important; text-decoration: none !important; }
+  a[href^="http"]::after { content: ""; }
+  .dash-pill,
+  .idc-state { border: .5pt solid #9ca3af !important; background: #fff !important; color: #111827 !important; }
+
+  /* ----------------------- printing an open dialog ---------------------- */
+  /* A parent/teacher dialog can be long; it must not be clipped at 88vh, and
+     the dimmed backdrop must not be painted over the paper. */
+  body[data-print-scope="modal"] .dash-shell,
+  body[data-print-scope="modal"] .dash-toasts { display: none !important; }
+  body[data-print-scope="modal"] .dash-modal-backdrop {
+    position: static !important;
+    display: block !important;
+    inset: auto !important;
+    padding: 0 !important;
+    background: none !important;
+  }
+  body[data-print-scope="modal"] .dash-modal { width: auto !important; }
+  body[data-print-scope="modal"] .dash-modal-body { padding: 0 !important; }
+
+  /* ---------------------- printing a single element --------------------- */
+  body[data-print-scope="element"] .dash-shell,
+  body[data-print-scope="element"] .dash-toasts,
+  body[data-print-scope="element"] .dash-modal-backdrop { display: none !important; }
+  body[data-print-scope="element"] #printStage { display: block !important; }
+}

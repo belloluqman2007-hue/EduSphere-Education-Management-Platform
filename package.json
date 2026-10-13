@@ -33,6 +33,7 @@
   "devDependencies": {
     "autocannon": "^7.15.0",
     "js-yaml": "^5.4.1",
-    "jsdom": "^30.0.1"
+    "jsdom": "^30.0.1",
+    "jsqr": "^1.4.0"
   }
 }
