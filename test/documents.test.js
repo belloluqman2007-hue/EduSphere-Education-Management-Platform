@@ -63,9 +63,14 @@ test("bulk ID cards render four-card sheet layout", async () => {
 
 test("profile QR codes stay scannable up to the encoder limit", async () => {
   const { qrSvg } = require("../server/routes/documents")._private;
-  // Version 9 at error level L holds 230 bytes: a 61-module symbol plus quiet zone.
+  // The smallest version that fits wins: 230 bytes is version 9 (53 modules →
+  // 61 with the quiet zone), and one byte more is version 10 (57 → 65).
   assert.match(qrSvg("A".repeat(230)), /viewBox="-4 -4 61 61"/);
-  assert.equal(qrSvg("A".repeat(231)), "");
+  assert.match(qrSvg("A".repeat(231)), /viewBox="-4 -4 65 65"/);
+  // Version 10 at error level L holds 271 bytes in byte mode; beyond that the
+  // encoder refuses rather than emit a symbol no phone can read.
+  assert.match(qrSvg("A".repeat(271)), /viewBox="-4 -4 65 65"/);
+  assert.equal(qrSvg("A".repeat(272)), "");
 });
 
 test("certificate templates and issued certificates validate, render, and stay tenant-scoped", async () => {

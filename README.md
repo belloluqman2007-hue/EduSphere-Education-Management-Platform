@@ -382,6 +382,21 @@ render.yaml        NEW Render service definition (production)
   with the next admission number and, optionally, the pupil's and guardian's
   portal accounts. Applicants track their own request with a reference number
   plus the phone they gave.
+- **ID cards, certificates and a real printer output** — every card carries a
+  durable `/verify/<code>` QR that any phone camera reads (decoded by an
+  independent QR decoder in the test suite), prints the same code in text under
+  it, and can be revoked in one step. `Attendance → Scan & Mark` turns a scan
+  into a register entry: one read at the gate verifies the learner AND marks
+  them present (or late/excused/absent) in the school's own calendar day, staff
+  cards check a member of staff in at the school's clock, and a cancelled card
+  marks nothing. Print buttons across the dashboard print the document, not the
+  application: `public/css/print.css` + `public/js/print-page.js` hide the
+  sidebar, header and filters, print a real heading (school, title, date), name
+  the PDF and can print a generated report or an open dialog on its own. Every
+  server-rendered print page (cards, certificates, report sheets, payslips,
+  fee receipts, timetables) loads `/js/print.js` instead of an inline script,
+  which the platform CSP would silently drop. See
+  [`docs/ID-CARDS-AND-CERTIFICATES.md`](docs/ID-CARDS-AND-CERTIFICATES.md).
 - **CSV exports** — students, results, term summary, attendance, fees and the
   admission queue, as UTF-8 BOM + CRLF files Excel opens correctly, with
   formula-injection guards on every cell.

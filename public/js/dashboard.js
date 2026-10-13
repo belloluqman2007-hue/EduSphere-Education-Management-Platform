@@ -126,7 +126,7 @@
       },
       {
         key: "attendance", label: "Attendance", icon: "calendar",
-        items: [["Student Attendance", "attendance/students"], ["Teacher Attendance", "attendance/teachers"], ["Attendance Reports", "attendance/reports"]],
+        items: [["Scan & Mark", "attendance/scan"], ["Student Attendance", "attendance/students"], ["Teacher Attendance", "attendance/teachers"], ["Attendance Reports", "attendance/reports"]],
       },
       {
         key: "academic", label: "Academic", icon: "academic",
@@ -1352,6 +1352,7 @@
       }
 
       // Attendance and academics
+      if (route === "attendance/scan") return await pageAttendanceScan(content);
       if (route === "attendance/students") return await pageAttendanceStudents(content);
       if (route === "attendance/teachers") return await pageTeacherAttendance(content);
       if (route === "attendance/reports") return await pageAttendanceReport(content);
@@ -2047,7 +2048,7 @@
     content.querySelector("#studentPrev").addEventListener("click", () => { if (page > 1) { page--; load(); } }); content.querySelector("#studentNext").addEventListener("click", () => { page++; load(); });
     content.querySelector("#clearStudentSelection").addEventListener("click", () => { selected.clear(); renderRows(currentRows); updateBulk(); });
     content.querySelector("#applyBulkStudent").addEventListener("click", async () => { const action = content.querySelector("#bulkStudentAction").value; if (!action || !selected.size) return toast("Choose a bulk action first.", "error"); if (!window.confirm(`Apply “${studentStatus(action)}” to ${selected.size} student(s)?`)) return; try { await window.API.post("/students/bulk-status", { student_ids: [...selected], status: action }); toast("Bulk student action completed.", "success"); selected.clear(); load(); } catch (e) { toast(e.message || "Bulk action failed.", "error"); } });
-    content.querySelector("#printStudents").addEventListener("click", () => window.print());
+    content.querySelector("#printStudents").addEventListener("click", () => printView("Student directory", { subtitle: content.querySelector("#studentResultCount")?.textContent || "" }));
     content.querySelector("#exportStudents").addEventListener("click", (e) => { const href = window.API.url(`/exports/students.csv?${query(Object.assign({}, filterValues(), { page: "", perPage: "" }))}`); e.currentTarget.href = href; });
     bindRouteButtons(content); await load();
   }
@@ -2065,6 +2066,17 @@
   function printDocument(path) {
     const url = window.API.url(path);
     window.open(url, "_blank", "noopener");
+  }
+
+  /* In-app printing: the browser prints the screen, so the screen must be the
+     document. EduPrint hides the sidebar/header/filters, prints a real heading
+     with the school name and names the PDF, and can print a single element (a
+     generated report) or an open dialog. It falls back to window.print() when
+     the helper is unavailable, so printing never breaks. */
+  function printView(title, options) {
+    const opts = Object.assign({ title }, options || {});
+    if (window.EduPrint) { window.EduPrint.print(opts); return; }
+    window.print();
   }
 
   /* ---------------------------- ID card workspace -------------------------
@@ -2175,8 +2187,8 @@
       const host = content.querySelector("#idCardScanner");
       host.innerHTML = `<div class="dash-card-head"><h3>Check a card</h3><span class="hint">Camera or typed code</span></div>
         <div class="dash-card-pad">
-          <p class="hint">Point a camera at the QR on the back of the card, or type the code printed under it. The card is matched against this school's live register.</p>
-          <div class="row" data-scanner data-endpoint="/api/public/card/">
+          <p class="hint">Point a camera at the QR on the back of the card, or type the code printed under it. The card is matched against this school's live register — and a learner can be marked present here without leaving the screen.</p>
+          <div class="row" data-scanner data-endpoint="/api/public/card/" data-mark-endpoint="/api/attendance/scan">
             <input type="text" name="code" autocomplete="off" spellcheck="false" placeholder="Card code" aria-label="Card code" style="flex:1;min-width:150px;padding:9px 11px;border:1px solid #cfd9e8;border-radius:10px;font:600 14px/1.2 ui-monospace,Menlo,Consolas,monospace;text-transform:uppercase">
             <button type="button" class="dash-btn dash-btn-primary dash-btn-sm" data-scanner-open>Scan with camera</button>
             <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-check>Check</button>
@@ -2496,7 +2508,7 @@
       });
     };
     modal.querySelectorAll("[data-profile-tab]").forEach((b) => b.addEventListener("click", () => { modal.querySelectorAll("[data-profile-tab]").forEach((x) => x.classList.remove("active")); b.classList.add("active"); tab(b.dataset.profileTab); }));
-    modal.querySelector("#profilePrint").addEventListener("click", () => window.print());
+    modal.querySelector("#profilePrint").addEventListener("click", () => printView(`Student profile — ${[s.first_name, s.last_name].filter(Boolean).join(" ")}`.trim(), { scope: "modal" }));
     modal.querySelector("#profileEdit").addEventListener("click", () => { closeModal(); openStudentEditModal(id, base); });
     // The Health tab's editor forms live in their own modal (openModal
     // replaces the profile modal), so they re-open the profile on the health
@@ -2851,6 +2863,107 @@
 
   /* =========================== ATTENDANCE ============================== */
   function termOptions(sessions) { return allTerms(sessions || []); }
+  /* --------------------------- scan & mark -------------------------------
+     The gate, the bus and the exam hall. One screen: point the camera at the
+     QR on a card (or type the code under it) and the learner is marked for the
+     school's own calendar day — verified, marked and logged in one action.
+
+     It is deliberately not a second attendance editor. When a child is late,
+     the operator changes one input before scanning; when a card was cancelled,
+     the card says so and nothing is marked. Every scan stays on screen while
+     the shift runs, so the person holding the camera can see what they have
+     already done without leaving the page.
+    ---------------------------------------------------------------------- */
+  async function pageAttendanceScan(content) {
+      const log = state.cache.scanLog || (state.cache.scanLog = []);
+    content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Attendance</div><h2>Scan &amp; Mark</h2>
+        <p>Scan a student or staff ID card to verify it and mark attendance in one step. Cards print from <button type="button" class="dash-link-btn" data-nav-route="students/id-cards">Documents → ID Cards</button>.</p></div></div>
+      <div class="dash-card"><div class="dash-card-pad">
+        <div class="dash-form-grid">
+          <div class="dash-field"><label for="scanDate">Date being marked</label><input id="scanDate" type="date" value="${todayIso()}"></div>
+          <div class="dash-field"><label for="scanStatus">Status for each scan</label>
+            <select id="scanStatus"><option value="present">Present</option><option value="late">Late</option><option value="excused">Excused</option><option value="absent">Absent</option></select></div>
+          <div class="dash-field"><label>Keep scanning</label>
+            <label style="display:flex;gap:8px;align-items:center;font-weight:600"><input id="scanSequential" type="checkbox" checked> Reopen the camera after each card</label></div>
+        </div>
+        <div id="scanMarkHost" style="margin-top:18px"></div>
+        <p class="hint" style="margin-top:10px">Verification is instant: a cancelled card reports "cancelled" and marks nothing. Staff cards check a member of staff in at the school's clock time — that action stays with administrators.</p>
+      </div></div>
+      <div class="dash-card" style="margin-top:16px"><div class="dash-card-head"><h3>This shift</h3><span class="hint" id="scanLogSummary">No cards scanned yet</span></div>
+        <div class="dash-card-pad" id="scanLogBody"><p class="hint">Scanned cards appear here as you go, so the same learner is never marked twice by accident.</p></div></div>`;
+
+    const host = content.querySelector("#scanMarkHost");
+    const logBody = content.querySelector("#scanLogBody");
+    const summary = content.querySelector("#scanLogSummary");
+    const dayInput = content.querySelector("#scanDate");
+    const statusInput = content.querySelector("#scanStatus");
+    const sequentialInput = content.querySelector("#scanSequential");
+
+    const paintLog = () => {
+      if (!log.length) {
+        summary.textContent = "No cards scanned yet";
+        logBody.innerHTML = `<p class="hint">Scanned cards appear here as you go, so the same learner is never marked twice by accident.</p>`;
+        return;
+      }
+      const marked = log.filter((row) => row.marked).length;
+      summary.textContent = `${log.length} scanned · ${marked} marked`;
+      logBody.innerHTML = `<div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Time</th><th>Holder</th><th>Identifier</th><th>Class / department</th><th>Result</th></tr></thead>
+        <tbody>${log.slice().reverse().map((row) => `<tr><td>${esc(row.time)}</td><td><strong>${esc(row.name || "—")}</strong><small>${esc(row.holderType === "teacher" ? "Staff" : "Student")}</small></td><td>${esc(row.identifier || "—")}</td><td>${esc(row.className || row.department || "—")}</td><td><span class="dash-pill ${row.marked ? "ok" : "warn"}">${esc(row.label)}</span></td></tr>`).join("")}</tbody></table></div>`;
+    };
+
+    const renderScanner = () => {
+      const status = statusInput.value;
+      host.innerHTML = `<div class="dash-card" style="border:1px dashed var(--d-line)">
+        <div class="dash-card-head"><h3>Check a card</h3><span class="hint">Camera or typed code</span></div>
+        <div class="dash-card-pad">
+          <p class="hint">Point the camera at the QR code on the card, or type the code printed under it. The holder is marked <strong>${esc(status)}</strong> for ${esc(dayInput.value || todayIso())}.</p>
+          <div class="row" data-scanner data-mark-endpoint="/api/attendance/scan" data-mark-auto="1" data-mark-status="${esc(status)}" data-scan-date="${esc(dayInput.value)}"${sequentialInput.checked ? ' data-sequential="1"' : ""}>
+            <input type="text" name="code" autocomplete="off" spellcheck="false" placeholder="Card code" aria-label="Card code" style="flex:1;min-width:150px;padding:9px 11px;border:1px solid #cfd9e8;border-radius:10px;font:600 14px/1.2 ui-monospace,Menlo,Consolas,monospace;text-transform:uppercase">
+            <button type="button" class="dash-btn dash-btn-primary dash-btn-sm" data-scanner-open>Scan with camera</button>
+            <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-check>Check</button>
+          </div>
+          <p class="dash-field-hint" data-scanner-error style="color:#b42318" hidden></p>
+          <div data-scanner-result></div>
+        </div></div>`;
+      if (window.EduScanner) window.EduScanner.initAll(host);
+      const block = host.querySelector("[data-scanner]");
+      if (block) {
+        block.addEventListener("eduscanner:result", (event) => {
+          const detail = event.detail || {};
+          const card = detail.card || {};
+          const holder = detail.holder || {};
+          log.push({
+            time: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+            day: detail.day || dayInput.value,
+            name: card.name || holder.name || "",
+            identifier: card.identifier || holder.identifier || "",
+            className: holder.className || "",
+            department: holder.department || "",
+            holderType: card.holderType || holder.type || "student",
+            marked: Boolean(detail.marked),
+            status: detail.attendance && detail.attendance.status || "",
+            label: detail.marked
+              ? (detail.alreadyMarked ? `already ${(detail.attendance && detail.attendance.status) || "marked"}` : `marked ${(detail.attendance && detail.attendance.status) || "present"}`)
+              : (detail.reason || "not marked"),
+          });
+          paintLog();
+        });
+      }
+      const input = host.querySelector("input[name=code]");
+      if (input) input.focus({ preventScroll: true });
+    };
+
+    // The block is re-rendered when the day or the status changes, so the next
+    // scan carries exactly what the operator chose — including a shift that runs
+    // across midnight.
+    dayInput.addEventListener("change", renderScanner);
+    statusInput.addEventListener("change", renderScanner);
+    sequentialInput.addEventListener("change", renderScanner);
+
+    renderScanner();
+    paintLog();
+  }
+
   async function pageAttendanceStudents(content) {
     const base = await catalogue();
     const selected = state.cache.attendanceClassId || (base.classes[0] && base.classes[0].id) || "";
@@ -2886,7 +2999,7 @@
   async function pageAttendanceReport(content) {
     const base = await catalogue(); const now = new Date(); const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
     content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Attendance</div><h2>Attendance Reports</h2><p>Daily, weekly, monthly, term, individual, class and department reporting from the same persisted registers.</p></div><button id="printAttendanceReport" class="dash-btn dash-btn-ghost">${I.external} Print</button></div><div class="dash-card"><div class="dash-card-pad"><div class="dash-form-grid"><div class="dash-field"><label>Report type</label><select id="attendanceReportType"><option value="student">Student reports</option><option value="teacher">Teacher reports</option></select></div><div class="dash-field"><label>Academic session</label><select id="reportAttendanceSession"><option value="">All sessions</option>${options(base.sessions)}</select></div><div class="dash-field"><label>Term / semester</label><select id="reportAttendanceTerm"><option value="">All terms</option>${options(termOptions(base.sessions), "", (term) => `${term.session_label} — ${term.name_en}`)}</select></div><div class="dash-field"><label>Class</label><select id="reportAttendanceClass"><option value="">All classes</option>${options(base.classes)}</select></div><div class="dash-field"><label>Education track</label><select id="reportAttendanceTrack"><option value="">All tracks</option><option value="islamic">Islamic</option><option value="western">Western</option><option value="both">Both</option></select></div><div class="dash-field"><label>Program / category</label><input id="reportAttendanceProgram" placeholder="Program or subject category"></div><div class="dash-field"><label>From</label><input id="reportAttendanceFrom" type="date" value="${monthStart}"></div><div class="dash-field"><label>To</label><input id="reportAttendanceTo" type="date" value="${todayIso()}"></div><div class="dash-field"><label>Student / teacher id (optional)</label><input id="reportAttendancePerson" type="number" min="1" placeholder="Filter individual record"></div><div class="dash-field"><label>Department (teacher reports)</label><input id="reportAttendanceDepartment" placeholder="e.g. Sciences"></div></div><button id="loadAttendanceReport" class="dash-btn dash-btn-primary" style="margin-top:14px">Generate report</button><div id="attendanceReportResult" style="margin-top:18px"></div></div></div>`;
-    content.querySelector("#printAttendanceReport").addEventListener("click", () => window.print());
+    content.querySelector("#printAttendanceReport").addEventListener("click", () => printView("Attendance report", { scope: "element", target: content.querySelector("#attendanceReportResult"), subtitle: `${content.querySelector("#reportAttendanceFrom").value} to ${content.querySelector("#reportAttendanceTo").value}` }));
     content.querySelector("#loadAttendanceReport").addEventListener("click", async () => { const type = content.querySelector("#attendanceReportType").value; const classId = content.querySelector("#reportAttendanceClass").value; const from = content.querySelector("#reportAttendanceFrom").value; const to = content.querySelector("#reportAttendanceTo").value; const person = content.querySelector("#reportAttendancePerson").value; const department = content.querySelector("#reportAttendanceDepartment").value; const sessionId = content.querySelector("#reportAttendanceSession").value; const termId = content.querySelector("#reportAttendanceTerm").value; const track = content.querySelector("#reportAttendanceTrack").value; const program = content.querySelector("#reportAttendanceProgram").value; const out = content.querySelector("#attendanceReportResult"); if (!from || !to || from > to) return out.innerHTML = `<p class="dash-error">Choose a valid date range.</p>`; try { const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${classId ? `&classId=${classId}` : ""}${sessionId ? `&sessionId=${sessionId}` : ""}${termId ? `&termId=${termId}` : ""}${track ? `&educationTrack=${encodeURIComponent(track)}` : ""}${program ? `&program=${encodeURIComponent(program)}` : ""}${person ? `&${type === "student" ? "studentId" : "teacherId"}=${person}` : ""}${department ? `&department=${encodeURIComponent(department)}` : ""}${type === "teacher" ? "&type=teacher" : ""}`; const r = await window.API.get(`/attendance/report?${query}`); const stats = type === "teacher" ? r.stats : r.totals; const exportPath = type === "teacher" ? `/exports/teacher-attendance.csv?${query.replace("&type=teacher", "")}` : `/exports/attendance.csv?${query}`; const rows = type === "teacher" ? (r.teachers || []).map((row) => `<tr><td>${esc(row.full_name)}</td><td>${esc(row.department || "—")}</td><td>${row.present}</td><td>${row.absent}</td><td>${row.late}</td><td>${row.on_leave}</td><td>${row.excused}</td><td>${row.attendancePercentage}%</td></tr>`).join("") : (r.students || []).map((row) => `<tr><td>${esc(row.first_name)} ${esc(row.last_name)}</td><td>${esc(row.class_en || "—")}</td><td>${row.present}</td><td>${row.absent}</td><td>${row.late}</td><td>${row.excused}</td><td>${row.attendance_percentage}%</td></tr>`).join(""); out.innerHTML = `<div class="dash-stats-grid">${statCard("check", stats.present || 0, "Total present")}${statCard("close", stats.absent || 0, "Total absent")}${statCard("clock", stats.late || 0, "Total late")}${statCard("activity", stats.attendancePercentage || 0, "Attendance %")}</div><div class="dash-actions" style="margin:16px 0"><a class="dash-btn dash-btn-ghost dash-btn-sm" href="${window.API.url(exportPath)}" target="_blank" rel="noopener">${I.download} Export CSV</a></div><div class="dash-table-wrap"><table class="dash-table"><thead><tr>${type === "teacher" ? "<th>Teacher</th><th>Department</th><th>Present</th><th>Absent</th><th>Late</th><th>On leave</th><th>Excused</th><th>Rate</th>" : "<th>Student</th><th>Class</th><th>Present</th><th>Absent</th><th>Late</th><th>Excused</th><th>Rate</th>"}</tr></thead><tbody>${rows || emptyRow(type === "teacher" ? 8 : 7, "No attendance records match these filters.")}</tbody></table></div>`; } catch (err) { out.innerHTML = `<p class="dash-error">${esc(err.message || "Could not generate report.")}</p>`; } });
   }
 

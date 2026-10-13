@@ -6,7 +6,8 @@ const express = require("express");
 const db = require("../db");
 const { asyncHandler, err, ok, cleanStr, toNum, clampNum, validDate, logActivity } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
-const { requirePermission } = require("../services/permissions");
+const { requirePermission, can } = require("../services/permissions");
+const print = require("../services/print-documents");
 const { effectiveTenantId } = require("../middleware/tenant");
 const communication = require("../services/communication");
 const audit = require("../services/audit");
@@ -132,7 +133,181 @@ router.get("/payments/unverified", requirePermission("payments.verify"), asyncHa
 }));
 
 router.get("/payments/:id", STAFF, requirePermission("payments.view"), asyncHandler(async(req,res)=>{const tid=await tenantId(req,res);if(tid==null)return;const p=await db.get("SELECT fp.*,fi.name_en AS item_en,s.admission_no,s.first_name,s.last_name,c.name_en AS class_name FROM fee_payments fp JOIN students s ON s.id=fp.student_id AND s.madrasa_id=fp.madrasa_id LEFT JOIN fee_items fi ON fi.id=fp.fee_item_id AND fi.madrasa_id=fp.madrasa_id LEFT JOIN classes c ON c.id=s.class_id AND c.madrasa_id=s.madrasa_id WHERE fp.id=? AND fp.madrasa_id=?",[toNum(req.params.id,0),tid]);if(!p)return res.status(404).json({error:"Payment not found."});ok(res,{payment:p});}));
-router.get("/payments/:id/receipt", STAFF, requirePermission("payments.view"), asyncHandler(async(req,res)=>{const tid=await tenantId(req,res);if(tid==null)return;const p=await db.get("SELECT fp.*,fi.name_en AS item_en,s.admission_no,s.first_name,s.last_name,m.name_en AS institution_name FROM fee_payments fp JOIN students s ON s.id=fp.student_id AND s.madrasa_id=fp.madrasa_id JOIN madaris m ON m.id=fp.madrasa_id LEFT JOIN fee_items fi ON fi.id=fp.fee_item_id AND fi.madrasa_id=fp.madrasa_id WHERE fp.id=? AND fp.madrasa_id=?",[toNum(req.params.id,0),tid]);if(!p)return res.status(404).send("Receipt not found");const esc=(x)=>String(x??"").replace(/[&<>\"']/g,(c)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;", "'":"&#39;"}[c]));res.type("html").send(`<!doctype html><title>Receipt ${esc(p.receipt_number)}</title><style>body{font:16px Arial;max-width:720px;margin:40px auto}h1{color:#220b40}.row{display:flex;justify-content:space-between;border-bottom:1px solid #ddd;padding:10px 0}</style><h1>${esc(p.institution_name)}</h1><h2>Payment receipt</h2><div class=row><b>Receipt</b><span>${esc(p.receipt_number)}</span></div><div class=row><b>Student</b><span>${esc(p.first_name)} ${esc(p.last_name)} (${esc(p.admission_no)})</span></div><div class=row><b>Fee</b><span>${esc(p.item_en||"General payment")}</span></div><div class=row><b>Amount</b><span>₦${esc(n(p.amount_ngn).toLocaleString())}</span></div><div class=row><b>Date</b><span>${esc(p.payment_date)}</span></div><div class=row><b>Method</b><span>${esc(p.method)}</span></div><script>window.print()</script>`); }));
+/* ------------------------------- receipts ---------------------------------
+   A receipt is a document, so it is rendered like every other printed document
+   on the platform: server-rendered HTML inside the shared print shell, with
+   /js/print.js opening the dialog once the school's mark has loaded.
+
+   Three faults lived in the previous one-line version:
+
+     1. It ended with `<script>window.print()</script>`. The platform CSP is
+        `script-src 'self'` (with `script-src-attr 'none'`), so a browser
+        dropped that script silently. Nothing ever printed, and there was no
+        print button to press either — the page simply sat there.
+     2. It printed no school identity: no logo, no address, no contact line,
+        nothing that makes a receipt look like it came from a school rather
+        than from a web page.
+     3. It was reachable only by staff (`STAFF` + `payments.view`), yet the
+        parent and student portals both link straight to it. A family pressing
+        "Receipt" was answered with a 403. Families may now open a receipt for
+        their own child (and a student for their own record); staff still need
+        `payments.view` to open anyone's.
+
+   A reversed or refunded payment prints with that fact stated plainly on the
+   document, because a receipt that hides a reversal is worse than no receipt.
+-------------------------------------------------------------------------- */
+const RECEIPT_CSS = `
+.sheet{max-width:760px;margin:26px auto 40px;padding:0 16px}
+.receipt{background:#fff;border:1px solid #dde3ec;border-radius:14px;overflow:hidden;box-shadow:0 12px 34px rgba(16,24,40,.08)}
+.receipt-head{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;padding:20px 22px;background:var(--brand);color:#fff}
+.receipt-head .who{display:flex;gap:12px;align-items:center;min-width:0}
+.receipt-head img{width:56px;height:56px;border-radius:12px;background:#fff;object-fit:contain;padding:4px;flex:none}
+.receipt-head .mono{width:56px;height:56px;border-radius:12px;background:rgba(255,255,255,.18);display:grid;place-items:center;font:800 24px/1 Georgia,serif;flex:none}
+.receipt-head h1{margin:0;font-size:18px;line-height:1.25}
+.receipt-head p{margin:4px 0 0;font-size:12px;opacity:.9}
+.receipt-head .tag{text-align:right;flex:none}
+.receipt-head .tag strong{display:block;font-size:13px;letter-spacing:.14em;text-transform:uppercase;opacity:.92}
+.receipt-head .tag span{display:block;margin-top:4px;font:700 15px/1.3 ui-monospace,Menlo,Consolas,monospace}
+.receipt-body{padding:20px 22px 24px}
+.stamp{display:inline-block;margin:0 0 14px;padding:5px 12px;border-radius:999px;font:700 11px/1.6 Arial,sans-serif;letter-spacing:.12em;text-transform:uppercase}
+.stamp-ok{background:#eafaef;color:#0f5c33;border:1px solid #a7e0bb}
+.stamp-warn{background:#fdecec;color:#8c1c1c;border:1px solid #f3bdbc}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 18px;margin:0 0 18px}
+.meta div{min-width:0}
+.meta dt{margin:0;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:#6b7a94;font-weight:700}
+.meta dd{margin:3px 0 0;font-size:14.5px;font-weight:600;word-break:break-word}
+table.lines{width:100%;border-collapse:collapse;margin:0 0 14px}
+table.lines th{text-align:left;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#6b7a94;border-bottom:1.5px solid var(--brand);padding:0 0 8px}
+table.lines th.amt,table.lines td.amt{text-align:right;white-space:nowrap}
+table.lines td{padding:11px 0;border-bottom:1px solid #eef1f6;font-size:15px}
+table.lines tr.total td{border-bottom:0;border-top:2px double var(--brand);font-weight:800;font-size:17px;padding-top:12px}
+.words{margin:0 0 18px;font-size:13px;color:#41506b}
+.words b{color:#172033}
+.notes{margin:18px 0 0;font-size:12.5px;color:#5b6a85;line-height:1.6}
+.sign{display:flex;justify-content:space-between;gap:26px;margin-top:34px;flex-wrap:wrap}
+.sign div{min-width:210px}
+.sign .line{border-top:1px solid #9aa4b5;padding-top:6px;font-size:12px;color:#5b6a85}
+.receipt-foot{padding:13px 22px;background:var(--tint);border-top:1px solid #e8edf5;font-size:11.5px;color:#5b6a85;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+@media print{body{background:#fff}.sheet{margin:0;max-width:none;padding:0}.receipt{border:0;border-radius:0;box-shadow:none}}`;
+
+const RECEIPT_ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+  "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+const RECEIPT_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+
+/** Money in words, the way a receipt has always read it ("five thousand naira only"). */
+function receiptWordsUnder1000(value) {
+  const parts = [];
+  if (value >= 100) { parts.push(`${RECEIPT_ONES[Math.floor(value / 100)]} hundred`); value %= 100; }
+  if (value >= 20) parts.push(RECEIPT_TENS[Math.floor(value / 10)] + (value % 10 ? `-${RECEIPT_ONES[value % 10]}` : ""));
+  else if (value > 0) parts.push(RECEIPT_ONES[value]);
+  return parts.join(" ");
+}
+function receiptAmountInWords(value) {
+  const minor = Math.round(Math.abs(n(value)) * 100);
+  let whole = Math.floor(minor / 100);
+  const kobo = minor % 100;
+  const scales = ["", " thousand", " million", " billion", " trillion"];
+  const chunks = [];
+  let index = 0;
+  if (!whole) chunks.push("zero");
+  while (whole > 0 && index < scales.length) {
+    const chunk = whole % 1000;
+    if (chunk) chunks.unshift(receiptWordsUnder1000(chunk) + scales[index]);
+    whole = Math.floor(whole / 1000);
+    index++;
+  }
+  const naira = `${chunks.join(" ")} naira`;
+  return kobo ? `${naira}, ${receiptWordsUnder1000(kobo)} kobo` : naira;
+}
+
+router.get("/payments/:id/receipt", FINANCE_VIEW, asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const p = await db.get(
+    `SELECT fp.*, fi.name_en AS item_en, fi.name_ar AS item_ar,
+            s.admission_no, s.student_code, s.first_name, s.middle_name, s.last_name,
+            c.name_en AS class_name,
+            m.name_en AS institution_name, m.name_ar AS institution_name_ar,
+            m.logo_path, m.badge_path, m.motto_en, m.address, m.city, m.state_name,
+            m.phone, m.category, m.institution_type, m.brand_color,
+            u.full_name AS recorded_by_name
+       FROM fee_payments fp
+       JOIN students s ON s.id = fp.student_id AND s.madrasa_id = fp.madrasa_id
+       JOIN madaris m ON m.id = fp.madrasa_id
+       LEFT JOIN classes c ON c.id = s.class_id AND c.madrasa_id = s.madrasa_id
+       LEFT JOIN fee_items fi ON fi.id = fp.fee_item_id AND fi.madrasa_id = fp.madrasa_id
+       LEFT JOIN users u ON u.id = fp.recorded_by AND u.madrasa_id = fp.madrasa_id
+      WHERE fp.id = ? AND fp.madrasa_id = ?`,
+    [toNum(req.params.id, 0), tid]
+  );
+  const plain = (status, message) => res.status(status).type("html")
+    .send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Receipt</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eef2f8;color:#172033;font:16px/1.5 Arial,sans-serif}.box{width:min(420px,calc(100% - 32px));background:#fff;border:1px solid #dde5f0;border-radius:16px;padding:24px;text-align:center}p{margin:0}}</style></head><body><div class="box"><p>${print.escapeHtml(message)}</p></div></body></html>`);
+  if (!p) return plain(404, "That receipt is not in this school's records.");
+
+  // Staff need the finance permission; a family may only open their own record.
+  const staff = ["madrasa_admin", "teacher", "super_admin"].includes(req.user.role);
+  if (staff) {
+    if (!await can(req, "payments.view")) return plain(403, "You do not have permission to open this receipt.");
+  } else if (!await canSeeStudent(tid, req, p.student_id)) {
+    return plain(404, "That receipt is not in this school's records.");
+  }
+
+  const school = print.schoolIdentity(p);
+  const theme = print.documentTheme(school, {});
+  const studentName = [p.first_name, p.middle_name, p.last_name].filter(Boolean).join(" ") || "Student";
+  const status = String(p.status || "successful").toLowerCase();
+  const reversed = status === "reversed" || status === "refunded";
+  const amount = n(p.amount_ngn);
+  const money = `₦${amount.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const verification = String(p.verification_status || "unverified").replace(/_/g, " ");
+  const metaRows = [
+    ["Student", studentName],
+    ["Admission no.", p.admission_no || p.student_code || "—"],
+    ["Class", p.class_name || "—"],
+    ["Fee", p.item_en || "General payment"],
+    ["Payment date", p.payment_date ? print.dateLabel(String(p.payment_date).slice(0, 10)) : "—"],
+    ["Method", String(p.method || "cash").replace(/_/g, " ")],
+    ["Reference", p.reference || "—"],
+    ["Transaction no.", p.transaction_number || "—"],
+    ["Recorded by", p.recorded_by_name || "School office"],
+    ["Verification", verification],
+  ];
+  // The theme is carried on a wrapper so the same palette as the ID cards,
+  // certificates and report sheets reaches the receipt without a second design.
+  const body = `<div style="${print.themeStyle(theme)}"><div class="sheet"><article class="receipt">
+    <header class="receipt-head">
+      <div class="who">
+        ${school.badge || school.logo ? `<img src="${print.escapeHtml(school.badge || school.logo)}" alt="">` : `<span class="mono">${print.escapeHtml(String(school.name || "S").trim().slice(0, 1).toUpperCase() || "S")}</span>`}
+        <div><h1>${print.escapeHtml(school.name || "EduSphere")}</h1>
+          <p>${print.escapeHtml([school.address, school.phone].filter(Boolean).join(" · ") || school.motto || "")}</p></div>
+      </div>
+      <div class="tag"><strong>Payment receipt</strong><span>${print.escapeHtml(p.receipt_number || `PAY-${String(p.id).padStart(6, "0")}`)}</span></div>
+    </header>
+    <div class="receipt-body">
+      <span class="stamp ${reversed ? "stamp-warn" : "stamp-ok"}">${print.escapeHtml(reversed ? `${status} — not a valid receipt` : "Payment recorded")}</span>
+      <dl class="meta">${metaRows.map(([label, value]) => `<div><dt>${print.escapeHtml(label)}</dt><dd>${print.escapeHtml(value)}</dd></div>`).join("")}</dl>
+      <table class="lines">
+        <thead><tr><th>Description</th><th class="amt">Amount</th></tr></thead>
+        <tbody>
+          <tr><td>${print.escapeHtml(p.item_en || "General payment")}${p.item_ar ? ` · ${print.escapeHtml(p.item_ar)}` : ""}<br><small>${print.escapeHtml(String(p.method || "cash").replace(/_/g, " "))}${p.reference ? ` · ${print.escapeHtml(p.reference)}` : ""}</small></td><td class="amt">${print.escapeHtml(money)}</td></tr>
+          <tr class="total"><td>Total received</td><td class="amt">${print.escapeHtml(money)}</td></tr>
+        </tbody>
+      </table>
+      <p class="words"><b>Amount in words:</b> ${print.escapeHtml(receiptAmountInWords(amount))} only.</p>
+      <p class="notes">${reversed
+        ? `This payment was <b>${print.escapeHtml(status)}</b> and is no longer counted against the student's fees. Keep it only as a record of the original transaction.`
+        : `This receipt confirms money recorded against ${print.escapeHtml(studentName)}'s fees at ${print.escapeHtml(school.name || "the school")}. ${verification === "verified" || verification === "reconciled" ? "The payment has been checked against the school's records." : "It will be marked verified once the school reconciles it against its bank or cash record."}`}</p>
+      <div class="sign"><div class="line">Received by (bursar / accounts)</div><div class="line">Date</div></div>
+    </div>
+    <footer class="receipt-foot"><span>Printed ${print.escapeHtml(print.dateLabel(print.today()))} · ${print.escapeHtml(school.name || "")}</span><span>Keep this receipt for your records.</span></footer>
+  </article></div></div>`;
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(print.printShell(
+    `Receipt ${p.receipt_number || p.id} — ${studentName}`,
+    RECEIPT_CSS,
+    body,
+    { badge: "Fee receipt" }
+  ));
+}));
 router.delete("/payments/:id", requirePermission("payments.create"), asyncHandler(async(req,res)=>{const tid=await tenantId(req,res);if(tid==null)return;const r=await db.run("UPDATE fee_payments SET status='reversed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND madrasa_id=? AND status NOT IN ('refunded','reversed')",[toNum(req.params.id,0),tid]);if(!r.changes)return res.status(404).json({error:"Payment not found or already closed."});ok(res,{ok:true,reversed:true});}));
 
 /* --------------------- verification & reconciliation ------------------- */

@@ -25,6 +25,7 @@ const db = require("../db");
 const { logActivity } = require("../util");
 
 const HOLDER_TYPES = new Set(["student", "teacher"]);
+const STAFF_ROLE_LABELS = { teacher: "Teacher", madrasa_admin: "Administrator", super_admin: "Administrator" };
 const CODE_BYTES = 12;
 
 function newCode() {
@@ -136,13 +137,18 @@ async function lookupCard(code) {
 
   let holder = null;
   if (credential.holder_type === "teacher") {
+    // A staff card is printed for any active staff account, including one that
+    // has no teacher profile yet (an administrator, or a teacher added before
+    // their professional record). The profile is therefore a LEFT JOIN: a card
+    // that prints must verify at the gate, which is the whole point of the QR.
     holder = await db.get(
-      `SELECT u.id, u.full_name, u.is_active, p.staff_id, p.first_name, p.middle_name, p.last_name,
+      `SELECT u.id, u.full_name, u.username, u.role, u.is_active,
+              p.staff_id, p.first_name, p.middle_name, p.last_name,
               p.photo_path, p.position, p.department, p.status, p.education_track, p.employment_date,
               p.specialization
-         FROM teacher_profiles p
-         JOIN users u ON u.id = p.user_id AND u.madrasa_id = p.madrasa_id
-        WHERE p.madrasa_id = ? AND p.user_id = ?`,
+         FROM users u
+         LEFT JOIN teacher_profiles p ON p.user_id = u.id AND p.madrasa_id = u.madrasa_id
+        WHERE u.madrasa_id = ? AND u.id = ?`,
       [credential.madrasa_id, credential.holder_id]
     );
   } else {
@@ -171,8 +177,11 @@ function cardVerificationView(result) {
   const name = isTeacher
     ? [holder.first_name, holder.middle_name, holder.last_name].filter(Boolean).join(" ") || holder.full_name || ""
     : [holder.first_name, holder.middle_name, holder.last_name].filter(Boolean).join(" ");
+  // A staff member with no professional record row is active on their account
+  // status alone; one with a row must be active in both places.
+  const teacherStatus = holder.status || (Number(holder.is_active) === 1 ? "active" : "inactive");
   const holderActive = isTeacher
-    ? holder.status === "active" && Number(holder.is_active) === 1
+    ? teacherStatus === "active" && Number(holder.is_active) === 1
     : holder.status === "active" || holder.status === "promoted";
   const schoolActive = school.status === "active";
   const cardActive = credential.status === "active";
@@ -184,8 +193,10 @@ function cardVerificationView(result) {
     holderType: isTeacher ? "teacher" : "student",
     name,
     photoPath: holder.photo_path || "",
-    identifier: isTeacher ? holder.staff_id || "" : holder.admission_no || holder.student_code || "",
-    role: isTeacher ? holder.position || "Teacher" : "Student",
+    identifier: isTeacher
+      ? holder.staff_id || holder.username || `STAFF-${holder.id}`
+      : holder.admission_no || holder.student_code || "",
+    role: isTeacher ? holder.position || STAFF_ROLE_LABELS[holder.role] || "Staff" : "Student",
     department: isTeacher ? holder.department || "" : holder.class_name || "",
     meta: isTeacher
       ? (holder.session_label || "")
