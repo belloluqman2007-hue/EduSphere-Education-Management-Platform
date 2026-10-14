@@ -2263,11 +2263,10 @@
     bindRouteButtons(content);
   }
 
-  async function csrfToken() {
-    const res = await fetch(window.API.url("/csrf-token"), { credentials: "same-origin" });
-    const data = await res.json();
-    return data.csrfToken;
-  }
+  /* No raw network call lives in this file: every read and every write goes
+     through window.API (public/js/api.js), which attaches the CSRF token to
+     each state-changing call in one place. The scanner that posts to
+     /api/attendance/scan does the same for itself — see public/js/card-scanner.js. */
 
   /* ------------------------- certificate templates ------------------------
      The old editor was a textarea of raw HTML, which asked a school

@@ -40,6 +40,13 @@
    This file is loaded by the public verification page (no session) and by the
    signed-in dashboard, so it touches no app state beyond `window.API` when it
    is there.
+
+   A marking scan is a state-changing call, so it carries the session's CSRF
+   token exactly as public/js/api.js does: the token is fetched from
+   /api/csrf-token once, reused by every scanner block on the page, and
+   refreshed once if the server answers 403. The public verification page has no
+   session and only ever issues GETs, so it never asks for a token at all — the
+   page a stranger's phone opens still works with nothing but the code.
    ========================================================================== */
 (function () {
   const CODE_PATTERN = /(?:https?:\/\/[^\s"']+\/verify\/(?:card\/|certificate\/)?|code[:\s]+)?([a-z0-9][a-z0-9-]{5,63})/i;
@@ -72,6 +79,83 @@
     if (!clean) return "";
     if (window.API && typeof window.API.url === "function") return window.API.url(clean);
     return /^https?:/i.test(clean) ? clean : `/api${clean.startsWith("/") ? "" : "/"}${clean}`;
+  }
+
+  /**
+   * A block's endpoint is written one of three ways: an absolute URL, the API's
+   * own path ("/api/attendance/scan", what the dashboards emit today), or an
+   * API-relative path. Resolve all three to the same place apiUrl() would —
+   * without ever turning "/api/attendance/scan" into "/api/api/attendance/scan".
+   */
+  function endpointUrl(path) {
+    const clean = String(path || "");
+    if (!clean) return "";
+    if (/^https?:/i.test(clean) || clean.startsWith("/api/")) return clean;
+    return apiUrl(clean);
+  }
+
+  /* ------------------------------ CSRF -----------------------------------
+     The marking call goes straight to the API with fetch (the scanner has to
+     read the server's own status, and window.API is absent on the public
+     verification page), so it must present the session's double-submit token
+     itself — every POST without it is answered 403 by the server's CSRF guard.
+     One token per page load, shared by every scanner block, refreshed once if
+     the session's token has moved on (a tab left open, a server restart).
+  ------------------------------------------------------------------------- */
+  let csrfToken = null;
+  let csrfPending = null;
+
+  /** Reads the double-submit token; "" when the caller has no session to prove. */
+  function readCsrfToken() {
+    if (window.API && typeof window.API.get === "function") {
+      return window.API.get("/csrf-token")
+        .then((data) => (data && data.csrfToken) || "")
+        .catch(() => "");
+    }
+    return fetch(apiUrl("/csrf-token"), { credentials: "same-origin", headers: { Accept: "application/json" } })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => (data && data.csrfToken) || "")
+      .catch(() => "");
+  }
+
+  function csrfEnsure(force) {
+    if (force) { csrfToken = null; csrfPending = null; }
+    if (csrfToken) return Promise.resolve(csrfToken);
+    if (!csrfPending) {
+      csrfPending = readCsrfToken().then((token) => {
+        csrfToken = token || "";
+        csrfPending = null;
+        return csrfToken;
+      });
+    }
+    return csrfPending;
+  }
+
+  /**
+   * POST a JSON body with the CSRF token attached, retrying the request exactly
+   * once with a fresh token when the server says the old one went stale. The
+   * caller still sees the response, so the server's own message reaches the
+   * operator when the retry does not help either.
+   */
+  async function postJson(path, body) {
+    const url = endpointUrl(path);
+    const attempt = async (token) => {
+      const headers = { "Content-Type": "application/json", Accept: "application/json" };
+      if (token) headers["X-CSRF-Token"] = token;
+      return fetch(url, {
+        method: "POST",
+        headers,
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+      });
+    };
+    const response = await attempt(await csrfEnsure(false));
+    if (response.status !== 403) return response;
+    // 403 on a request that carried a token means the token is no longer the
+    // session's (expired, signed in elsewhere, server restarted). Ask once for
+    // the current one and try again; a second 403 is reported as it stands.
+    const retryToken = await csrfEnsure(true);
+    return retryToken ? attempt(retryToken) : response;
   }
 
   /* The software QR reader is fetched the first time a camera needs it, so a
@@ -328,12 +412,7 @@
           // when the block asks for it on every scan, or when an action button is
           // pressed.
           if (opts.mark !== true && !markAuto) body.mark = false;
-          const response = await fetch(markEndpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            credentials: "same-origin",
-            body: JSON.stringify(body),
-          });
+          const response = await postJson(markEndpoint, body);
           const data = await response.json().catch(() => null);
           if (!response.ok) {
             fail((data && data.error) || "That card could not be checked. Try again.");
