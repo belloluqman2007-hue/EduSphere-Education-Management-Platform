@@ -65,7 +65,7 @@ dd{margin:3px 0 0;font-size:15px;font-weight:600;word-break:break-word}
 button,.btn{appearance:none;border:0;border-radius:11px;padding:11px 14px;font:700 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:7px;background:#1f3154;color:#fff}
 button.ghost,.btn.ghost{background:#eef2f9;color:#1f3154;border:1px solid #d5dfec}
 input[type=text]{flex:1;min-width:150px;padding:11px 12px;border:1px solid #cfd9e8;border-radius:11px;font:600 15px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;background:#fff;color:#152033}
-video{width:100%;border-radius:14px;background:#0b1830;display:block;margin-top:10px}
+video{width:100%;border-radius:14px;background:#0b1830;display:block;margin-top:10px}.scan-viewport{position:relative;width:100%;max-width:360px;aspect-ratio:4/3;max-height:min(56vh,290px);margin:12px auto 0;overflow:hidden;border-radius:14px;background:#0b1220}.scan-viewport video{position:absolute;inset:0;width:100%;height:100%;margin:0;object-fit:cover}.scan-frame{position:absolute;left:50%;top:46%;width:56%;aspect-ratio:1/1;transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.92);border-radius:14px;box-shadow:0 0 0 999px rgba(6,12,24,.32);pointer-events:none}.scan-status{position:absolute;left:0;right:0;bottom:0;margin:0;padding:16px 10px 8px;text-align:center;font:700 12.5px/1.3 Arial,sans-serif;color:#fff;background:linear-gradient(to top,rgba(0,0,0,.65),rgba(0,0,0,0))}
 .hint{margin:9px 0 0;font-size:12.5px;color:#6b7a94}
 .err{margin:9px 0 0;color:#8c1c1c;font-size:13px;font-weight:600}
 .foot{margin:14px 0 0;font-size:12px;color:#6b7a94;text-align:center;max-width:520px}

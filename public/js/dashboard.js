@@ -2187,9 +2187,9 @@
       const host = content.querySelector("#idCardScanner");
       host.innerHTML = `<div class="dash-card-head"><h3>Check a card</h3><span class="hint">Camera or typed code</span></div>
         <div class="dash-card-pad">
-          <p class="hint">Point a camera at the QR on the back of the card, or type the code printed under it. The card is matched against this school's live register — and a learner can be marked present here without leaving the screen.</p>
+          <p class="hint">Hold the QR on the back of a card in front of the camera. It is checked the moment it is read, and the holder's details appear below. You can also type the code printed under the QR.</p>
           <div class="row" data-scanner data-endpoint="/api/public/card/" data-mark-endpoint="/api/attendance/scan">
-            <input type="text" name="code" autocomplete="off" spellcheck="false" placeholder="Card code" aria-label="Card code" style="flex:1;min-width:150px;padding:9px 11px;border:1px solid #cfd9e8;border-radius:10px;font:600 14px/1.2 ui-monospace,Menlo,Consolas,monospace;text-transform:uppercase">
+            <input type="text" name="code" autocomplete="off" spellcheck="false" placeholder="Card code" aria-label="Card code">
             <button type="button" class="dash-btn dash-btn-primary dash-btn-sm" data-scanner-open>Scan with camera</button>
             <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-check>Check</button>
           </div>
@@ -2916,9 +2916,9 @@
       host.innerHTML = `<div class="dash-card" style="border:1px dashed var(--d-line)">
         <div class="dash-card-head"><h3>Check a card</h3><span class="hint">Camera or typed code</span></div>
         <div class="dash-card-pad">
-          <p class="hint">Point the camera at the QR code on the card, or type the code printed under it. The holder is marked <strong>${esc(status)}</strong> for ${esc(dayInput.value || todayIso())}.</p>
+          <p class="hint">Hold each card's QR in front of the camera. The holder is checked and marked <strong>${esc(status)}</strong> for ${esc(dayInput.value || todayIso())} automatically, and their details appear below. You can also type the code printed under the QR.</p>
           <div class="row" data-scanner data-mark-endpoint="/api/attendance/scan" data-mark-auto="1" data-mark-status="${esc(status)}" data-scan-date="${esc(dayInput.value)}"${sequentialInput.checked ? ' data-sequential="1"' : ""}>
-            <input type="text" name="code" autocomplete="off" spellcheck="false" placeholder="Card code" aria-label="Card code" style="flex:1;min-width:150px;padding:9px 11px;border:1px solid #cfd9e8;border-radius:10px;font:600 14px/1.2 ui-monospace,Menlo,Consolas,monospace;text-transform:uppercase">
+            <input type="text" name="code" autocomplete="off" spellcheck="false" placeholder="Card code" aria-label="Card code">
             <button type="button" class="dash-btn dash-btn-primary dash-btn-sm" data-scanner-open>Scan with camera</button>
             <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-check>Check</button>
           </div>

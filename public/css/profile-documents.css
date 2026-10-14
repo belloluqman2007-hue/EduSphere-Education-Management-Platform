@@ -182,9 +182,75 @@
 }
 
 /* --------------------------- scanner (camera) block ---------------------- */
-[data-scanner] { position: relative; }
-[data-scanner].is-scanning { display: grid; gap: 8px; }
-[data-scanner] video { border-radius: 14px; }
+[data-scanner] {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-scanner] input[name=code] {
+  flex: 1 1 180px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid #cfd9e8;
+  border-radius: 10px;
+  background: #fff;
+  color: #152033;
+  font: 600 14px/1.2 ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+[data-scanner] .dash-btn { white-space: nowrap; }
+/* The camera is a framed window, never the full size of the sensor: it stays
+   a phone-sized square-ish preview under the controls on every screen. */
+.scan-viewport {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  aspect-ratio: 4 / 3;
+  max-height: min(56vh, 290px);
+  margin: 12px auto 0;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #0b1220;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .18);
+}
+.scan-viewport video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  object-fit: cover;
+  display: block;
+}
+.scan-frame {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 56%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, .92);
+  border-radius: 14px;
+  box-shadow: 0 0 0 999px rgba(6, 12, 24, .32);
+  pointer-events: none;
+}
+.scan-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 16px 10px 8px;
+  text-align: center;
+  font: 700 12.5px/1.3 Arial, sans-serif;
+  color: #fff;
+  background: linear-gradient(to top, rgba(0, 0, 0, .65), rgba(0, 0, 0, 0));
+}
 .scan-result {
   margin-top: 10px;
   padding: 12px 14px;
@@ -195,11 +261,15 @@
 .scan-result-ok { border-color: #a7e0bb; background: #f2fbf5; }
 .scan-result-bad { border-color: #f3bdbc; background: #fef5f5; }
 .scan-result-warn { border-color: #f2d79b; background: #fffaf0; }
-.scan-result-title { margin: 0 0 8px; font-weight: 700; }
+.scan-result-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; min-width: 0; }
+.scan-result-head .pp-avatar { flex: 0 0 auto; }
+.scan-result-headline { min-width: 0; }
+.scan-result-title { margin: 0 0 4px; font-weight: 700; overflow-wrap: anywhere; }
 .scan-result dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 14px; }
 .scan-result dt { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dash-muted, #667085); font-weight: 700; }
-.scan-result dd { margin: 2px 0 0; font-weight: 600; }
-.scan-result .dash-btn { margin-top: 10px; }
+.scan-result dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.scan-result .dash-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.scan-result .dash-btn { margin-top: 0; }
 
 /* --------------------------- ID card workspace -------------------------- */
 .idc-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -233,7 +303,24 @@
 .idc-code { font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em; }
 .idc-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 1000px) {
-  .idc-grid { grid-template-columns: 1fr; }
+  .idc-grid { grid-template-columns: minmax(0, 1fr); }
+  .idc-grid > *, .idc-side > * { min-width: 0; }
+}
+@media (max-width: 720px) {
+  .idc-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .idc-tab { text-align: center; padding: 10px 12px; }
+  .idc-grid, .idc-side { gap: 12px; }
+  #idCardBuilder .dash-card-pad, #idCardScanner .dash-card-pad, #idCardRegistry .dash-card-pad { padding: 14px; }
+  #idCardBuilder .dash-card-head, #idCardScanner .dash-card-head, #idCardRegistry .dash-card-head { flex-wrap: wrap; gap: 4px 10px; }
+  #idCardBuilder .dash-card-head .hint, #idCardScanner .dash-card-head .hint, #idCardRegistry .dash-card-head .hint { white-space: normal; }
+  #idCardScanner [data-scanner] input[name=code] { flex-basis: 100%; }
+  #idCardScanner [data-scanner] .dash-btn { flex: 1 1 calc(50% - 4px); justify-content: center; }
+  #idCardBuilder .dash-actions .dash-btn, #idCardBuilder .dash-actions a { flex: 1 1 100%; justify-content: center; }
+  .idc-card-table .dash-table { min-width: 560px; }
+}
+@media (max-width: 420px) {
+  .scan-result-head { align-items: flex-start; }
+  .scan-result dl { grid-template-columns: 1fr; }
 }
 
 /* ------------------------- certificate designer --------------------------
