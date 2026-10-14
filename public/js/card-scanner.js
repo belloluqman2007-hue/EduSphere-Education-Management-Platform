@@ -2,20 +2,19 @@
 /* ============================================================================
    EduSphere — camera verification and marking (scan a card, act on it)
    ----------------------------------------------------------------------------
-   The printed QR on a card is only useful if a phone can read it and the person
-   on the other side can DO something with the answer. Two paths, one module:
+   The printed QR on a card is only useful if a camera can read it and the
+   person on the other side can DO something with the answer. Two paths, one
+   module:
 
-     1. The camera decodes the QR. `BarcodeDetector` is built into Chrome, Edge,
-        Android WebView and Safari 17+ — no library, no WASM download, nothing
-        to fail on a school's flaky connection. It is also the only browser API
-        that decodes video at reasonable speed.
-     2. Where it is not available (older browsers, a desktop with no camera, or a
-        lens that cannot focus on a scratched card) the code printed under the
-        QR is typed in. Both routes end at the same answer, so nothing depends
-        on which one you used.
-
-   There is no fallback to a remote decoding service on purpose: a stranger's
-   API must never be handed a photograph of a child's face.
+     1. The camera reads the QR by itself, with no button to press. Chrome,
+        Edge and Android use the browser's built-in `BarcodeDetector`. Where it
+        is missing (Safari and iPhone, most Linux browsers) the bundled jsQR
+        decoder (public/js/vendor/jsqr.js, loaded only when needed) reads the
+        same frames in software. Nothing is sent to a remote decoding service:
+        a stranger's API must never be handed a photograph of a child's face.
+     2. Where no camera is available, or it cannot focus on a scratched card,
+        the code printed under the QR is typed in. Both routes end at the same
+        answer, so nothing depends on which one you used.
 
    What a block can do, from its attributes:
 
@@ -30,10 +29,13 @@
      data-scanner-result                           where the answer is rendered
      data-scanner-error                            where a message is rendered
 
-   The marking answer renders inline — the holder's name, class, whether they
-   were already marked, how many learners are still unmarked today — with the
-   actions a gate needs: mark late, excused or absent, open the public
-   verification page, print the card again. No screen is left without a path.
+   A successful read is checked at once: the holder's photo, name, class and
+   whether they were already marked appear in the result, with the actions a
+   gate needs (mark late, excused or absent, open the public verification page,
+   print the card again). No screen is left without a path.
+
+   The camera is shown inside a small framed viewport that sits under the
+   controls, never at the full size of the sensor, so it stays usable on a phone.
 
    This file is loaded by the public verification page (no session) and by the
    signed-in dashboard, so it touches no app state beyond `window.API` when it
@@ -42,6 +44,12 @@
 (function () {
   const CODE_PATTERN = /(?:https?:\/\/[^\s"']+\/verify\/(?:card\/|certificate\/)?|code[:\s]+)?([a-z0-9][a-z0-9-]{5,63})/i;
   const STATUS_LABELS = { present: "present", late: "late", excused: "excused", absent: "absent" };
+  const JSQR_SRC = "/js/vendor/jsqr.js";
+  const FRAME_MAX_WIDTH = 720;      // decode at most this wide; enough for a printed QR, cheap on a phone
+  const SCAN_INTERVAL_MS = 120;     // time between frames while the camera is looking
+  const SAME_CARD_QUIET_MS = 5000;  // a card held in front of the lens is read once, not on every frame
+  const RESUME_AFTER_MARK_MS = 1400;
+  const RESUME_AFTER_FAILURE_MS = 2000;
 
   function qrPayloadToCode(text) {
     const match = CODE_PATTERN.exec(String(text || "").trim());
@@ -66,6 +74,45 @@
     return /^https?:/i.test(clean) ? clean : `/api${clean.startsWith("/") ? "" : "/"}${clean}`;
   }
 
+  /* The software QR reader is fetched the first time a camera needs it, so a
+     page that never scans (most of them) never downloads it. */
+  let jsQrLoading = null;
+  function loadJsQr() {
+    if (typeof window.jsQR === "function") return Promise.resolve(window.jsQR);
+    if (!jsQrLoading) {
+      jsQrLoading = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = JSQR_SRC;
+        script.async = true;
+        script.onload = () => (typeof window.jsQR === "function" ? resolve(window.jsQR) : reject(new Error("jsQR did not load")));
+        script.onerror = () => { jsQrLoading = null; script.remove(); reject(new Error("jsQR did not load")); };
+        document.head.appendChild(script);
+      });
+    }
+    return jsQrLoading;
+  }
+
+  /** Calls that a browser may not implement (media playback in a test DOM) must never break a scan. */
+  function quietly(fn) { try { const result = fn(); if (result && typeof result.catch === "function") result.catch(() => {}); } catch (e) { /* ignored */ } }
+
+  /**
+   * The error line and the result panel are written beside the controls, not
+   * inside the block (the block is only the input and its buttons). Look inside
+   * the block first, then at the siblings that follow it, stopping before the
+   * next scanner so one block never claims another's panel.
+   */
+  function companion(block, selector) {
+    const inside = block.querySelector(selector);
+    if (inside) return inside;
+    for (let node = block.nextElementSibling; node; node = node.nextElementSibling) {
+      if (node.matches(selector)) return node;
+      if (node.matches("[data-scanner]") || node.querySelector("[data-scanner]")) break;
+      const found = node.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  }
+
   /**
    * One scanner instance per [data-scanner] block. Created lazily so the page
    * works with scripting blocked: the input, the Check button and the printed
@@ -75,8 +122,8 @@
     const input = block.querySelector("input[name=code]");
     const openButton = block.querySelector("[data-scanner-open]");
     const checkButton = block.querySelector("[data-scanner-check]");
-    const errorNode = block.querySelector("[data-scanner-error]");
-    const resultNode = block.querySelector("[data-scanner-result]");
+    const errorNode = companion(block, "[data-scanner-error]");
+    const resultNode = companion(block, "[data-scanner-result]");
     const endpoint = block.getAttribute("data-endpoint") || "";
     const markEndpoint = block.getAttribute("data-mark-endpoint") || "";
     const markAuto = block.getAttribute("data-mark-auto") === "1";
@@ -86,11 +133,16 @@
     const redirect = block.getAttribute("data-redirect") === "1";
     const idleLabel = openButton ? String(openButton.textContent || "Scan with camera").trim() : "Scan with camera";
     let stream = null;
-    let raf = 0;
-    let detector = null;
-    let stopped = false;
-    let lastStatus = markStatus;
+    let viewport = null;      // the framed camera, inserted under the controls while scanning
+    let scanTimer = 0;
     let resumeTimer = 0;
+    let reader = null;        // async (video) => raw QR text, or "" when nothing is in frame
+    let session = 0;          // bumped by every start and stop, so late async work knows it is stale
+    let stopped = true;
+    let autoResume = false;   // the operator asked for the camera; keep it going after a read or a miss
+    let lastStatus = markStatus;
+    let lastCode = "";
+    let lastReadAt = 0;
 
     const say = (message) => {
       if (!errorNode) return;
@@ -98,56 +150,92 @@
       errorNode.hidden = !message;
     };
 
+    const setStatus = (text) => {
+      const node = viewport && viewport.querySelector(".scan-status");
+      if (node) node.textContent = text || "";
+    };
+
     function stop() {
+      session += 1;
       stopped = true;
-      if (raf) cancelAnimationFrame(raf);
-      raf = 0;
+      if (scanTimer) { window.clearTimeout(scanTimer); scanTimer = 0; }
       if (resumeTimer) { window.clearTimeout(resumeTimer); resumeTimer = 0; }
       if (stream) stream.getTracks().forEach((track) => track.stop());
       stream = null;
-      const video = block.querySelector("video");
-      if (video) { video.pause(); video.srcObject = null; video.remove(); }
+      if (viewport) {
+        const video = viewport.querySelector("video");
+        if (video) { quietly(() => video.pause()); video.srcObject = null; }
+        viewport.remove();
+        viewport = null;
+      }
       block.classList.remove("is-scanning");
       if (openButton) { openButton.textContent = idleLabel; delete openButton.dataset.scannerRunning; }
     }
 
-    async function scanLoop(video) {
-      if (stopped) return;
+    /** Picks the fastest reader this browser can offer; null when there is none. */
+    async function prepareReader() {
+      if (supportsDetection()) {
+        try {
+          const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+          return async (video) => {
+            const codes = await detector.detect(video);
+            return codes && codes[0] ? codes[0].rawValue : "";
+          };
+        } catch (e) { /* fall through to the software reader */ }
+      }
       try {
-        const codes = await detector.detect(video);
-        if (codes && codes.length) {
-          const code = qrPayloadToCode(codes[0].rawValue);
-          if (code) {
-            stop();
-            if (input) input.value = code;
-            finish(code, { fromCamera: true });
-            return;
-          }
-        }
-      } catch (e) { /* a dropped frame is not an error worth showing */ }
-      raf = requestAnimationFrame(() => scanLoop(video));
+        const jsQR = await loadJsQr();
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return null;
+        return async (video) => {
+          if (!video.videoWidth || !video.videoHeight) return "";
+          const scale = Math.min(1, FRAME_MAX_WIDTH / video.videoWidth);
+          const width = Math.max(1, Math.round(video.videoWidth * scale));
+          const height = Math.max(1, Math.round(video.videoHeight * scale));
+          canvas.width = width;
+          canvas.height = height;
+          context.drawImage(video, 0, 0, width, height);
+          const pixels = context.getImageData(0, 0, width, height);
+          const found = jsQR(pixels.data, width, height, { inversionAttempts: "dontInvert" });
+          return found && found.data ? found.data : "";
+        };
+      } catch (e) {
+        return null;
+      }
     }
 
+    /** Reads frames until a card code appears, then hands it to finish() at once. */
+    async function scanLoop(video, mine) {
+      if (stopped || mine !== session) return;
+      let raw = "";
+      try { raw = await reader(video); } catch (e) { raw = ""; }
+      if (stopped || mine !== session) return;
+      const code = raw ? qrPayloadToCode(raw) : "";
+      const now = Date.now();
+      if (code && !(code === lastCode && now - lastReadAt < SAME_CARD_QUIET_MS)) {
+        lastCode = code;
+        lastReadAt = now;
+        stop();
+        try { if (navigator.vibrate) navigator.vibrate(40); } catch (e) { /* not supported */ }
+        if (input) input.value = code;
+        finish(code, { fromCamera: true });
+        return;
+      }
+      scanTimer = window.setTimeout(() => scanLoop(video, mine), SCAN_INTERVAL_MS);
+    }
+
+    /** Opens the camera. Callers clear any message they own; a resume keeps the last one visible. */
     async function start() {
-      say("");
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         say("This browser cannot open a camera. Type the code printed under the QR instead.");
         if (input) input.focus();
         return;
       }
-      if (!supportsDetection()) {
-        // The camera can still be shown so the person can read the code off the
-        // screen and type it; that is honest and useful, unlike a silent failure.
-        say("Automatic QR reading is not available here, so the camera preview helps you read the code printed under the QR.");
-      }
-      if (typeof window.BarcodeDetector === "function") {
-        try {
-          detector = await new window.BarcodeDetector({ formats: ["qr_code"] });
-        } catch (e) {
-          detector = null;
-          say("The camera QR reader could not start. Type the code instead.");
-        }
-      }
+      const mine = ++session;
+      stopped = false;
+      if (openButton) { openButton.textContent = "Starting camera…"; openButton.dataset.scannerRunning = "1"; }
+      const readerReady = prepareReader();
       let next;
       try {
         next = await navigator.mediaDevices.getUserMedia({
@@ -155,6 +243,8 @@
           video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         });
       } catch (error) {
+        if (mine !== session) return;
+        stop();
         const denied = error && (error.name === "NotAllowedError" || error.name === "SecurityError");
         say(denied
           ? "Camera permission was declined. Allow it in your browser, or type the code printed under the QR."
@@ -162,26 +252,49 @@
         if (input) input.focus();
         return;
       }
+      if (mine !== session) { next.getTracks().forEach((track) => track.stop()); return; }
       stream = next;
-      stopped = false;
+      reader = await readerReady;
+      if (mine !== session) return;
+      if (!reader) {
+        say("Automatic QR reading is not available on this device. Type the code printed under the QR.");
+      }
+
+      viewport = document.createElement("div");
+      viewport.className = "scan-viewport";
       const video = document.createElement("video");
       video.setAttribute("playsinline", "");
       video.setAttribute("muted", "");
       video.autoplay = true;
       video.muted = true;
-      video.srcObject = stream;
-      block.appendChild(video);
+      const frame = document.createElement("span");
+      frame.className = "scan-frame";
+      frame.setAttribute("aria-hidden", "true");
+      const status = document.createElement("p");
+      status.className = "scan-status";
+      status.setAttribute("role", "status");
+      status.textContent = reader ? "Hold the QR code inside the frame" : "Type the code printed under the QR";
+      viewport.append(video, frame, status);
+      block.insertAdjacentElement("afterend", viewport);
       block.classList.add("is-scanning");
       if (openButton) { openButton.textContent = "Stop camera"; openButton.dataset.scannerRunning = "1"; }
+
       video.addEventListener("loadedmetadata", () => {
-        if (detector && supportsDetection()) {
-          scanLoop(video);
-        } else {
-          // Manual mode: let the person read the code from the live preview.
-          say("Line the QR up in the frame, then type the code it shows if it will not read automatically.");
-        }
+        if (mine !== session) return;
+        quietly(() => video.play());
+        if (reader) scanLoop(video, mine);
       }, { once: true });
-      video.addEventListener("error", () => stop(), { once: true });
+      video.addEventListener("error", () => { if (mine === session) stop(); }, { once: true });
+      video.srcObject = stream;
+    }
+
+    /** Starts the camera again after a read or a miss, but only if the operator still wants it on. */
+    function scheduleResume(delay) {
+      if (resumeTimer) window.clearTimeout(resumeTimer);
+      resumeTimer = window.setTimeout(() => {
+        resumeTimer = 0;
+        if (autoResume && stopped) start();
+      }, delay);
     }
 
     /**
@@ -193,14 +306,20 @@
       const opts = options || {};
       say("");
       const value = String(rawCode || (input && input.value) || "").trim().toLowerCase();
+      const fail = (message) => {
+        say(message);
+        // A camera that reads something that is not a card keeps looking.
+        if (opts.fromCamera && autoResume) scheduleResume(RESUME_AFTER_FAILURE_MS);
+      };
       if (!/^[a-z0-9][a-z0-9-]{5,63}$/.test(value)) {
-        say("That is not a card code. Codes are the 24 characters printed under the QR.");
-        if (input) input.focus();
+        fail("That is not a card code. Codes are the 24 characters printed under the QR.");
+        if (!opts.fromCamera && input) input.focus();
         return;
       }
 
       if (markEndpoint) {
         if (checkButton) checkButton.disabled = true;
+        if (opts.fromCamera && resultNode) resultNode.innerHTML = '<p class="hint scan-checking">Card read. Checking it now…</p>';
         try {
           const body = { code: value };
           if (lastStatus) body.status = lastStatus;
@@ -217,18 +336,16 @@
           });
           const data = await response.json().catch(() => null);
           if (!response.ok) {
-            say((data && data.error) || "That card could not be checked. Try again.");
+            fail((data && data.error) || "That card could not be checked. Try again.");
             return;
           }
           renderResult(resultNode, data, { canMark: true, code: value });
           // Listeners (a gate log, a counter, a sound) can react to every scan
           // without this module knowing anything about them.
           block.dispatchEvent(new CustomEvent("eduscanner:result", { detail: data, bubbles: true }));
-          if (sequential && data && data.marked) {
-            resumeTimer = window.setTimeout(() => { resumeTimer = 0; start(); }, 1400);
-          }
+          if (sequential && data && data.marked) scheduleResume(RESUME_AFTER_MARK_MS);
         } catch (error) {
-          say("The check could not be completed. Check the connection and scan again.");
+          fail("The check could not be completed. Check the connection and scan again.");
         } finally {
           if (checkButton) checkButton.disabled = false;
         }
@@ -242,7 +359,7 @@
         const response = await fetch(endpoint + encodeURIComponent(value), { headers: { Accept: "application/json" }, credentials: "omit" });
         const data = await response.json().catch(() => null);
         if (!response.ok) {
-          say((data && data.error) || "No card matches that code. Check it and try again.");
+          fail((data && data.error) || "No card matches that code. Check it and try again.");
           return;
         }
         // A check inside an app panel renders the answer inline rather than
@@ -253,13 +370,13 @@
         }
         window.location.href = `/verify/${encodeURIComponent(value)}`;
       } catch (error) {
-        say("The check could not be completed. Check the connection and try again.");
+        fail("The check could not be completed. Check the connection and try again.");
       } finally {
         if (checkButton) checkButton.disabled = false;
       }
     }
 
-    /** The answer, as a card a gatekeeper can read at arm's length. */
+    /** The answer, as a card a gatekeeper can read at arm's length, with the holder's photo. */
     function renderResult(node, data, options) {
       if (!node) return;
       const opts = options || {};
@@ -281,6 +398,9 @@
         ? (data.alreadyMarked ? `Already marked ${STATUS_LABELS[data.attendance && data.attendance.status] || ""}` : `Marked ${STATUS_LABELS[data.attendance && data.attendance.status] || ""}`)
         : (tone === "ok" ? "Card is valid" : tone === "bad" ? "Card cancelled" : "Check the details");
       const symbol = marked ? "✓" : tone === "ok" ? "✓" : tone === "bad" ? "✕" : "!";
+      const portrait = window.EduProfile && typeof window.EduProfile.avatarHtml === "function"
+        ? window.EduProfile.avatarHtml({ photoPath: card.photoPath, name: card.name }, { size: "sm" })
+        : "";
       const actions = [];
       if (opts.canMark && card.valid) {
         for (const status of ["present", "late", "excused", "absent"]) {
@@ -293,8 +413,10 @@
         actions.push(`<a class="dash-btn dash-btn-ghost dash-btn-sm" href="${esc(apiUrl(data.printPath))}" target="_blank" rel="noopener">Print this card</a>`);
       }
       node.innerHTML = `<div class="scan-result scan-result-${marked ? "ok" : tone}">
-        <p class="scan-result-title">${symbol} ${esc(headline)}</p>
-        ${data.message ? `<p class="hint" style="margin:0 0 8px">${esc(data.message)}</p>` : ""}
+        <div class="scan-result-head">${portrait}<div class="scan-result-headline">
+          <p class="scan-result-title">${symbol} ${esc(headline)}</p>
+          ${data.message ? `<p class="hint" style="margin:0">${esc(data.message)}</p>` : ""}
+        </div></div>
         <dl>${rows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
         <div class="dash-actions" style="margin-top:10px">${actions.join("")}</div></div>`;
       node.querySelectorAll("[data-scan-mark]").forEach((button) => {
@@ -306,8 +428,14 @@
     }
 
     if (openButton) openButton.addEventListener("click", () => {
-      if (openButton.dataset.scannerRunning === "1") stop();
-      else start();
+      if (openButton.dataset.scannerRunning === "1") {
+        autoResume = false;
+        stop();
+        return;
+      }
+      autoResume = true;
+      say("");
+      start();
     });
     if (checkButton) checkButton.addEventListener("click", () => finish(input ? input.value : ""));
     if (input) input.addEventListener("keydown", (event) => {
@@ -392,8 +520,8 @@
           </div>
           <hr class="dash-hr" style="margin:16px 0">
           <p class="hint">Anyone who scans this QR sees only what is printed on the card — your name, class and whether the card is still live. Nothing else is revealed, and the link never expires.</p>
-          <div class="row" data-scanner data-endpoint="/api/public/card/">
-            <input type="text" name="code" value="${escapeText(credential.code)}" autocomplete="off" spellcheck="false" aria-label="Card code" style="flex:1;min-width:140px;padding:9px 11px;border:1px solid #cfd9e8;border-radius:10px;font:600 14px/1.2 ui-monospace,Menlo,Consolas,monospace">
+          <div data-scanner data-endpoint="/api/public/card/">
+            <input type="text" name="code" value="${escapeText(credential.code)}" autocomplete="off" spellcheck="false" aria-label="Card code">
             <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-open>Scan with camera</button>
             <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-scanner-check>Check it</button>
           </div>
@@ -413,5 +541,5 @@
   const escapeText = (value) => String(value === null || value === undefined ? "" : value)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-  window.EduScanner = { attachCardPanel, boot, enhance, initAll, qrPayloadToCode, supportsDetection };
+  window.EduScanner = { attachCardPanel, boot, enhance, initAll, qrPayloadToCode, supportsDetection, loadJsQr };
 })();
