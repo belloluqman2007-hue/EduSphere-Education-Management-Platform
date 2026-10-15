@@ -12,6 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
+const util = require("./util");
 
 let driver = null;
 
@@ -128,9 +129,14 @@ async function connectMysql() {
   });
   let pool;
   if (config.DATABASE_URL) {
+    // Say which database this process is about to use, every boot — when the
+    // connection then fails (or points at the wrong server), the log shows the
+    // target it tried, with the password masked. See also util.maskDbUrl.
+    console.log("Database: mysql — " + util.maskDbUrl(config.DATABASE_URL));
     pool = mysql.createPool(Object.assign({ uri: config.DATABASE_URL }, poolOpts));
   } else {
     const { host, port, user, password, name } = config.DB_CONFIG;
+    console.log("Database: mysql — " + [host + ":" + port, name].filter(Boolean).join("/"));
     pool = mysql.createPool(Object.assign({ host, port, user, password, database: name }, poolOpts));
   }
 

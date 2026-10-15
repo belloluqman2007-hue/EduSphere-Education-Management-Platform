@@ -53,8 +53,8 @@ const AUDITED_DIALECT_BRANCHES = new Set([
   // db.js — sqlite connect-time PRAGMAs (synchronous=NORMAL, busy_timeout);
   // they sit inside connectSqlite — the sqlite branch of the dialect fork —
   // but the explanatory comment pushes them past the twin-detection window
-  "server/db.js:40",
-  "server/db.js:43",
+  "server/db.js:41",
+  "server/db.js:44",
   // fees.js — fee upsert, dialect ternary on the same statement pair
   "server/routes/fees.js:98",
   "server/routes/fees.js:100",
