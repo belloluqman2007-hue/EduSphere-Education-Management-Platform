@@ -2928,6 +2928,50 @@ const MIGRATIONS = [
     // knowledge base is what keeps the model grounded (and cheap).
     id: "043_edusphere_ai_assistant",
     up: async (api, dialect) => {
+      // MySQL DDL commits independently: a failed later statement leaves these
+      // indexes behind without a schema_migrations row. Verify their definitions
+      // before reusing them; never swallow duplicate-key errors or drop indexes.
+      // Identifiers below are fixed migration constants, never user input.
+      const ensureIndex = async (table, name, columns) => {
+        const inspect = async () => {
+          if (dialect === "mysql") {
+            const rows = await api.all(`SHOW INDEX FROM \`${table}\` WHERE Key_name = ?`, [name]);
+            rows.sort((a, b) => Number(a.Seq_in_index) - Number(b.Seq_in_index));
+            return {
+              exists: rows.length > 0,
+              valid: rows.length === columns.length && rows.every((r, i) =>
+                r.Table === table && r.Key_name === name && r.Column_name === columns[i] &&
+                Number(r.Seq_in_index) === i + 1 && Number(r.Non_unique) === 1 &&
+                r.Sub_part == null && r.Collation === "A" && r.Index_type === "BTREE" &&
+                r.Visible !== "NO"),
+            };
+          }
+          if (dialect === "sqlite") {
+            // SQLite index names are database-wide, so also verify the owner.
+            const owner = await api.get("SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?", [name]);
+            if (!owner) return { exists: false, valid: false };
+            const indexes = await api.all(`PRAGMA index_list(\`${table}\`)`);
+            const index = indexes.find((r) => r.name === name);
+            const rows = (await api.all(`PRAGMA index_xinfo(\`${name}\`)`))
+              .filter((r) => r.key === 1).sort((a, b) => a.seqno - b.seqno);
+            return {
+              exists: true,
+              valid: owner.tbl_name === table && index && index.unique === 0 && index.partial === 0 &&
+                rows.length === columns.length && rows.every((r, i) =>
+                  r.name === columns[i] && r.desc === 0 && r.coll === "BINARY"),
+            };
+          }
+          throw new Error(`Unsupported migration dialect: ${dialect}`);
+        };
+        let state = await inspect();
+        if (!state.exists) {
+          await api.run(`CREATE INDEX ${name} ON ${table} (${columns.join(", ")})`);
+          state = await inspect();
+        }
+        if (!state.valid) {
+          throw new Error(`Migration 043: index ${name} on ${table} must be a non-unique ascending index on (${columns.join(", ")}); schema differs. No existing index was changed.`);
+        }
+      };
       await api.run(`
         CREATE TABLE IF NOT EXISTS ai_conversations (
           id ${D.autoInc(dialect)},
@@ -2942,8 +2986,8 @@ const MIGRATIONS = [
           updated_at ${D.ts()}
         )${D.engine(dialect)}
       `);
-      await api.run("CREATE INDEX idx_ai_conv_tenant ON ai_conversations (madrasa_id, surface, id)");
-      await api.run("CREATE INDEX idx_ai_conv_external ON ai_conversations (surface, external_id)");
+      await ensureIndex("ai_conversations", "idx_ai_conv_tenant", ["madrasa_id", "surface", "id"]);
+      await ensureIndex("ai_conversations", "idx_ai_conv_external", ["surface", "external_id"]);
 
       await api.run(`
         CREATE TABLE IF NOT EXISTS ai_messages (
@@ -2957,8 +3001,9 @@ const MIGRATIONS = [
           created_at ${D.ts()}
         )${D.engine(dialect)}
       `);
-      await api.run("CREATE INDEX idx_ai_msg_conv ON ai_messages (conversation_id, id)");
+      await ensureIndex("ai_messages", "idx_ai_msg_conv", ["conversation_id", "id"]);
 
+      // MySQL 8.0.13+ requires a parenthesized expression for a TEXT default.
       await api.run(`
         CREATE TABLE IF NOT EXISTS ai_knowledge (
           id ${D.autoInc(dialect)},
@@ -2966,13 +3011,13 @@ const MIGRATIONS = [
           topic VARCHAR(80) NOT NULL DEFAULT '',
           question VARCHAR(255) NOT NULL DEFAULT '',
           answer TEXT NOT NULL,
-          keywords TEXT NOT NULL DEFAULT '',
+          keywords TEXT NOT NULL DEFAULT ${dialect === "mysql" ? "('')" : "''"},
           is_active INT NOT NULL DEFAULT 1,
           sort_order INT NOT NULL DEFAULT 0,
           updated_at ${D.ts()}
         )${D.engine(dialect)}
       `);
-      await api.run("CREATE INDEX idx_ai_kb_scope ON ai_knowledge (scope, is_active, sort_order)");
+      await ensureIndex("ai_knowledge", "idx_ai_kb_scope", ["scope", "is_active", "sort_order"]);
     },
   },
 ];
