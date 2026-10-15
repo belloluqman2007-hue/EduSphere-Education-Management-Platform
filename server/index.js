@@ -63,6 +63,14 @@ const persistence = require("./services/persistence");
     // super-admin password".
     await seedPlans();
     await seedSuperAdmin();
+    // Grounding data for EduSphere AI. Idempotent: skipped once the knowledge
+    // base has any rows, so an operator's own edits are never overwritten.
+    try {
+      const n = await require("./services/ai").seedKnowledge();
+      if (n) console.log(`EduSphere AI: seeded ${n} knowledge-base entries.`);
+    } catch (e) {
+      console.warn("EduSphere AI knowledge seed skipped:", e.message);
+    }
     // Pictures live in the database as well as on disk (migration 041). On
     // the first boot after upgrading, copy whatever files are still on disk
     // into media_files so the NEXT deploy cannot lose them either.

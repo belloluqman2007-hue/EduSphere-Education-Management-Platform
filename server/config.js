@@ -293,6 +293,26 @@ const AI = {
 };
 
 /* ---------------------------------------------------------------------------
+   OPTIONAL: EDU SPHERE AI ON WHATSAPP (opt-in, disabled by default)
+   Same assistant as the dashboard and the public website, answered on the
+   WhatsApp line. With provider "none" the webhook still records the
+   conversation and returns the reply in its response, so the integration can
+   be tested end to end before a live number is attached.
+--------------------------------------------------------------------------- */
+const WHATSAPP_AI = {
+  // NOTE: `pick()` is defined further down this file, so the allow-list is
+  // applied inline here rather than through it.
+  provider: ["none", "meta"].includes(String(process.env.WHATSAPP_AI_PROVIDER || "none").toLowerCase())
+    ? String(process.env.WHATSAPP_AI_PROVIDER || "none").toLowerCase()
+    : "none",
+  token: String(process.env.WHATSAPP_AI_TOKEN || "").trim(),
+  phoneNumberId: String(process.env.WHATSAPP_AI_PHONE_NUMBER_ID || "").trim(),
+  verifyToken: String(process.env.WHATSAPP_AI_VERIFY_TOKEN || "").trim(),
+  appSecret: String(process.env.WHATSAPP_AI_APP_SECRET || "").trim(),
+  get enabled() { return this.provider !== "none" && !!this.token && !!this.phoneNumberId; },
+};
+
+/* ---------------------------------------------------------------------------
    OPTIONAL: OUTBOUND MESSAGE DELIVERY (email / SMS / WhatsApp)
    Every provider defaults to "none": with no configuration the platform keeps
    creating in-app notifications and recording communication history, and the
@@ -570,6 +590,7 @@ module.exports = {
   UPLOAD_DIR,
   MAX_UPLOAD_MB,
   AI,
+  WHATSAPP_AI,
   DATA_DIR,
   BACKUP_DIR,
   BACKUP_INTERVAL_MINUTES,

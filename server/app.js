@@ -55,6 +55,12 @@ const libraryRouter = require("./routes/library");
 const documentsRouter = require("./routes/documents");
 const healthRouter = require("./routes/health");
 const adminRouter = require("./routes/admin");
+// Subscriptions & billing: the institution's own subscription, plus the
+// platform operator's approval queue.
+const { router: subscriptionRouter, platformRouter: subscriptionAdminRouter } = require("./routes/subscription");
+// EduSphere AI: dashboard assistant, public website, WhatsApp and the
+// operator's knowledge base.
+const { router: aiRouter, publicRouter: aiPublicRouter, whatsappRouter: aiWhatsappRouter, platformRouter: aiAdminRouter } = require("./routes/ai");
 const institution = require("./services/institution");
 const perfMonitor = require("./services/perf-monitor");
 const { asyncHandler, ok, err, toNum, logActivity } = require("./util");
@@ -79,6 +85,13 @@ function createApp() {
     crossOriginEmbedderPolicy: false,
     referrerPolicy: { policy: "no-referrer" },
   }));
+
+  /* ------------------ EduSphere AI — WhatsApp webhook ------------------- */
+  // Mounted BEFORE the global JSON parser on purpose. The Meta Cloud API signs
+  // the RAW request body, so this route parses its own body with a `verify`
+  // hook that keeps the exact bytes. Parsing it upstream would re-serialise the
+  // JSON and make every signature check fail.
+  app.use("/api/ai/whatsapp", aiWhatsappRouter);
 
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ extended: true, limit: "2mb" }));
@@ -301,6 +314,9 @@ function createApp() {
   // anonymous visitors then neither create database session rows nor need a
   // CSRF token, and they are governed by their own, stricter rate limits.
   app.use("/api/public", publicRouter);
+  // EduSphere AI on the public marketing website. Anonymous and separately
+  // rate limited; it has no access to any institution's data.
+  app.use("/api/public/ai", aiPublicRouter);
 
   /* ------------------------------ API -------------------------------- */
   const api = express.Router();
@@ -359,6 +375,14 @@ function createApp() {
   // through the same session/tenant guards.
   api.use("/admin", adminRouter);
   api.use("/platform", platformRouter);
+  // Subscriptions & billing. The institution-facing half is tenant scoped; the
+  // operator half carries the same requireSuperAdmin guard every platform
+  // route uses, so no institution can reach another's invoices.
+  api.use("/subscription", subscriptionRouter);
+  api.use("/platform/subscriptions", subscriptionAdminRouter);
+  // EduSphere AI (dashboard assistant + operator knowledge base).
+  api.use("/ai", aiRouter);
+  api.use("/platform/ai", aiAdminRouter);
   // Super Admin half of Chat & Support. Mounted behind the same
   // requireSuperAdmin guard the rest of the platform API uses, so an
   // institution administrator can never reach the platform-wide queue.

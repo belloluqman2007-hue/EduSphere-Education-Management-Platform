@@ -55,6 +55,7 @@
     refresh: `<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>`,
     leave: `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/><path d="m9 15.5 2 2 4-4"/></svg>`,
     health: `<svg viewBox="0 0 24 24"><path d="M12 20.4 4.9 13.2a5 5 0 0 1 7.1-7.1 5 5 0 0 1 7.1 7.1Z"/><path d="M4.5 12h3l1.5-2.5 2.5 5 1.5-2.5h4.5"/></svg>`,
+    spark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>`,
   };
 
   /* --------------------------------------------------------------------
@@ -198,6 +199,12 @@
         items: [[t.settingsLabel, "settings/institution"], ["Administrator Account", "settings/account"], ["Staff Accounts", "settings/staff"], ["Roles & Permissions", "settings/roles"], ["Audit Log", "settings/audit"], ["Password & Security", "settings/security"], ["Notifications", "settings/notifications"]],
       },
       {
+        // The institution's own subscription: what it is paying for, how much
+        // of it is used, and the invoices behind it.
+        key: "subscription", label: "Subscription", icon: "money",
+        items: [["My Plan", "subscription/overview"], ["Plans & Pricing", "subscription/plans"], ["Invoices & Payments", "subscription/invoices"]],
+      },
+      {
         // The institution's channel to the platform operator — tenants raise
         // tickets from here and follow the operator's replies.
         key: "support", label: "Platform Support", icon: "shield",
@@ -225,6 +232,9 @@
       { key: "madaris", label: "Madrasas & Academies", icon: "building", route: "platform/madaris" },
       { key: "registrations", label: "Registrations", icon: "admissions", route: "platform/registrations" },
       { key: "plans", label: "Subscription Plans", icon: "money", route: "platform/plans" },
+      { key: "subscriptions", label: "Subscriptions", icon: "money", route: "platform/subscriptions" },
+      { key: "subscription-requests", label: "Payment Requests", icon: "payroll", route: "platform/subscription-requests", badge: "subscriptionRequests" },
+      { key: "ai", label: "AI Assistant", icon: "spark", route: "platform/ai" },
       { key: "conversations", label: "Chat & Support", icon: "chat", route: "platform/conversations", badge: "supportChat" },
       { key: "tickets", label: "Support Tickets", icon: "shield", route: "platform/tickets" },
       { key: "analytics", label: "Platform Analytics", icon: "chart", route: "platform/analytics" },
@@ -255,7 +265,7 @@
     cache: {},           // generic per-route data cache
     // Live counters painted onto sidebar items (currently the unread
     // Chat & Support badge). Always supplied by the backend.
-    navBadges: { supportChat: 0 },
+    navBadges: { supportChat: 0, subscriptionRequests: 0 },
   };
 
   /** True when the signed-in user holds this granular permission. */
@@ -364,11 +374,31 @@
     } catch (e) { /* a badge must never interrupt the workspace */ }
   }
 
+  /* Payment requests waiting on the operator. Same rule as the chat badge:
+     the number comes from the server, and failing to fetch it is silent. */
+  function setRequestBadge(count) {
+    state.navBadges.subscriptionRequests = Math.max(0, Number(count) || 0);
+    const n = state.navBadges.subscriptionRequests;
+    document.querySelectorAll('[data-nav-badge="subscriptionRequests"]').forEach((el) => {
+      el.textContent = n > 99 ? "99+" : String(n);
+      el.hidden = n === 0;
+    });
+  }
+
+  async function refreshRequestBadge() {
+    if (!state.me || !state.superAdmin) return;
+    try {
+      const d = await window.API.get("/platform/subscriptions/invoices?status=awaiting_approval");
+      setRequestBadge((d && d.invoices ? d.invoices : []).length);
+    } catch (e) { /* a badge must never interrupt the workspace */ }
+  }
+
   function startSupportUnreadWatch() {
     stopSupportUnreadWatch();
     refreshSupportUnread();
+    refreshRequestBadge();
     supportUnreadTimer = window.setInterval(() => {
-      if (!document.hidden) refreshSupportUnread();
+      if (!document.hidden) { refreshSupportUnread(); refreshRequestBadge(); }
     }, 60000);
   }
   function stopSupportUnreadWatch() {
@@ -936,6 +966,9 @@
         "platform/activity": "Activity Log",
         "platform/backups": "Backups & Storage",
         "platform/settings": "Platform Settings",
+        "platform/subscriptions": "Subscriptions",
+        "platform/subscription-requests": "Payment Requests",
+        "platform/ai": "AI Assistant",
       };
       if (smap[route]) return smap[route];
       if (route.startsWith("platform/madaris/")) return "Madrasa / Academy Detail";
@@ -950,6 +983,9 @@
       communication: "Communication", finance: "Finance", payroll: "Payroll", hr: "Staff Leave", website: "Website", settings: "Settings",
     };
     if (route === "support/chat") return "Chat & Support";
+    if (route === "subscription/overview") return "My Subscription";
+    if (route === "subscription/plans") return "Plans & Pricing";
+    if (route === "subscription/invoices") return "Invoices & Payments";
     if (route === "academic/subjects") return "Curriculum & Subjects";
     if (route.startsWith("quran/")) return "Hifz Progress Tracker";
     return map[top] || "Dashboard";
@@ -1243,6 +1279,12 @@
   function supportChatContext() {
     return { I, esc, T, go, toast, openModal, closeModal, statCard, fmtDate, pillFor, emptyRow, state };
   }
+  /** Shared helpers handed to the subscription and AI modules. Same contract
+      as the payroll/leave/expenses workspaces so they stay inside one design
+      system rather than inventing their own markup. */
+  function moduleContext() {
+    return { I, esc, T, go, toast, openModal, closeModal, statCard, fmtDate, fmtMoney, options, emptyRow, pillFor, catalogue, allTerms, todayIso, bindRouteButtons, state };
+  }
 
   /* --------------------------------------------------------------------
      Route dispatch
@@ -1407,6 +1449,10 @@
       if (route === "settings/roles") return await pageRoles(content);
       if (route === "settings/audit") return await pageAuditLog(content);
       if (route === "settings/notifications") return await pageNotificationSettings(content);
+      // Subscription & billing — the institution's own plan, usage and invoices.
+      if (window.EduSphereSubscription && window.EduSphereSubscription.handles(route)) {
+        return await window.EduSphereSubscription.render(moduleContext(), content, route);
+      }
       // Chat & Support — the live conversation with the EduSphere team.
       if (window.EduSphereSupportChat && window.EduSphereSupportChat.handles(route)) {
         return await window.EduSphereSupportChat.render(supportChatContext(), content, route);
@@ -3776,6 +3822,13 @@
     if (route.startsWith("platform/madaris/")) return await pageSuperMadarisDetail(content, decodeURIComponent(route.slice("platform/madaris/".length)));
     if (route === "platform/registrations") return await pageSuperRegistrations(content);
     if (route === "platform/plans") return await pageSuperPlans(content);
+    // Subscriptions, payment requests and the AI knowledge base.
+    if (window.EduSphereSubscription && window.EduSphereSubscription.handles(route)) {
+      return await window.EduSphereSubscription.render(moduleContext(), content, route);
+    }
+    if (window.EduSphereAI && window.EduSphereAI.handles(route)) {
+      return await window.EduSphereAI.render(moduleContext(), content, route);
+    }
     if (window.EduSphereSupportChat && window.EduSphereSupportChat.handles(route)) {
       return await window.EduSphereSupportChat.render(supportChatContext(), content, route);
     }
@@ -4456,6 +4509,27 @@
           <button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px;">${I.check} Save Settings</button>
         </form>
       </div></div>
+
+      <div class="dash-page-head" style="margin-top:26px"><div><div class="dash-crumb">Platform</div><h2>Billing &amp; Payments</h2>
+        <p>Where institutions send their subscription transfers, and how the billing lifecycle behaves. Shown on every upgrade screen and invoice.</p></div></div>
+      <div class="dash-card"><div class="dash-card-pad">
+        <form id="saBillingForm">
+          <div class="dash-form-grid">
+            <div class="dash-field"><label>Bank name</label><input name="billing_bank_name" value="${esc(s.billing_bank_name || "")}" placeholder="e.g. Guaranty Trust Bank"></div>
+            <div class="dash-field"><label>Account number</label><input name="billing_account_number" value="${esc(s.billing_account_number || "")}" placeholder="0123456789"></div>
+            <div class="dash-field"><label>Account name</label><input name="billing_account_name" value="${esc(s.billing_account_name || "")}" placeholder="EduSphere Ltd"></div>
+            <div class="dash-field"><label>Currency</label><input name="billing_currency" value="${esc(s.billing_currency || "NGN")}" maxlength="3"></div>
+            <div class="dash-field" style="grid-column:1/-1"><label>Instructions shown to the school</label>
+              <textarea name="billing_transfer_note">${esc(s.billing_transfer_note || "")}</textarea></div>
+            <div class="dash-field"><label>Billing contact email</label><input name="billing_contact_email" type="email" value="${esc(s.billing_contact_email || "")}"></div>
+            <div class="dash-field"><label>Billing contact phone</label><input name="billing_contact_phone" value="${esc(s.billing_contact_phone || "")}"></div>
+            <div class="dash-field"><label>Grace period (days after expiry)</label><input name="billing_grace_days" type="number" min="0" max="90" value="${Number(s.billing_grace_days || 14)}"></div>
+            <div class="dash-field"><label>Warn at (% of a limit)</label><input name="billing_warn_percent" type="number" min="10" max="100" value="${Number(s.billing_warn_percent || 80)}"></div>
+          </div>
+          <label class="dash-checkbox-row" style="margin-top:16px;"><input type="checkbox" name="billing_enabled" ${s.billing_enabled !== false ? "checked" : ""}> Subscription billing enforced (limits and expiry apply)</label>
+          <button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px;">${I.check} Save Billing Settings</button>
+        </form>
+      </div></div>
     `;
     content.querySelector("#saSettingsForm").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -4465,6 +4539,18 @@
       body.public_directory_enabled = fd.get("public_directory_enabled") === "on";
       try { await window.API.put("/platform/settings", body); toast("Settings saved.", "success"); }
       catch (err) { toast(err.message || "Could not save settings.", "error"); }
+    });
+    content.querySelector("#saBillingForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const body = {};
+      ["billing_bank_name", "billing_account_number", "billing_account_name", "billing_currency",
+        "billing_transfer_note", "billing_contact_email", "billing_contact_phone"].forEach((k) => { body[k] = fd.get(k); });
+      body.billing_grace_days = Number(fd.get("billing_grace_days") || 14);
+      body.billing_warn_percent = Number(fd.get("billing_warn_percent") || 80);
+      body.billing_enabled = fd.get("billing_enabled") === "on";
+      try { await window.API.put("/platform/settings", body); toast("Billing settings saved.", "success"); }
+      catch (err) { toast(err.message || "Could not save billing settings.", "error"); }
     });
   }
 
