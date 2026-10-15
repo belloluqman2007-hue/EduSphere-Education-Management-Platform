@@ -474,8 +474,15 @@ router.post("/plans", asyncHandler(async (req, res) => {
   const exists = await db.get("SELECT id FROM plans WHERE code = ?", [code]);
   if (exists) return err(res, 400, "Plan code already exists.");
   const r = await db.run(
-    "INSERT INTO plans (code, name, name_ar, price_ngn, student_limit, teacher_limit, features, sort_order) VALUES (?,?,?,?,?,?,?,?)",
-    [code, name, cleanStr(b.name_ar, 80), toNum(b.price_ngn, 0), toNum(b.student_limit, -1), toNum(b.teacher_limit, -1), JSON.stringify(b.features || {}), toNum(b.sort_order, 99)]
+    `INSERT INTO plans (code, name, name_ar, description, price_ngn, price_yearly_ngn, student_limit, teacher_limit, trial_days, is_public, features, sort_order)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
+      code, name, cleanStr(b.name_ar, 80), cleanStr(b.description, 255),
+      toNum(b.price_ngn, 0), toNum(b.price_yearly_ngn, 0),
+      toNum(b.student_limit, -1), toNum(b.teacher_limit, -1),
+      toNum(b.trial_days, 0), b.is_public === false || b.is_public === 0 || b.is_public === "0" ? 0 : 1,
+      JSON.stringify(b.features || {}), toNum(b.sort_order, 99),
+    ]
   );
   ok(res, { ok: true, id: r.lastInsertRowid });
 }));
@@ -484,10 +491,16 @@ router.patch("/plans/:id", asyncHandler(async (req, res) => {
   const b = req.body || {};
   const p = await db.get("SELECT * FROM plans WHERE id = ?", [toNum(req.params.id, 0)]);
   if (!p) return res.status(404).json({ error: "Plan not found." });
-  const fields = ["name", "name_ar", "price_ngn", "student_limit", "teacher_limit", "sort_order", "is_active"];
+  const fields = ["name", "name_ar", "description", "price_ngn", "price_yearly_ngn", "student_limit", "teacher_limit", "trial_days", "sort_order", "is_active", "is_public"];
   const sets = [];
   const vals = [];
-  for (const f of fields) if (b[f] !== undefined) { sets.push(`${f} = ?`); vals.push(f === "name_ar" || f === "name" ? cleanStr(b[f], 80) : toNum(b[f], 0)); }
+  for (const f of fields) {
+    if (b[f] === undefined) continue;
+    sets.push(`${f} = ?`);
+    if (f === "name" || f === "name_ar") vals.push(cleanStr(b[f], 80));
+    else if (f === "description") vals.push(cleanStr(b[f], 255));
+    else vals.push(toNum(b[f], 0));
+  }
   if (b.features !== undefined) { sets.push("features = ?"); vals.push(JSON.stringify(b.features)); }
   if (!sets.length) return err(res, 400, "Nothing to update.");
   vals.push(p.id);
@@ -662,6 +675,19 @@ const PLATFORM_SETTING_DEFAULTS = {
   public_contact_phone: "",
   public_apply_url: "",
   public_directory_enabled: "1",
+  // Where institutions send their subscription transfers, and the rules that
+  // govern the billing lifecycle. Every field is optional: with the bank
+  // details blank the upgrade screen says so instead of inventing an account.
+  billing_bank_name: "",
+  billing_account_number: "",
+  billing_account_name: "",
+  billing_transfer_note: "Use your institution name as the transfer reference.",
+  billing_contact_email: "",
+  billing_contact_phone: "",
+  billing_currency: "NGN",
+  billing_grace_days: "14",
+  billing_warn_percent: "80",
+  billing_enabled: "1",
 };
 
 router.get("/settings", asyncHandler(async (req, res) => {

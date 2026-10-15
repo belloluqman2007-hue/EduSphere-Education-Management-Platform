@@ -31,6 +31,7 @@
   <link rel="stylesheet" href="/css/portal.css">
   <link rel="stylesheet" href="/css/profile-documents.css">
   <link rel="stylesheet" href="/css/support-chat.css">
+  <link rel="stylesheet" href="/css/subscription.css">
   <link rel="stylesheet" href="/css/print.css">
 </head>
 <body>
@@ -59,7 +60,12 @@
   <script src="/js/portal-student.js"></script>
   <script src="/js/portal-parent.js"></script>
   <script src="/js/support-chat.js"></script>
+  <script src="/js/subscription.js"></script>
+  <script src="/js/edusphere-ai.js"></script>
   <script src="/js/dashboard.js"></script>
   <script src="/js/app.js"></script>
+  <!-- EduSphere AI is mounted from its own file: the platform sends a strict
+       script-src 'self' CSP, so an inline mount script would be blocked. -->
+  <script src="/js/ai-boot.js"></script>
 </body>
 </html>

@@ -2832,6 +2832,149 @@ const MIGRATIONS = [
       `);
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  {
+    // SUBSCRIPTIONS & BILLING.
+    // Gives every institution a real billing lifecycle instead of a plan id
+    // that only changed when the platform owner edited it by hand:
+    //
+    //   madaris.subscription_status   active | grace | expired | suspended
+    //   madaris.plan_expires_at       end of the paid period (NULL = not billed yet)
+    //   madaris.grace_ends_at         end of the courtesy period after expiry
+    //   subscription_invoices         one row per renewal request / payment
+    //   subscription_notices          de-duplicates "you are at 80%" warnings
+    //
+    // Deliberately payment-provider agnostic: the first flow is bank transfer
+    // with operator approval, and the same invoice row is what a Paystack
+    // webhook would later mark paid. Nothing here assumes a gateway.
+    id: "042_subscriptions_and_billing",
+    up: async (api, dialect) => {
+      const hasColumn = async (table, column) => {
+        if (dialect === "mysql") {
+          const rows = await api.all(
+            "SELECT COLUMN_NAME AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+            [table, column]
+          );
+          return rows.length > 0;
+        }
+        const rows = await api.all(`PRAGMA table_info(${table})`);
+        return rows.some((r) => String(r.name) === column);
+      };
+      const addColumn = async (table, column, ddl) => {
+        if (await hasColumn(table, column)) return; // re-runnable on a half-applied database
+        await api.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+      };
+
+      /* Tenant billing state. */
+      await addColumn("madaris", "subscription_status", "VARCHAR(20) NOT NULL DEFAULT 'active'");
+      await addColumn("madaris", "billing_cycle", "VARCHAR(10) NOT NULL DEFAULT 'yearly'");
+      await addColumn("madaris", "plan_starts_at", "DATE NULL");
+      await addColumn("madaris", "plan_expires_at", "DATE NULL");
+      await addColumn("madaris", "grace_ends_at", "DATE NULL");
+      await addColumn("madaris", "billing_reference", "VARCHAR(120) NOT NULL DEFAULT ''");
+
+      /* Plan pricing. `price_ngn` keeps its original meaning (per month);
+         yearly is a separate, discoutable figure. */
+      await addColumn("plans", "price_yearly_ngn", "DECIMAL(10,2) NOT NULL DEFAULT 0");
+      await addColumn("plans", "trial_days", "INT NOT NULL DEFAULT 0");
+      await addColumn("plans", "is_public", "INT NOT NULL DEFAULT 1");
+      await addColumn("plans", "description", "VARCHAR(255) NOT NULL DEFAULT ''");
+
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS subscription_invoices (
+          id ${D.autoInc(dialect)},
+          madrasa_id INT NOT NULL,
+          plan_id INT NOT NULL,
+          invoice_no VARCHAR(40) NOT NULL,
+          amount_ngn DECIMAL(12,2) NOT NULL DEFAULT 0,
+          billing_cycle VARCHAR(10) NOT NULL DEFAULT 'yearly',
+          period_start DATE NULL,
+          period_end DATE NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'pending',
+          payment_method VARCHAR(30) NOT NULL DEFAULT 'bank_transfer',
+          reference VARCHAR(120) NOT NULL DEFAULT '',
+          proof_path VARCHAR(400) NOT NULL DEFAULT '',
+          payer_note TEXT,
+          admin_note TEXT,
+          requested_by INT,
+          reviewed_by INT,
+          reviewed_at TIMESTAMP NULL,
+          created_at ${D.ts()},
+          updated_at ${D.ts()}
+        )${D.engine(dialect)}
+      `);
+      await api.run("CREATE INDEX idx_subinv_tenant ON subscription_invoices (madrasa_id, status, id)");
+      await api.run("CREATE INDEX idx_subinv_status ON subscription_invoices (status, created_at)");
+
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS subscription_notices (
+          id ${D.autoInc(dialect)},
+          madrasa_id INT NOT NULL,
+          notice_key VARCHAR(80) NOT NULL,
+          created_at ${D.ts()},
+          UNIQUE (madrasa_id, notice_key)
+        )${D.engine(dialect)}
+      `);
+    },
+  },
+
+  /* ------------------------------------------------------------------ */
+  {
+    // EDUSPHERE AI ASSISTANT.
+    // One assistant, three surfaces: the logged-in app, the public marketing
+    // website and WhatsApp. Conversations are stored per surface so an
+    // in-app session is never mixed with a WhatsApp thread, and the curated
+    // knowledge base is what keeps the model grounded (and cheap).
+    id: "043_edusphere_ai_assistant",
+    up: async (api, dialect) => {
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS ai_conversations (
+          id ${D.autoInc(dialect)},
+          surface VARCHAR(20) NOT NULL DEFAULT 'app',
+          madrasa_id INT NULL,
+          user_id INT NULL,
+          external_id VARCHAR(120) NOT NULL DEFAULT '',
+          locale VARCHAR(10) NOT NULL DEFAULT 'en',
+          title VARCHAR(160) NOT NULL DEFAULT '',
+          escalated INT NOT NULL DEFAULT 0,
+          created_at ${D.ts()},
+          updated_at ${D.ts()}
+        )${D.engine(dialect)}
+      `);
+      await api.run("CREATE INDEX idx_ai_conv_tenant ON ai_conversations (madrasa_id, surface, id)");
+      await api.run("CREATE INDEX idx_ai_conv_external ON ai_conversations (surface, external_id)");
+
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS ai_messages (
+          id ${D.autoInc(dialect)},
+          conversation_id INT NOT NULL,
+          role VARCHAR(16) NOT NULL,
+          content TEXT NOT NULL,
+          sources TEXT NULL,
+          tokens_in INT NOT NULL DEFAULT 0,
+          tokens_out INT NOT NULL DEFAULT 0,
+          created_at ${D.ts()}
+        )${D.engine(dialect)}
+      `);
+      await api.run("CREATE INDEX idx_ai_msg_conv ON ai_messages (conversation_id, id)");
+
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS ai_knowledge (
+          id ${D.autoInc(dialect)},
+          scope VARCHAR(20) NOT NULL DEFAULT 'public',
+          topic VARCHAR(80) NOT NULL DEFAULT '',
+          question VARCHAR(255) NOT NULL DEFAULT '',
+          answer TEXT NOT NULL,
+          keywords TEXT NOT NULL DEFAULT '',
+          is_active INT NOT NULL DEFAULT 1,
+          sort_order INT NOT NULL DEFAULT 0,
+          updated_at ${D.ts()}
+        )${D.engine(dialect)}
+      `);
+      await api.run("CREATE INDEX idx_ai_kb_scope ON ai_knowledge (scope, is_active, sort_order)");
+    },
+  },
 ];
 
 async function migrate(options = {}) {
