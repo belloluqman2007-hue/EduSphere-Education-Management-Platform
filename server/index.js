@@ -7,6 +7,7 @@ const { migrate } = require("./migrate");
 const { createApp } = require("./app");
 const { seedPlans, seedSuperAdmin } = require("./seed");
 const db = require("./db");
+const util = require("./util");
 const DBSessionStore = require("./session-store");
 const sessionStore = new DBSessionStore(); // stateless store; shared prune helper
 const backup = require("./services/backup");
@@ -34,6 +35,24 @@ const persistence = require("./services/persistence");
       console.log("Database file: " + config.DB_CONFIG.file + " [" + config.SQLITE_DB.reason + "]");
     }
     for (const w of config.persistenceWarnings()) console.warn("⚠ " + w);
+    // Reach the database BEFORE migrating, with a small bounded retry: a
+    // database that is still waking up (a paused free-tier instance, a cold
+    // start) otherwise fails the whole deploy on the first attempt. A failure
+    // that survives all attempts must be impossible to miss — fatalExit()
+    // writes the reason + a fix-it checklist straight to fd 2, because a
+    // buffered console line can be dropped when the process exits (that is how
+    // "==> Exited with status 1" once appeared with no error above it).
+    try {
+      await util.connectWithRetries(db, {
+        attempts: config.DB_BOOT_ATTEMPTS,
+        delayMs: config.DB_BOOT_RETRY_DELAY_MS,
+        log: (m) => console.warn(m),
+      });
+    } catch (err) {
+      const lines = ["Failed to connect to the database: " + (err && err.stack ? err.stack : err)];
+      if (util.isDbConnectError(err)) lines.push(...util.dbConnectFailureHints(err));
+      util.fatalExit(lines);
+    }
     // Always ensure the (new) database schema is up to date (snapshots itself
     // first, so a migration can always be rolled back to the previous data).
     await migrate();
@@ -133,7 +152,8 @@ const persistence = require("./services/persistence");
     process.on("SIGINT", () => shutdown("SIGINT"));
     process.on("SIGTERM", () => shutdown("SIGTERM"));
   } catch (err) {
-    console.error("Failed to start server:", err);
-    process.exit(1);
+    const lines = ["Failed to start server: " + (err && err.stack ? err.stack : err)];
+    if (util.isDbConnectError(err)) lines.push(...util.dbConnectFailureHints(err));
+    util.fatalExit(lines);
   }
 })();

@@ -97,6 +97,62 @@ rather than allowing a service that will lose its institutions on the next
 restart. Do not set `DATA_PERSISTENT_ACK=1` just to hide this failure; attach
 the disk or configure MySQL with `DATABASE_URL` instead.
 
+### "The deploy exits with status 1" (database unreachable)
+
+If a deploy's log ends like this — warnings, then nothing:
+
+```
+Storage: warn — data=… (mount /)
+⚠ [EPHEMERAL_UPLOADS] …
+==> Exited with status 1
+```
+
+…the process could not reach its MySQL database during boot, so it exited on
+purpose (it must never fall back to an empty database — that is how saved data
+appears to vanish). Older builds printed the error with `console.error`, whose
+buffered output a hosting platform can drop when the process exits
+immediately; the current build writes the failure **directly to fd 2** and
+gives the log collector a moment to drain, so the reason and a fix-it
+checklist now survive in the log. A boot that cannot reach the database also
+**retries** before giving up (see `DB_BOOT_ATTEMPTS` / `DB_BOOT_RETRY_DELAY_MS`
+in `.env.example`), so a database that is merely waking up no longer fails the
+deploy on the first attempt.
+
+What the log now shows on such a failure:
+
+```
+Database: mysql — mysql://user:••••@your-db-host:3306/edusphere   ← the target it tried
+Database not reachable (attempt 1/3): ETIMEDOUT — retrying in 5s…
+Failed to connect to the database: Error: connect ETIMEDOUT
+This boot failed because the TCP connection timed out. …
+Checklist (Render): Environment → DATABASE_URL / DB_* — …
+```
+
+Then work through the checklist it prints:
+
+1. **Is the database running?** Free tiers (Aiven, PlanetScale hack plans,
+   RDS instance stopped, trials) pause, hibernate, or expire silently. Reopen
+   the database's own dashboard and check its state.
+2. **Host and port** typed correctly, and the hostname is publicly
+   resolvable (an internal-only name like `db` or a private VPC hostname
+   cannot be resolved from Render).
+3. **Firewall / VPC / trusted sources**: the database must allow connections
+   from Render's egress IPs — "allow all IPs (0.0.0.0/0)" or the platform's
+   documented ranges; a locked-down source filter is the most common cause of
+   `ETIMEDOUT`.
+4. **TLS matches the server**: set `DB_SSL=true` only when the server requires
+   TLS; a `ssl-mode` inside `DATABASE_URL` is informational only (it is
+   removed before mysql2 sees it — see docs/DATABASE.md → "TLS").
+5. **The database itself exists** (e.g. `edusphere`) — MySQL has no
+   "create database on first connect".
+
+Quick way to verify credentials and reachability from your own machine:
+`mysql --host <host> --port 3306 --user <user> -p --ssl-mode REQUIRED <dbname> -e "SELECT 1"`.
+If that also times out, the problem is the database or its firewall — not the
+app. Fix it, then redeploy; every boot re-checks the connection before
+migrating, and the boot log now always names the database it tried (password
+masked).
+
 ### Resetting the super-admin password
 
 `SUPER_ADMIN_PASSWORD` is only read **when the super-admin account is first

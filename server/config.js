@@ -206,6 +206,12 @@ const MYSQL_POOL = {
   maxIdle: Math.max(1, Number(process.env.MYSQL_MAX_IDLE || process.env.MYSQL_POOL_SIZE || 10)),
   idleTimeout: Math.max(1000, Number(process.env.MYSQL_IDLE_TIMEOUT_MS || 60000)),
 };
+// Boot-time reachability: before migrating, the server probes the database
+// with up to DB_BOOT_ATTEMPTS tries, DB_BOOT_RETRY_DELAY_MS apart, so a
+// database that is still waking up (a paused free-tier instance) does not fail
+// the whole deploy on the first attempt. attempts=1 keeps the old fail-fast.
+const DB_BOOT_ATTEMPTS = Math.max(1, Number(process.env.DB_BOOT_ATTEMPTS || 3));
+const DB_BOOT_RETRY_DELAY_MS = Math.max(0, Number(process.env.DB_BOOT_RETRY_DELAY_MS || 5000));
 
 /* ---------------------------------------------------------------------------
    AUTH / SECRETS
@@ -542,6 +548,8 @@ module.exports = {
   DATABASE_URL,
   DB_CONFIG,
   MYSQL_POOL,
+  DB_BOOT_ATTEMPTS,
+  DB_BOOT_RETRY_DELAY_MS,
   API_BASE_URL,
   EFFECTIVE_API_BASE,
   SESSION_SECRET,

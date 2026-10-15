@@ -14,7 +14,7 @@ before(async () => {
 after(async () => { if (ctx) await ctx.close(); });
 
 test("student attendance accepts late, reports it separately, and treats it as attended", async () => {
-  const day = "2026-09-15";
+  const day = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10); // relative: a hardcoded day ages out of the 30-day analytics window
   const saved = await adminA.api("POST", "/api/attendance/mark", {
     classId: ctx.classA1,
     date: day,
@@ -57,7 +57,7 @@ test("student attendance accepts late, reports it separately, and treats it as a
 });
 
 test("teacher attendance also accepts the late status", async () => {
-  const day = "2026-09-15";
+  const day = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10); // relative: a hardcoded day ages out of the 30-day analytics window
   const saved = await adminA.api("POST", "/api/attendance/teachers/mark", {
     date: day, statuses: { [ctx.users.teacherA]: "late" },
   });
