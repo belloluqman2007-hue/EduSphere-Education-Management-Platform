@@ -458,6 +458,12 @@ function createApp() {
   /* ------------------------------ activity log ------------------------ */
   api.get("/activity", asyncHandler(async (req, res) => {
     if (!req.user) return err(res, 401, "Authentication required.");
+    // Only institution administrators (and the platform operator) may read
+    // the activity log. Teachers, students and parents never see it, and a
+    // school administrator is scoped to their own school below.
+    if (!["super_admin", "madrasa_admin"].includes(req.user.role)) {
+      return err(res, 403, "You do not have permission to view the activity log.");
+    }
     if (req.user.role === "super_admin") {
       const mid = toNum(req.query.madrasaId, 0);
       const limit = Math.min(200, toNum(req.query.limit, 50));
