@@ -35,8 +35,14 @@
 
   const SUGGESTIONS = {
     app: ["What plan am I on?", "How much of my student limit have I used?", "How do I upgrade?", "When does my subscription expire?"],
-    public: ["How much does EduSphere cost?", "What can EduSphere do?", "How do I get started?", "How do I contact EduSphere?"],
+    public: ["How much does EduSphere cost?", "What is the difference between Free, Basic and Premium?", "What can EduSphere do?", "How do I get started?"],
   };
+
+  /* The AI copilot is the Premium offer made usable: four capabilities, each
+     behind its own feature key. The widget asks the server what this
+     institution may use, renders a chip per capability, and a locked chip opens
+     the SAME upsell dialog a gated button anywhere else in the app opens. */
+  const COPILOT_ORDER = ["risk_alerts", "report_comments", "questions", "analytics_qa"];
 
   /* ======================================================================
      WIDGET
@@ -73,6 +79,7 @@
         </header>
         <div class="ai-messages" role="log" aria-live="polite" aria-atomic="false"></div>
         <div class="ai-suggestions"></div>
+        <div class="ai-copilot" hidden></div>
         <form class="ai-form" autocomplete="off">
           <label class="ai-sr" for="aiInput">Message EduSphere AI</label>
           <input class="ai-input" id="aiInput" type="text" placeholder="Ask anything…" maxlength="2000">
@@ -147,6 +154,199 @@
       bubble("bot", surface === "app"
         ? "Hello! I am EduSphere AI. I can see your plan, usage and invoices — ask me anything about your subscription, or how to do something in the platform."
         : "Hello! I am EduSphere AI. Ask me about EduSphere, our plans and pricing, or how to get your institution set up.");
+      if (surface === "app") copilotRow();
+    }
+
+    /* --------------------------- AI copilot row -------------------------- */
+    let copilotCaps = null;
+
+    async function copilotRow() {
+      let data;
+      try {
+        data = await window.API.get("/ai/copilot");
+      } catch (e) {
+        return; // no session, or the module is not mounted: chips simply absent
+      }
+      copilotCaps = data && Array.isArray(data.capabilities) ? data.capabilities : [];
+      if (!copilotCaps.length) return;
+      const box = el.querySelector(".ai-copilot");
+      if (!box) return;
+      box.hidden = false;
+      box.innerHTML = `<span class="ai-copilot-label">AI copilot</span>` +
+        copilotCaps
+          .slice()
+          .sort((a, b) => COPILOT_ORDER.indexOf(a.capability) - COPILOT_ORDER.indexOf(b.capability))
+          .map((cap) => `
+            <button type="button" class="ai-chip ai-copilot-chip ${cap.entitled ? "" : "is-locked"}"
+                    data-copilot="${esc(cap.capability)}" aria-label="${esc(cap.label)}${cap.entitled ? "" : " (Premium feature)"}"
+                    title="${esc(cap.blurb || "")}">
+              ${esc(cap.label)}${cap.entitled ? "" : `<span class="ai-lock" aria-hidden="true">🔒</span>`}
+            </button>`).join("");
+      box.querySelectorAll("[data-copilot]").forEach((b) => b.addEventListener("click", () => runCopilot(b.getAttribute("data-copilot"))));
+    }
+
+    function capability(name) {
+      return (copilotCaps || []).find((c) => c.capability === name) || null;
+    }
+
+    /** A locked capability is a sales moment: hand the gate to the upsell. */
+    function upsellFrom(cap) {
+      const gate = (cap && cap.gate) || {};
+      const detail = Object.assign({ code: "feature_gated", can_upgrade: false }, gate, {
+        feature: Object.assign({ key: cap ? cap.feature : "", label: cap ? cap.label : "", blurb: cap ? cap.blurb : "" }, gate.feature || {}),
+        required_plan: gate.required_plan || null,
+      });
+      if (window.EduSphereUpsell && typeof window.EduSphereUpsell.show === "function") return window.EduSphereUpsell.show(detail);
+      try { window.dispatchEvent(new CustomEvent("edusphere:feature-gated", { detail })); } catch (e) { /* no listener */ }
+      return bubble("bot", (gate && gate.message) || "That capability is not included in your plan.");
+    }
+
+    async function runCopilot(name) {
+      const cap = capability(name);
+      if (cap && !cap.entitled) return upsellFrom(cap);
+      if (name === "risk_alerts") return atRisk();
+      if (name === "analytics_qa") return insights();
+      if (name === "report_comments") return reportCommentsForm();
+      if (name === "questions") return questionsForm();
+      return undefined;
+    }
+
+    async function atRisk() {
+      typing(true);
+      try {
+        const res = await window.API.get("/ai/copilot/at-risk");
+        typing(false);
+        const list = res.students || [];
+        if (!list.length) return bubble("bot", "Nobody is flagged right now — no student is below the pass mark or the attendance floor this term.");
+        bubble("bot", `${list.length} student${list.length === 1 ? "" : "s"} need attention${res.term ? ` (${res.term.name})` : ""} — ${res.high} high risk:\n\n` +
+          list.slice(0, 6).map((s) => `• ${s.name}${s.class_name ? ` · ${s.class_name}` : ""} — ${s.reasons.join(", ")}${s.average !== null ? ` · ${s.average}%` : ""}${s.attendance_rate !== null ? ` · ${s.attendance_rate}% attendance` : ""}`).join("\n") +
+          (list.length > 6 ? `\n… and ${list.length - 6} more.` : ""));
+      } catch (e) {
+        typing(false);
+        if (e && e.data && e.data.code === "feature_gated") return upsellFrom(capability("risk_alerts"));
+        bubble("bot", (e && e.message) || "Could not load the at-risk list.");
+      }
+      return undefined;
+    }
+
+    async function insights() {
+      typing(true);
+      try {
+        const res = await window.API.get("/ai/copilot/insights");
+        typing(false);
+        const extra = Array.isArray(res.sources) && res.sources.length ? `\n\nBased on: ${res.sources.join(", ")}.` : "";
+        bubble("bot", (res.answer || "No insights for this window yet.") + extra);
+      } catch (e) {
+        typing(false);
+        if (e && e.data && e.data.code === "feature_gated") return upsellFrom(capability("analytics_qa"));
+        bubble("bot", (e && e.message) || "Could not load your insights.");
+      }
+      return undefined;
+    }
+
+    /** A tiny inline picker inside the chat, so a draft needs one click. */
+    function formBubble(label, fieldsHtml, submitLabel, onSubmit) {
+      const d = document.createElement("div");
+      d.className = "ai-msg ai-msg-bot ai-form-bubble";
+      d.innerHTML = `<strong>${esc(label)}</strong>${fieldsHtml}
+        <div class="ai-form-actions">
+          <button type="button" class="ai-chip ai-chip-primary">${esc(submitLabel)}</button>
+          <button type="button" class="ai-chip" data-cancel>Cancel</button>
+        </div>`;
+      messages.appendChild(d);
+      messages.scrollTop = messages.scrollHeight;
+      d.querySelector("[data-cancel]").addEventListener("click", () => d.remove());
+      d.querySelector(".ai-chip-primary").addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        try { await onSubmit(d); } finally { btn.disabled = false; }
+      });
+      return d;
+    }
+
+    async function reportCommentsForm() {
+      let classes = [];
+      try {
+        const res = await window.API.get("/classes");
+        classes = res.classes || res.rows || [];
+      } catch (e) { classes = []; }
+      if (!classes.length) return bubble("bot", "Add a class with students first — then I can draft its report comments.");
+      formBubble("Draft report comments",
+        `<label class="ai-sr" for="aiCopClass">Class</label>
+         <select id="aiCopClass" class="ai-select">${classes.map((c) => `<option value="${Number(c.id)}">${esc(c.name_en || c.name || c.id)}</option>`).join("")}</select>
+         <span class="ai-form-hint">Drafts only — nothing is written to a report sheet.</span>`,
+        "Draft comments", async (node) => {
+          const classId = Number(node.querySelector("#aiCopClass").value);
+          node.remove();
+          typing(true);
+          try {
+            const res = await window.API.post("/ai/copilot/report-comments", { class_id: classId });
+            typing(false);
+            bubble("bot", `${res.count} draft comment${res.count === 1 ? "" : "s"} for ${res.class.name}${res.term ? ` · ${res.term.name}` : ""} (${res.mode}). Review, then paste into Results → Report cards.`);
+            (res.comments || []).forEach((c) => {
+              const card = document.createElement("div");
+              card.className = "ai-msg ai-msg-bot ai-draft-card";
+              card.innerHTML = `<div class="ai-draft-head"><strong>${esc(c.name)}</strong>
+                  <span class="ai-draft-meta">${c.average === null ? "no average" : esc(c.average) + "%"}${c.grade ? ` · ${esc(c.grade)}` : ""}${c.position ? ` · pos ${c.position}` : ""}${c.attendance_rate !== null ? ` · ${esc(c.attendance_rate)}% attendance` : ""}</span>
+                </div>
+                <p class="ai-draft-text">${esc(c.comment)}</p>
+                <button type="button" class="ai-chip" data-copy>Copy comment</button>`;
+              card.querySelector("[data-copy]").addEventListener("click", async (ev) => {
+                try { await navigator.clipboard.writeText(c.comment); ev.currentTarget.textContent = "Copied"; }
+                catch (err2) { ev.currentTarget.textContent = "Select and copy manually"; }
+              });
+              messages.appendChild(card);
+            });
+            messages.scrollTop = messages.scrollHeight;
+          } catch (e) {
+            typing(false);
+            if (e && e.data && e.data.code === "feature_gated") return upsellFrom(capability("report_comments"));
+            bubble("bot", (e && e.message) || "Could not draft comments.");
+          }
+          return undefined;
+        });
+      return undefined;
+    }
+
+    async function questionsForm() {
+      let subjects = [];
+      try {
+        const res = await window.API.get("/subjects");
+        subjects = res.subjects || res.rows || [];
+      } catch (e) { subjects = []; }
+      if (!subjects.length) return bubble("bot", "Add a subject first — then I can generate questions for it.");
+      formBubble("Generate exam questions",
+        `<label class="ai-sr" for="aiCopSubject">Subject</label>
+         <select id="aiCopSubject" class="ai-select">${subjects.map((s) => `<option value="${Number(s.id)}">${esc(s.name_en || s.name || s.id)}</option>`).join("")}</select>
+         <label class="ai-sr" for="aiCopTopic">Topic</label>
+         <input id="aiCopTopic" class="ai-input ai-input-inline" type="text" maxlength="160" placeholder="Topic, e.g. Purification in Fiqh">
+         <span class="ai-form-hint">Randomised from your question bank when you have one.</span>`,
+        "Generate", async (node) => {
+          const subjectId = Number(node.querySelector("#aiCopSubject").value);
+          const topic = String(node.querySelector("#aiCopTopic").value || "").trim();
+          node.remove();
+          typing(true);
+          try {
+            const res = await window.API.post("/ai/copilot/questions", { subject_id: subjectId, topic: topic || undefined, count: 5 });
+            typing(false);
+            bubble("bot", `${res.count} question${res.count === 1 ? "" : "s"} for ${res.subject.name} (${res.mode}).${res.mode === "template" ? " These are scaffolds — edit them before publishing." : ""}`);
+            (res.questions || []).forEach((q, i) => {
+              const card = document.createElement("div");
+              card.className = "ai-msg ai-msg-bot ai-draft-card";
+              card.innerHTML = `<div class="ai-draft-head"><strong>Q${i + 1}</strong>
+                  <span class="ai-draft-meta">${esc(q.question_type.replace(/_/g, " "))} · ${esc(q.difficulty)} · ${esc(q.marks)} marks${q.needs_review ? " · review" : ""}</span>
+                </div><p class="ai-draft-text">${esc(q.question_text)}</p>`;
+              messages.appendChild(card);
+            });
+            messages.scrollTop = messages.scrollHeight;
+          } catch (e) {
+            typing(false);
+            if (e && e.data && e.data.code === "feature_gated") return upsellFrom(capability("questions"));
+            bubble("bot", (e && e.message) || "Could not generate questions.");
+          }
+          return undefined;
+        });
+      return undefined;
     }
 
     async function sendMessage(text) {

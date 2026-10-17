@@ -30,12 +30,15 @@ const { asyncHandler, err, ok, cleanStr, toNum, clampNum, validDate, logActivity
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { requirePermission, requireStaffPermission } = require("../services/permissions");
 const { effectiveTenantId } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const csv = require("../services/csv");
 const { DAYS } = require("./timetable");
 const attendance = require("./attendance");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
+// Leave management ships with the Premium "Finance & HR" bundle.
+router.use(requireFeature("leave"));
 
 /* Same guard vocabulary as teachers.js: administrators own the catalogue and
    the approvals, teachers reach their own records through the staff routes. */

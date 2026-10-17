@@ -16,6 +16,7 @@ const fs = require("fs");
 const db = require("../db");
 const { asyncHandler, err, ok, toNum, cleanStr, validDate } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
+const { requireFeature } = require("../middleware/subscription");
 const { effectiveTenantId } = require("../middleware/tenant");
 const grading = require("../services/grading");
 const reportSheet = require("../services/report-sheet");
@@ -23,6 +24,14 @@ const audit = require("../services/audit");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant, requireRole("student", "parent"));
+/* Student & parent portals are what the Basic plan sells ("keep parents
+   informed automatically"). A school on Free still gets announcements and
+   printable report cards; the gate below answers with the upgrade offer rather
+   than a bare 403, and the frontend turns that into the upsell dialog.
+   Super admins supporting a school are never gated (see the middleware). */
+router.use(requireFeature("portals"));
+// Taking an online exam is a Premium capability on top of having a portal.
+router.use("/online-exams", requireFeature("online_exams"));
 
 async function tenantId(req, res) {
   const tid = effectiveTenantId(req);

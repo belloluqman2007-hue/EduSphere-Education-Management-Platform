@@ -19,6 +19,7 @@ const grading = require("../services/grading");
 const { fileUploader } = require("../middleware/upload");
 const communication = require("../services/communication");
 const { requirePermission, requireStaffPermission, can } = require("../services/permissions");
+const { requireFeature } = require("../middleware/subscription");
 const audit = require("../services/audit");
 const reportSheet = require("../services/report-sheet");
 
@@ -639,10 +640,13 @@ async function bulkReportCardsHandler(req, res) {
   res.type("html").send(reportSheet.renderBulkReportSheets(sheets));
 }
 
+// A whole-class print run is the Premium "bulk reports" capability; printing
+// one student's report card stays available on every plan.
 const bulkHandler = requireStaffPermission("report_cards.generate");
-router.get("/report-cards/bulk", bulkHandler, asyncHandler(bulkReportCardsHandler));
+const bulkFeature = requireFeature("exports_bulk");
+router.get("/report-cards/bulk", bulkFeature, bulkHandler, asyncHandler(bulkReportCardsHandler));
 /** Alias so the batch path reads the way the UI talks about it. */
-router.get("/report-sheets/bulk", bulkHandler, asyncHandler(bulkReportCardsHandler));
+router.get("/report-sheets/bulk", bulkFeature, bulkHandler, asyncHandler(bulkReportCardsHandler));
 
 /** Printable report card HTML (standalone document; print to PDF in browser). */
 router.get("/report-card/:studentId/:termId", requireStaffPermission("report_cards.view"), asyncHandler(async (req, res) => {
@@ -671,7 +675,7 @@ router.get("/report-template", requireStaffPermission("report_cards.view"), asyn
  * PUT /results/report-template — save the configuration. Admins (and any user
  * granted report_cards.templates) may change it; the change is audited.
  */
-router.put("/report-template", requireStaffPermission("report_cards.templates"), asyncHandler(async (req, res) => {
+router.put("/report-template", requireFeature("custom_report_templates"), requireStaffPermission("report_cards.templates"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res);
   if (tid == null) return;
   const before = await reportSheet.getReportTemplate(tid);
@@ -685,7 +689,7 @@ router.put("/report-template", requireStaffPermission("report_cards.templates"),
 }));
 
 /** Template preview with clearly-marked sample data (never a real student). */
-router.get("/report-template/preview", requireStaffPermission("report_cards.view"), asyncHandler(async (req, res) => {
+router.get("/report-template/preview", requireFeature("custom_report_templates"), requireStaffPermission("report_cards.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res);
   if (tid == null) return;
   const stored = await reportSheet.getReportTemplate(tid);

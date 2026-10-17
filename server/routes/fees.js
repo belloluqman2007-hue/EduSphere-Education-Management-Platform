@@ -9,11 +9,23 @@ const { requireAuth, requireTenant, requireRole } = require("../middleware/auth"
 const { requirePermission, can } = require("../services/permissions");
 const print = require("../services/print-documents");
 const { effectiveTenantId } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const communication = require("../services/communication");
 const audit = require("../services/audit");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
+
+// Fees & payments are a Basic-tier capability ("collect fees online"), so the
+// WRITE side of the ledger stops on Free with a 403 + upgrade hint. Reads stay
+// open on purpose: a school that downgrades must still be able to see what
+// parents already paid and print an old receipt.
+const FEES_WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+router.use((req, res, next) => {
+  if (!FEES_WRITE_METHODS.has(req.method)) return next();
+  return requireFeature("fees")(req, res, next);
+});
+
 const ADMIN = requireRole("madrasa_admin");
 const STAFF = requireRole("madrasa_admin", "teacher");
 const FINANCE_VIEW = requireRole("madrasa_admin", "teacher", "parent", "student");

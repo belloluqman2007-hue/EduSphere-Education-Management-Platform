@@ -8,6 +8,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+// Pure data module (no db import), safe to require before initEnv().
+const { FEATURE_KEYS: ALL_FEATURE_KEYS } = require("../server/services/plan-catalogue");
 
 let tmpDir = null;
 
@@ -119,9 +121,16 @@ async function setup() {
 
   await migrate();
 
-  // Plans
+  // Plans. The fixture plan keeps its `free` code and its 50/3 limits (other
+  // tests assert both), but EVERY feature key is switched on: a module test
+  // exercises the module, not the tier matrix. Feature gating is covered on its
+  // own in subscription-features.test.js, which downgrades a plan row and
+  // asserts the 403. Without this, every payroll/library/export/health test on
+  // this tenant would fail on the plan gate instead of on its own behaviour.
+  const allFeatures = {};
+  for (const key of ALL_FEATURE_KEYS) allFeatures[key] = true;
   await db.run("INSERT INTO plans (code,name,name_ar,price_ngn,student_limit,teacher_limit,features,sort_order) VALUES (?,?,?,?,?,?,?,?)",
-    ["free", "Free", "مجاني", 0, 50, 3, "{}", 1]);
+    ["free", "Free", "مجاني", 0, 50, 3, JSON.stringify(allFeatures), 1]);
 
   // Super admin
   await db.run("INSERT INTO users (madrasa_id, username, password_hash, role, full_name) VALUES (NULL,?,?, 'super_admin','Test Admin')",

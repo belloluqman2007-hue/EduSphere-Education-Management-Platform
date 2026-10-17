@@ -27,6 +27,7 @@ const { asyncHandler, err, ok, cleanStr, toNum, logActivity, checkPlanLimits } =
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { requirePermission } = require("../services/permissions");
 const { effectiveTenantId } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const admission = require("../services/admission");
 const { fileUploader, imageUploader } = require("../middleware/upload");
 const communication = require("../services/communication");
@@ -39,6 +40,15 @@ const applicationDocumentUploader = fileUploader("files", "document", {
 
 const router = express.Router();
 router.use(requireAuth, requireRole("madrasa_admin", "super_admin"));
+/* The online admissions PORTAL — pipeline view, entry requirements and the
+   portal settings a school publishes — is Premium ("Branding & growth").
+   Processing an application that already arrived is deliberately NOT gated:
+   a school must always be able to act on the data it already holds. */
+router.use(requireFeature((req) => {
+  const p = String(req.path || "");
+  if (/^\/(pipeline|requirements|settings)(\/|$)/.test(p)) return "admissions_portal";
+  return null;
+}));
 
 const ADMIN = requireRole("madrasa_admin", "super_admin");
 

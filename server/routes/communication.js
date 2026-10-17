@@ -7,6 +7,7 @@ const { asyncHandler, err, ok, cleanStr, toNum, logActivity } = require("../util
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { effectiveTenantId } = require("../middleware/tenant");
 const { requireStaffPermission } = require("../services/permissions");
+const { requireFeature } = require("../middleware/subscription");
 const comm = require("../services/communication");
 const delivery = require("../services/delivery");
 const audit = require("../services/audit");
@@ -15,6 +16,17 @@ const messageAttachment = fileUploader("message-attachments", "attachment", { ex
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
+/* Two-way messaging and the delivery log are Basic ("keep parents informed").
+   The SMS and WhatsApp CHANNELS are Premium ("WhatsApp/SMS alerts"), so a
+   broadcast is gated on the channel it asks for — an email or in-app send is
+   judged on `messaging` alone. In-app notifications and announcements are not
+   gated: every plan can tell its own community something. */
+const channelFeature = (req) => {
+  const channel = String((req.body && req.body.channel) || (req.query && req.query.channel) || "").toLowerCase();
+  if (channel === "sms") return "sms";
+  if (channel === "whatsapp") return "whatsapp";
+  return "messaging";
+};
 const STAFF = requireRole("madrasa_admin", "teacher");
 const ADMIN = requireRole("madrasa_admin");
 
@@ -81,7 +93,7 @@ router.get("/conversations/:id", asyncHandler(async (req, res) => {
   ok(res, { conversation, participants, messages });
 }));
 
-router.post("/messages", asyncHandler(async (req, res) => {
+router.post("/messages", requireFeature("messaging"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {};
   const recipientIds = [...new Set(ids(b.recipient_user_ids ?? b.recipient_ids ?? b.recipient_user_id))].filter((id) => id !== Number(req.user.id));
@@ -215,7 +227,7 @@ router.get("/parents/:id/history", STAFF, requireStaffPermission("communication.
   const parent = await userInTenant(tid, toNum(req.params.id, 0)); if (!parent || parent.role !== "parent") return res.status(404).json({ error: "Parent not found." });
   ok(res, { history: await db.all("SELECT * FROM communication_history WHERE madrasa_id = ? AND (recipient_user_id = ? OR parent_user_id = ?) ORDER BY id DESC LIMIT 300", [tid,parent.id,parent.id]) });
 }));
-router.post("/parents/send", STAFF, requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
+router.post("/parents/send", STAFF, requireFeature(channelFeature), requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {}; let recipientIds = ids(b.parent_ids ?? b.recipient_ids ?? b.parent_id);
   if (b.class_id) {
@@ -246,14 +258,14 @@ router.get("/history", STAFF, requireStaffPermission("communication.view"), asyn
 /* ------------------------- external delivery providers ------------------ */
 /* Read-only provider status. Deliberately returns booleans only — an API key
  * or password must never reach the browser. */
-router.get("/delivery/providers", ADMIN, requireStaffPermission("communication.templates"), asyncHandler(async (req, res) => {
+router.get("/delivery/providers", ADMIN, requireFeature("messaging"), requireStaffPermission("communication.templates"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   ok(res, { providers: delivery.providerStatus() });
 }));
 
 /* Delivery log = the existing communication_history table filtered to the
  * channels that leave the platform (plus in-app rows when asked). */
-router.get("/delivery/log", STAFF, requireStaffPermission("communication.view"), asyncHandler(async (req, res) => {
+router.get("/delivery/log", STAFF, requireFeature("messaging"), requireStaffPermission("communication.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const where = ["h.madrasa_id = ?"]; const params = [tid];
   const channel = cleanStr(req.query.channel, 20).toLowerCase();
@@ -287,7 +299,7 @@ router.get("/delivery/log", STAFF, requireStaffPermission("communication.view"),
  * so the delivery log stays one row per message with an honest attempt count.
  */
 const MAX_DELIVERY_RETRIES = 3;
-router.post("/delivery/:id/retry", ADMIN, requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
+router.post("/delivery/:id/retry", ADMIN, requireFeature("messaging"), requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await db.get(
     "SELECT * FROM communication_history WHERE id = ? AND madrasa_id = ?",
@@ -334,7 +346,7 @@ router.post("/delivery/:id/retry", ADMIN, requireStaffPermission("communication.
 }));
 
 /* Send a single test message to the administrator's own address/number. */
-router.post("/delivery/test", ADMIN, requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
+router.post("/delivery/test", ADMIN, requireFeature(channelFeature), requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {};
   const channel = cleanStr(b.channel, 20).toLowerCase();
@@ -382,7 +394,7 @@ async function resolveBulkRecipients(tid, target) {
   return db.all("SELECT id, full_name, username, email, phone FROM users WHERE madrasa_id = ? AND role = 'parent' AND is_active = 1", [tid]);
 }
 
-router.post("/bulk", ADMIN, requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
+router.post("/bulk", ADMIN, requireFeature(channelFeature), requireStaffPermission("communication.send"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {};
   const channel = cleanStr(b.channel, 20).toLowerCase();

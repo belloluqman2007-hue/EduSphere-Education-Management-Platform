@@ -12,6 +12,7 @@ const { asyncHandler, err, ok, cleanStr, toNum, clampNum, validDate, logActivity
 const { requireAuth, requireRole, requireTenant } = require("../middleware/auth");
 const { requireStaffPermission } = require("../services/permissions");
 const { getActiveMadrasa } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const { imageUploader } = require("../middleware/upload");
 const grading = require("../services/grading");
 const analytics = require("../services/analytics");
@@ -227,6 +228,25 @@ router.get("/analytics", adminOrSupport, asyncHandler(async (req, res) => {
   const m = await resolveMadrasa(req, res);
   if (!m) return;
   const data = await analytics.tenantAnalytics(m.id, {
+    months: req.query.months,
+    attendanceDays: req.query.attendanceDays,
+    termId: req.query.termId,
+  });
+  ok(res, { madrasaId: m.id, analytics: data });
+}));
+
+/**
+ * GET /api/madrasa/analytics/advanced?months=6&attendanceDays=60&termId=N
+ * The PREMIUM analytics view (`analytics_advanced`): attendance heatmaps,
+ * teacher performance, fee forecasting, attendance patterns and the insight
+ * list the AI copilot answers from. It is a separate endpoint rather than extra
+ * keys on /analytics so a school below Premium keeps the dashboard it has, and
+ * the 403 carries the offer that explains what would appear.
+ */
+router.get("/analytics/advanced", adminOrSupport, requireFeature("analytics_advanced"), asyncHandler(async (req, res) => {
+  const m = await resolveMadrasa(req, res);
+  if (!m) return;
+  const data = await analytics.advancedAnalytics(m.id, {
     months: req.query.months,
     attendanceDays: req.query.attendanceDays,
     termId: req.query.termId,

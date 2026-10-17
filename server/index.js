@@ -5,7 +5,7 @@
 const config = require("./config");
 const { migrate } = require("./migrate");
 const { createApp } = require("./app");
-const { seedPlans, seedSuperAdmin } = require("./seed");
+const { seedPlans, syncPlanOffers, seedSuperAdmin } = require("./seed");
 const db = require("./db");
 const util = require("./util");
 const DBSessionStore = require("./session-store");
@@ -81,6 +81,15 @@ const persistence = require("./services/persistence");
     // app — is never overwritten. See docs/DEPLOYMENT.md → "Resetting the
     // super-admin password".
     await seedPlans();
+    // Keep an ALREADY-seeded catalogue in step with the current tier offers:
+    // fills in feature keys a deployment seeded before they existed, without
+    // touching prices, limits or anything the operator set deliberately.
+    try {
+      const synced = await syncPlanOffers();
+      if (synced) console.log(`Subscription plans: refreshed ${synced} plan(s) with the current tier offers.`);
+    } catch (e) {
+      console.warn("Subscription plan offers not refreshed:", e.message);
+    }
     await seedSuperAdmin();
     // Grounding data for EduSphere AI. Idempotent: skipped once the knowledge
     // base has any rows, so an operator's own edits are never overwritten.

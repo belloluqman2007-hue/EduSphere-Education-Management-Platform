@@ -19,11 +19,16 @@ const db = require("../db");
 const { asyncHandler, err, toNum, cleanStr } = require("../util");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { effectiveTenantId, getTeacherAssignments } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const csv = require("../services/csv");
 const { requireStaffPermission } = require("../services/permissions");
 
 const router = express.Router();
 router.use(requireAuth);
+// CSV exports are the Basic plan's "attendance analytics & exports". Bulk runs
+// (whole-class report sheets, audit exports) are gated separately as
+// `exports_bulk` on the routes that produce them.
+router.use(requireFeature("exports"));
 
 const STAFF = requireRole("madrasa_admin", "teacher", "super_admin");
 const ADMINS = requireRole("madrasa_admin", "super_admin");

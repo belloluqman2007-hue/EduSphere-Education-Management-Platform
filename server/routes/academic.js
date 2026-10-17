@@ -17,10 +17,23 @@ const { effectiveTenantId, getTeacherAssignments, teacherCanAccess } = require("
 const { fileUploader } = require("../middleware/upload");
 const grading = require("../services/grading");
 const { requireStaffPermission } = require("../services/permissions");
+const { requireFeature } = require("../middleware/subscription");
 const communication = require("../services/communication");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
+/* Online exams and the question bank are Premium ("randomisation, auto-grading,
+   instant results, exam analytics"). Lessons and assignments are NOT gated —
+   they are part of running a class on any plan. This router is mounted twice
+   (/api/academic and the compatibility mount /api/exams), so the key is chosen
+   from the full URL rather than from a single path prefix. */
+router.use(requireFeature((req) => {
+  const url = `${req.baseUrl || ""}${req.path || ""}`.replace(/\/+$/, "");
+  if (/(^|\/)questions(\/|$)/.test(url)) return "question_bank";
+  if (/(^|\/)exams(\/|$)/.test(url)) return "online_exams";
+  if (url === "/api/academic" || url === "/api/exams") return "online_exams";
+  return null;
+}));
 const ADMIN = requireRole("madrasa_admin", "super_admin");
 const STAFF = requireRole("madrasa_admin", "teacher", "super_admin");
 const attachmentUpload = fileUploader("files", "attachment", {

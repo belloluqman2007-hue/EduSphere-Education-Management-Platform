@@ -24,6 +24,7 @@ const { asyncHandler, err, ok, cleanStr, toNum, validDate, logActivity } = requi
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { effectiveTenantId, getTeacherAssignments } = require("../middleware/tenant");
 const { requireStaffPermission } = require("../services/permissions");
+const { requireFeature } = require("../middleware/subscription");
 const institution = require("../services/institution");
 const print = require("../services/print-documents");
 const cardDesigns = require("../services/id-card-designs");
@@ -34,6 +35,18 @@ const { imageUploader } = require("../middleware/upload");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
+/* ID cards and certificates are Premium ("Academics: … ID cards, health
+   records, certificates"). Both live in this one printable-documents module, so
+   the key is picked from the path: card routes need `id_cards`, certificate and
+   signatory routes need `certificates`. Public verification of an already
+   issued document stays open — a QR code on a printed card must keep working
+   even if the school later changes plan. */
+router.use(requireFeature((req) => {
+  const p = String(req.path || "");
+  if (/^\/(id-card|staff-id-card|my-card|card|cards|verify-card)(\/|$)/.test(p)) return "id_cards";
+  if (/^\/(certificate|certificates|certificate-designs|certificate-templates|templates|signatories|my-signature)(\/|$)/.test(p)) return "certificates";
+  return null;
+}));
 
 const STAFF = requireRole("madrasa_admin", "teacher");
 const ADMIN = requireRole("madrasa_admin");

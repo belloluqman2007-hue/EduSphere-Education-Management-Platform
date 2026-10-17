@@ -565,6 +565,469 @@ async function tenantAnalytics(madrasaId, opts = {}) {
 }
 
 /* ====================================================================== */
+/*  ADVANCED ANALYTICS — the Premium `analytics_advanced` entitlement      */
+/* ====================================================================== */
+/*
+  The standard analytics payload answers "how is the school doing?". This one
+  answers the four questions a school asks once it is running well:
+
+    • WHERE is attendance slipping?      → attendanceHeatmap (class × weekday)
+    • WHO is carrying the results?       → teacherPerformance
+    • WHAT will we collect next quarter? → feeForecast
+    • WHICH pattern is behind the dips?  → attendancePatterns
+
+  It is a separate read-only endpoint (`GET /api/madrasa/analytics/advanced`,
+  gated on `analytics_advanced`) rather than extra keys on the standard
+  payload, so a school on Free or Basic keeps the dashboard it has always had
+  and the upgrade offer names exactly what would appear.
+
+  Same tenant rules as everything else here: the madrasa id is passed in by the
+  route from the session, and every statement filters by madrasa_id.
+*/
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const ATT_FLOOR_ADVANCED = 75;   // % presence below which a student is flagged
+const MIN_MARKED_DAYS = 5;       // ignore a rate computed from two days of data
+
+/** 0=Sunday … 6=Saturday for a 'YYYY-MM-DD' string (calendar-local, not UTC). */
+function weekdayOf(isoDay) {
+  const s = String(isoDay || "").slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isFinite(d.getTime()) ? d.getDay() : null;
+}
+
+/** Ordinary least-squares slope over a numeric series (per step). */
+function slope(values) {
+  const n = values.length;
+  if (n < 2) return 0;
+  const meanX = (n - 1) / 2;
+  const meanY = values.reduce((a, b) => a + b, 0) / n;
+  let num = 0;
+  let den = 0;
+  values.forEach((y, x) => { num += (x - meanX) * (y - meanY); den += (x - meanX) ** 2; });
+  return den === 0 ? 0 : num / den;
+}
+
+const money = (v) => `₦${Math.round(num(v)).toLocaleString("en-NG")}`;
+
+/**
+ * @param {number} madrasaId  resolved by the route from the session user
+ * @param {object} opts       { months, attendanceDays, termId }
+ */
+async function advancedAnalytics(madrasaId, opts = {}) {
+  const tid = Number(madrasaId);
+  if (!Number.isInteger(tid) || tid <= 0) {
+    throw new Error("advancedAnalytics requires a positive madrasaId");
+  }
+  const months = clampInt(opts.months, 3, 12, 6);
+  const attendanceDays = clampInt(opts.attendanceDays, 7, 90, 60);
+  const dialect = await db.dialect();
+  const today = isoDate(new Date());
+  const since = daysAgo(attendanceDays - 1);
+  const monthLabels = monthKeys(months);
+  const cfg = await grading.getGradingConfig(tid);
+
+  let term = null;
+  const requested = toNum(opts.termId, 0);
+  if (requested) {
+    term = await db.get("SELECT id, position, name_en, name_ar, session_id FROM terms WHERE id = ? AND madrasa_id = ?", [requested, tid]);
+  }
+  if (!term) term = await currentTerm(tid, today);
+  const termId = term ? Number(term.id) : 0;
+
+  /* ------------------------- 1. attendance heatmap ---------------------- */
+  // Grouped in SQL (class × day × status) and folded into weekdays here: the
+  // weekday expression differs per driver, and this keeps it dialect-free.
+  const heatRows = await db.all(
+    `SELECT c.id AS class_id, c.name_en AS class_en, c.name_ar AS class_ar, c.sort_order AS sort_order,
+            ${dayExpr("a.day", dialect)} AS d, a.status AS status, COUNT(*) AS n
+       FROM attendance a
+       JOIN classes c ON c.id = a.class_id AND c.madrasa_id = a.madrasa_id
+      WHERE a.madrasa_id = ? AND a.day >= ? AND a.day <= ?
+      GROUP BY c.id, c.name_en, c.name_ar, c.sort_order, ${dayExpr("a.day", dialect)}, a.status`,
+    [tid, since, today]
+  );
+
+  const byClass = new Map();
+  const byWeekday = new Map();
+  let markedTotal = 0;
+  let attendedTotal = 0;
+  for (const r of heatRows) {
+    const wd = weekdayOf(r.d);
+    if (wd === null) continue;
+    const n = num(r.n);
+    const present = ["present", "late"].includes(String(r.status));
+    markedTotal += n;
+    if (present) attendedTotal += n;
+
+    const cid = Number(r.class_id);
+    if (!byClass.has(cid)) {
+      byClass.set(cid, {
+        id: cid, label: r.class_en, labelAr: r.class_ar || "", sortOrder: num(r.sort_order),
+        cells: new Map(), marked: 0, attended: 0,
+      });
+    }
+    const entry = byClass.get(cid);
+    const cell = entry.cells.get(wd) || { marked: 0, attended: 0 };
+    cell.marked += n; if (present) cell.attended += n;
+    entry.cells.set(wd, cell);
+    entry.marked += n; if (present) entry.attended += n;
+
+    const w = byWeekday.get(wd) || { marked: 0, attended: 0 };
+    w.marked += n; if (present) w.attended += n;
+    byWeekday.set(wd, w);
+  }
+
+  const schoolWeek = WEEKDAYS.map((_, i) => i).filter((i) => (byWeekday.get(i) || { marked: 0 }).marked > 0);
+
+  const attendanceHeatmap = [...byClass.values()]
+    .sort((a, b) => a.sortOrder - b.sortOrder || String(a.label).localeCompare(String(b.label)))
+    .map((c) => ({
+      id: c.id,
+      label: c.label,
+      labelAr: c.labelAr,
+      rate: c.marked ? pct(c.attended, c.marked) : null,
+      marked: c.marked,
+      cells: schoolWeek.map((wd) => {
+        const cell = c.cells.get(wd);
+        return {
+          weekday: WEEKDAYS[wd],
+          weekdayShort: WEEKDAY_SHORT[wd],
+          weekdayIndex: wd,
+          marked: cell ? cell.marked : 0,
+          rate: cell && cell.marked ? pct(cell.attended, cell.marked) : null,
+        };
+      }),
+    }));
+
+  /* ------------------------ 2. attendance patterns ---------------------- */
+  const weekdayPattern = schoolWeek.map((wd) => {
+    const w = byWeekday.get(wd) || { marked: 0, attended: 0 };
+    return { weekday: WEEKDAYS[wd], weekdayShort: WEEKDAY_SHORT[wd], weekdayIndex: wd, marked: w.marked, rate: w.marked ? pct(w.attended, w.marked) : null };
+  });
+  const rankedDays = weekdayPattern.filter((d) => d.rate !== null).slice().sort((a, b) => a.rate - b.rate);
+  const classPattern = attendanceHeatmap
+    .filter((c) => c.rate !== null)
+    .slice()
+    .sort((a, b) => a.rate - b.rate)
+    .map((c) => ({ id: c.id, label: c.label, labelAr: c.labelAr, rate: c.rate, marked: c.marked }));
+
+  const perStudent = await db.all(
+    `SELECT s.id, s.admission_no, s.first_name, s.last_name, s.name_ar,
+            c.name_en AS class_en, c.name_ar AS class_ar,
+            COUNT(a.id) AS marked,
+            SUM(CASE WHEN a.status IN ('present','late') THEN 1 ELSE 0 END) AS attended
+       FROM students s
+       JOIN attendance a ON a.student_id = s.id AND a.madrasa_id = s.madrasa_id AND a.day >= ? AND a.day <= ?
+       LEFT JOIN classes c ON c.id = s.class_id
+      WHERE s.madrasa_id = ? AND s.status IN ${ACTIVE_STATUSES}
+      GROUP BY s.id, s.admission_no, s.first_name, s.last_name, s.name_ar, c.name_en, c.name_ar`,
+    [since, today, tid]
+  );
+  const chronicAbsence = perStudent
+    .map((r) => {
+      const marked = num(r.marked);
+      const rate = marked ? pct(r.attended, marked) : null;
+      return {
+        id: Number(r.id), admissionNo: r.admission_no, name: `${r.first_name} ${r.last_name}`.trim(), nameAr: r.name_ar || "",
+        classEn: r.class_en || "", classAr: r.class_ar || "", marked, rate,
+      };
+    })
+    .filter((s) => s.rate !== null && s.marked >= MIN_MARKED_DAYS && s.rate < ATT_FLOOR_ADVANCED)
+    .sort((a, b) => a.rate - b.rate)
+    .slice(0, 25);
+
+  const attendancePatterns = {
+    window: { since, until: today, days: attendanceDays },
+    overallRate: markedTotal ? pct(attendedTotal, markedTotal) : null,
+    marked: markedTotal,
+    schoolWeek: schoolWeek.map((wd) => ({ weekday: WEEKDAYS[wd], weekdayShort: WEEKDAY_SHORT[wd], weekdayIndex: wd })),
+    byWeekday: weekdayPattern,
+    weakestDay: rankedDays.length ? rankedDays[0] : null,
+    strongestDay: rankedDays.length ? rankedDays[rankedDays.length - 1] : null,
+    byClass: classPattern,
+    weakestClass: classPattern.length ? classPattern[0] : null,
+    chronicAbsence,
+    chronicAbsenceCount: chronicAbsence.length,
+    floor: ATT_FLOOR_ADVANCED,
+  };
+
+  /* ------------------------- 3. teacher performance --------------------- */
+  const [teachers, assignmentRows, resultRows, attendanceMarked, homeworkRows, examRows] = await Promise.all([
+    db.all("SELECT id, full_name, username FROM users WHERE madrasa_id = ? AND role = 'teacher' AND is_active = 1 ORDER BY full_name", [tid]),
+    db.all(
+      `SELECT ta.user_id, COUNT(*) AS n,
+              COUNT(DISTINCT ta.class_id) AS classes,
+              COUNT(DISTINCT ta.subject_id) AS subjects
+         FROM teacher_assignments ta WHERE ta.madrasa_id = ? GROUP BY ta.user_id`,
+      [tid]
+    ),
+    db.all(
+      `SELECT ta.user_id, COUNT(r.id) AS n, AVG(r.total) AS avg
+         FROM teacher_assignments ta
+         JOIN results r ON r.madrasa_id = ta.madrasa_id
+           AND (ta.class_id IS NULL OR r.class_id = ta.class_id)
+           AND (ta.subject_id IS NULL OR r.subject_id = ta.subject_id)
+        WHERE ta.madrasa_id = ? AND r.term_id = ?
+        GROUP BY ta.user_id`,
+      [tid, termId]
+    ),
+    db.all(
+      `SELECT recorded_by AS user_id, COUNT(DISTINCT ${dayExpr("day", dialect)}) AS days, COUNT(*) AS entries
+         FROM attendance
+        WHERE madrasa_id = ? AND recorded_by IS NOT NULL AND day >= ? AND day <= ?
+        GROUP BY recorded_by`,
+      [tid, since, today]
+    ),
+    db.all(
+      `SELECT COALESCE(teacher_id, created_by) AS user_id, kind, status, COUNT(*) AS n
+         FROM homework WHERE madrasa_id = ? AND COALESCE(teacher_id, created_by) IS NOT NULL
+        GROUP BY COALESCE(teacher_id, created_by), kind, status`,
+      [tid]
+    ),
+    db.all("SELECT created_by AS user_id, COUNT(*) AS n FROM exams WHERE madrasa_id = ? AND created_by IS NOT NULL GROUP BY created_by", [tid]),
+  ]);
+
+  const mapOf = (rows, key = "user_id") => new Map(rows.map((r) => [Number(r[key]), r]));
+  const assignMap = mapOf(assignmentRows);
+  const resultMap = mapOf(resultRows);
+  const attMap = mapOf(attendanceMarked);
+  const examMap = mapOf(examRows);
+  const homeworkByTeacher = new Map();
+  for (const r of homeworkRows) {
+    const uid = Number(r.user_id);
+    const bucket = homeworkByTeacher.get(uid) || { lessons: 0, assignments: 0, published: 0 };
+    if (String(r.kind) === "assignment") bucket.assignments += num(r.n);
+    else bucket.lessons += num(r.n);
+    if (String(r.status) === "published") bucket.published += num(r.n);
+    homeworkByTeacher.set(uid, bucket);
+  }
+
+  const teacherPerformance = teachers.map((t) => {
+    const a = assignMap.get(Number(t.id)) || {};
+    const r = resultMap.get(Number(t.id)) || {};
+    const att = attMap.get(Number(t.id)) || {};
+    const hw = homeworkByTeacher.get(Number(t.id)) || { lessons: 0, assignments: 0, published: 0 };
+    const ex = examMap.get(Number(t.id)) || {};
+    const results = num(r.n);
+    const average = results ? round(r.avg, 1) : null;
+    return {
+      id: Number(t.id),
+      name: t.full_name || t.username || `Teacher ${t.id}`,
+      classes: num(a.classes),
+      subjects: num(a.subjects),
+      assignments: num(a.n),
+      resultsEntered: results,
+      resultsAverage: average,
+      passRate: null,
+      attendanceDaysMarked: num(att.days),
+      attendanceEntries: num(att.entries),
+      lessons: hw.lessons,
+      assignmentsSet: hw.assignments,
+      published: hw.published,
+      examsCreated: num(ex.n),
+      // A single 0-100 "engagement" score so the table can be sorted without
+      // pretending the underlying numbers are comparable: results average
+      // weighted with the teaching activity actually recorded this window.
+      engagement: round(
+        Math.min(100,
+          (average === null ? 0 : average * 0.5) +
+          Math.min(20, num(att.days) * 2) +
+          Math.min(15, hw.published * 3) +
+          Math.min(15, num(ex.n) * 5)),
+        1
+      ),
+    };
+  });
+
+  // Pass rate per teacher's own scope (kept as a second query so a teacher with
+  // no results never divides by zero above).
+  const passRows = await db.all(
+    `SELECT ta.user_id,
+            SUM(CASE WHEN ts.average >= ? THEN 1 ELSE 0 END) AS passed,
+            COUNT(ts.id) AS n
+       FROM teacher_assignments ta
+       JOIN term_summaries ts ON ts.madrasa_id = ta.madrasa_id
+         AND (ta.class_id IS NULL OR ts.class_id = ta.class_id)
+      WHERE ta.madrasa_id = ? AND ts.term_id = ?
+      GROUP BY ta.user_id`,
+    [cfg.passMark, tid, termId]
+  );
+  const passMap = mapOf(passRows);
+  for (const t of teacherPerformance) {
+    const p = passMap.get(t.id);
+    t.passRate = p && num(p.n) ? pct(p.passed, p.n) : null;
+  }
+  teacherPerformance.sort((a, b) => b.engagement - a.engagement || String(a.name).localeCompare(String(b.name)));
+
+  /* ---------------------------- 4. fee forecast ------------------------- */
+  const [feeTrendRows, billedRow, collectedRow, paidByStudent, rollRows] = await Promise.all([
+    db.all(
+      `SELECT ${monthExpr("payment_date", dialect)} AS m, COUNT(*) AS n, COALESCE(SUM(amount_ngn),0) AS amount
+         FROM fee_payments WHERE madrasa_id = ?
+        GROUP BY ${monthExpr("payment_date", dialect)}`,
+      [tid]
+    ),
+    db.get("SELECT COALESCE(SUM(amount_ngn),0) AS billed FROM fee_items WHERE madrasa_id = ? AND term_id = ?", [tid, termId]),
+    db.get("SELECT COALESCE(SUM(amount_ngn),0) AS amount FROM fee_payments WHERE madrasa_id = ?", [tid]),
+    db.all(
+      `SELECT fp.student_id, SUM(fp.amount_ngn) AS paid
+         FROM fee_payments fp
+         JOIN fee_items fi ON fi.id = fp.fee_item_id AND fi.madrasa_id = fp.madrasa_id
+        WHERE fp.madrasa_id = ? AND fi.term_id = ?
+        GROUP BY fp.student_id`,
+      [tid, termId]
+    ),
+    db.all(`SELECT id FROM students WHERE madrasa_id = ? AND status IN ${ACTIVE_STATUSES}`, [tid]),
+  ]);
+
+  const trend = fillSeries(monthLabels, feeTrendRows, "m", (r) => round(num(r.amount), 2));
+  const values = trend.map((p) => p.value);
+  const perMonth = slope(values);
+  const lastValue = values.length ? values[values.length - 1] : 0;
+  const average = values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+
+  // Outstanding for the reported term, with the SAME semantics the fees module
+  // and the standard analytics use: the term's items are billed to every
+  // student on the roll, and only payments against those items are credited.
+  const billedPerStudent = num(billedRow && billedRow.billed);
+  const studentCount = rollRows.length;
+  const billedTotal = billedPerStudent * studentCount;
+  const paidMap = new Map(paidByStudent.map((r) => [Number(r.student_id), num(r.paid)]));
+  let outstanding = 0;
+  let debtors = 0;
+  if (billedPerStudent > 0) {
+    for (const s of rollRows) {
+      const gap = billedPerStudent - (paidMap.get(Number(s.id)) || 0);
+      if (gap > 0) { outstanding += gap; debtors += 1; }
+    }
+  }
+
+  const horizon = [];
+  for (let i = 1; i <= 3; i++) {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + i);
+    const projected = Math.max(0, lastValue + perMonth * i);
+    horizon.push({
+      label: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"),
+      projected: round(projected, 2),
+      conservative: round(Math.max(0, Math.min(projected, average)), 2),
+    });
+  }
+
+  const feeForecast = {
+    currency: "NGN",
+    term: term ? { id: termId, nameEn: term.name_en, nameAr: term.name_ar || "" } : null,
+    history: trend,
+    averagePerMonth: round(average, 2),
+    lastMonth: round(lastValue, 2),
+    trendPerMonth: round(perMonth, 2),
+    direction: perMonth > average * 0.05 ? "up" : perMonth < -(average * 0.05) ? "down" : "flat",
+    collected: round(num(collectedRow && collectedRow.amount), 2),
+    billedTotal: round(billedTotal, 2),
+    outstanding: round(outstanding, 2),
+    debtors,
+    students: studentCount,
+    projected: horizon,
+    projectedNext3Months: round(horizon.reduce((a, b) => a + b.projected, 0), 2),
+    // Honest about what a straight-line projection is: a planning number, not
+    // a promise. The UI prints this sentence next to the chart.
+    basis: `Straight-line projection from the last ${months} month(s) of recorded payments. Term fees are treated as billed to every student on the roll.`,
+  };
+
+  /* ------------------------------ 5. insights --------------------------- */
+  const insights = [];
+  if (attendancePatterns.weakestDay && attendancePatterns.strongestDay &&
+      attendancePatterns.strongestDay.rate - attendancePatterns.weakestDay.rate >= 5) {
+    insights.push({
+      id: "attendance_weekday_gap",
+      kind: "attendance",
+      severity: "warning",
+      title: `Attendance dips on ${attendancePatterns.weakestDay.weekday}s`,
+      detail: `${attendancePatterns.weakestDay.rate}% present on ${attendancePatterns.weakestDay.weekday} against ${attendancePatterns.strongestDay.rate}% on ${attendancePatterns.strongestDay.weekday} — worth a register check and a parent reminder the evening before.`,
+    });
+  }
+  if (attendancePatterns.weakestClass && attendancePatterns.overallRate !== null &&
+      attendancePatterns.overallRate - attendancePatterns.weakestClass.rate >= 5) {
+    insights.push({
+      id: "attendance_class_gap",
+      kind: "attendance",
+      severity: "warning",
+      title: `${attendancePatterns.weakestClass.label} is below the school average`,
+      detail: `${attendancePatterns.weakestClass.rate}% present against a school average of ${attendancePatterns.overallRate}% over the last ${attendanceDays} days.`,
+    });
+  }
+  if (chronicAbsence.length) {
+    insights.push({
+      id: "chronic_absence",
+      kind: "attendance",
+      severity: chronicAbsence.length > 5 ? "danger" : "warning",
+      title: `${chronicAbsence.length} student(s) below ${ATT_FLOOR_ADVANCED}% attendance`,
+      detail: chronicAbsence.slice(0, 3).map((s) => `${s.name} (${s.rate}%)`).join(", ") +
+        (chronicAbsence.length > 3 ? ` and ${chronicAbsence.length - 3} more` : "") + ".",
+    });
+  }
+  if (teacherPerformance.length) {
+    const top = teacherPerformance[0];
+    const withResults = teacherPerformance.filter((t) => t.resultsAverage !== null);
+    if (withResults.length) {
+      const best = withResults.slice().sort((a, b) => b.resultsAverage - a.resultsAverage)[0];
+      insights.push({
+        id: "teacher_top_average",
+        kind: "teaching",
+        severity: "info",
+        title: `${best.name} has the highest class average this term`,
+        detail: `${best.resultsAverage}% across ${best.resultsEntered} recorded result(s). ${top.name} is the most active this window (${top.attendanceDaysMarked} register day(s), ${top.published} published item(s)).`,
+      });
+    }
+    const quiet = teacherPerformance.filter((t) => !t.attendanceDaysMarked && !t.published && !t.resultsEntered);
+    if (quiet.length) {
+      insights.push({
+        id: "teacher_no_activity",
+        kind: "teaching",
+        severity: "warning",
+        title: `${quiet.length} teacher(s) recorded nothing in the last ${attendanceDays} days`,
+        detail: quiet.slice(0, 4).map((t) => t.name).join(", ") + (quiet.length > 4 ? " and others" : "") + ".",
+      });
+    }
+  }
+  if (feeForecast.billedTotal > 0) {
+    insights.push({
+      id: "fee_outstanding",
+      kind: "finance",
+      severity: feeForecast.outstanding > feeForecast.billedTotal * 0.3 ? "danger" : "warning",
+      title: `${money(feeForecast.outstanding)} outstanding for ${term ? term.name_en : "this term"}`,
+      detail: `${feeForecast.debtors} of ${feeForecast.students} student(s) still owe, against ${money(feeForecast.collected)} collected to date.`,
+    });
+  }
+  if (values.length >= 3) {
+    insights.push({
+      id: "fee_trend",
+      kind: "finance",
+      severity: feeForecast.direction === "down" ? "warning" : "ok",
+      title: `Collections are trending ${feeForecast.direction}`,
+      detail: `${money(feeForecast.trendPerMonth)} per month over the last ${months} months; ${money(feeForecast.projectedNext3Months)} projected over the next three.`,
+    });
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    window: { months, attendanceDays, since, until: today },
+    term: term ? { id: termId, position: num(term.position), nameEn: term.name_en, nameAr: term.name_ar || "", sessionLabel: term.session_label || "" } : null,
+    grading: { passMark: cfg.passMark },
+    attendanceHeatmap,
+    attendancePatterns,
+    teacherPerformance,
+    feeForecast,
+    insights,
+  };
+}
+
+/* ====================================================================== */
 /*  PLATFORM ANALYTICS — super admin only (all tenants, no PII)           */
 /* ====================================================================== */
 
@@ -682,6 +1145,7 @@ async function platformAnalytics(opts = {}) {
 
 module.exports = {
   tenantAnalytics,
+  advancedAnalytics,
   platformAnalytics,
   currentTerm,
   // exported for tests

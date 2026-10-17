@@ -51,6 +51,7 @@ const CATALOGUE = [
 ];
 
 async function ensurePlans() {
+  const { featuresForTier } = require("../server/services/plan-catalogue");
   for (const p of CATALOGUE) {
     const row = await ctx.db.get("SELECT id FROM plans WHERE code = ?", [p.code]);
     if (row) {
@@ -61,7 +62,10 @@ async function ensurePlans() {
     } else {
       await ctx.db.run(
         "INSERT INTO plans (code,name,price_ngn,price_yearly_ngn,student_limit,teacher_limit,features,sort_order) VALUES (?,?,?,?,?,?,?,?)",
-        [p.code, p.name, p.price_ngn, p.price_yearly_ngn, p.student_limit, p.teacher_limit, "{}", CATALOGUE.indexOf(p) + 1]
+        // Inserted tiers carry the REAL feature map, so an upgrade to Basic or
+        // Premium in a test unlocks exactly what production unlocks.
+        [p.code, p.name, p.price_ngn, p.price_yearly_ngn, p.student_limit, p.teacher_limit,
+         JSON.stringify(featuresForTier(p.code)), CATALOGUE.indexOf(p) + 1]
       );
     }
   }

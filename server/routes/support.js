@@ -17,6 +17,7 @@ const { asyncHandler, err, ok, cleanStr, toNum, logActivity } = require("../util
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { effectiveTenantId } = require("../middleware/tenant");
 const { requirePermission } = require("../services/permissions");
+const { gateFeature } = require("../middleware/subscription");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant, requireRole("madrasa_admin"));
@@ -70,6 +71,12 @@ router.post("/tickets", requirePermission("support.create"), asyncHandler(async 
   if (!body) return err(res, 400, "Please describe the issue.");
   const category = CATEGORIES.has(cleanStr(b.category, 40)) ? cleanStr(b.category, 40) : "general";
   const priority = PRIORITIES.has(cleanStr(b.priority, 20)) ? cleanStr(b.priority, 20) : "medium";
+  // Every plan can raise a ticket and get an answer. Jumping the queue is what
+  // "priority support + onboarding" (Premium) sells, so `urgent` is the gate —
+  // and the refusal tells the school exactly what upgrading would change.
+  if (priority === "urgent") {
+    if (!(await gateFeature(req, res, tid, "priority_support"))) return;
+  }
   const result = await db.run(
     "INSERT INTO support_tickets (madrasa_id, subject, body, category, priority, status, created_by) VALUES (?,?,?,?,?,'open',?)",
     [tid, subject, body, category, priority, req.user.id]

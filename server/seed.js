@@ -18,6 +18,7 @@ const db = require("./db");
 const config = require("./config");
 const { migrate } = require("./migrate");
 const grading = require("./services/grading");
+const catalogue = require("./services/plan-catalogue");
 
 /* ------------------------------ date helpers ------------------------------
    Demo data is generated RELATIVE TO TODAY so the dashboards, attendance
@@ -33,23 +34,35 @@ function daysAgo(n, from = new Date()) {
   return isoDate(d);
 }
 
+/* The three tiers and everything they mean live in ONE place — the plan
+   catalogue. The seed only decides prices, limits and trial length; the
+   feature keys and the marketing copy come from the catalogue so the pricing
+   page, the feature gates and the assistant can never disagree with each
+   other. Limits and expiry behaviour are deliberately unchanged. */
 const DEFAULT_PLANS = [
   {
-    code: "free", name: "Free", name_ar: "مجاني", price_ngn: 0,
+    code: "free", name: catalogue.TIERS.free.name, name_ar: catalogue.TIERS.free.name_ar,
+    description: catalogue.TIERS.free.tagline,
+    price_ngn: 0, price_yearly_ngn: 0, trial_days: 0,
     student_limit: 50, teacher_limit: 3,
-    features: { report_cards: true, attendance: true, fees: false, announcements: true },
+    features: catalogue.featuresForTier("free"),
     sort_order: 1,
   },
   {
-    code: "basic", name: "Basic", name_ar: "أساسي", price_ngn: 8000,
+    code: "basic", name: catalogue.TIERS.basic.name, name_ar: catalogue.TIERS.basic.name_ar,
+    description: catalogue.TIERS.basic.tagline,
+    // Yearly = ten monthly payments, i.e. two months free.
+    price_ngn: 8000, price_yearly_ngn: 80000, trial_days: 14,
     student_limit: 300, teacher_limit: 15,
-    features: { report_cards: true, attendance: true, fees: true, announcements: true },
+    features: catalogue.featuresForTier("basic"),
     sort_order: 2,
   },
   {
-    code: "premium", name: "Premium", name_ar: "مميز", price_ngn: 20000,
+    code: "premium", name: catalogue.TIERS.premium.name, name_ar: catalogue.TIERS.premium.name_ar,
+    description: catalogue.TIERS.premium.tagline,
+    price_ngn: 20000, price_yearly_ngn: 200000, trial_days: 14,
     student_limit: -1, teacher_limit: -1,
-    features: { report_cards: true, attendance: true, fees: true, announcements: true, ai: true, exports: true },
+    features: catalogue.featuresForTier("premium"),
     sort_order: 3,
   },
 ];
@@ -59,13 +72,78 @@ async function seedPlans() {
   if (existing && Number(existing.n) > 0) return 0;
   let n = 0;
   for (const p of DEFAULT_PLANS) {
-    await db.run(
-      "INSERT INTO plans (code, name, name_ar, price_ngn, student_limit, teacher_limit, features, sort_order) VALUES (?,?,?,?,?,?,?,?)",
-      [p.code, p.name, p.name_ar, p.price_ngn, p.student_limit, p.teacher_limit, JSON.stringify(p.features), p.sort_order]
-    );
+    try {
+      await db.run(
+        `INSERT INTO plans
+           (code, name, name_ar, description, price_ngn, price_yearly_ngn, trial_days,
+            student_limit, teacher_limit, features, sort_order)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        [p.code, p.name, p.name_ar, p.description, p.price_ngn, p.price_yearly_ngn, p.trial_days,
+          p.student_limit, p.teacher_limit, JSON.stringify(p.features), p.sort_order]
+      );
+    } catch (e) {
+      // A database migrated before the offer columns existed: fall back to the
+      // original column set rather than refusing to seed a catalogue at all.
+      await db.run(
+        "INSERT INTO plans (code, name, name_ar, price_ngn, student_limit, teacher_limit, features, sort_order) VALUES (?,?,?,?,?,?,?,?)",
+        [p.code, p.name, p.name_ar, p.price_ngn, p.student_limit, p.teacher_limit, JSON.stringify(p.features), p.sort_order]
+      );
+    }
     n++;
   }
   return n;
+}
+
+/**
+ * Brings an ALREADY-SEEDED catalogue up to date with the current tier offers.
+ *
+ * A deployment that ran the old seed has `plans.features` with four keys, so
+ * every premium capability would read as "off" and the pricing page would have
+ * nothing to sell. This is the idempotent repair, and it is deliberately
+ * conservative — it only ever FILLS GAPS:
+ *
+ *   • a feature key the stored JSON does not mention → the tier default
+ *     (an explicit true/false the operator set is never overwritten),
+ *   • an empty `description` → the tier tagline,
+ *   • a zero `price_yearly_ngn` on a paid plan → ten monthly payments,
+ *   • a zero `trial_days` on a paid plan → the catalogue's trial length.
+ *
+ * Prices the operator set, student/teacher limits, plan names and any custom
+ * plan rows are left exactly as they are.
+ */
+async function syncPlanOffers() {
+  let updated = 0;
+  for (const p of DEFAULT_PLANS) {
+    let row = null;
+    try {
+      row = await db.get("SELECT * FROM plans WHERE code = ?", [p.code]);
+    } catch (e) {
+      return updated; // no plans table yet (pre-migration boot) — nothing to sync
+    }
+    if (!row) continue;
+
+    const stored = catalogue.parseFeatures(row.features);
+    const features = catalogue.normalizeFeatures(stored, p.code);
+    const sets = [];
+    const vals = [];
+    if (JSON.stringify(features) !== JSON.stringify(stored)) {
+      sets.push("features = ?"); vals.push(JSON.stringify(features));
+    }
+    if (!String(row.description || "").trim()) {
+      sets.push("description = ?"); vals.push(p.description);
+    }
+    if (Number(row.price_ngn || 0) > 0 && Number(row.price_yearly_ngn || 0) <= 0) {
+      sets.push("price_yearly_ngn = ?"); vals.push(p.price_yearly_ngn);
+    }
+    if (Number(row.price_ngn || 0) > 0 && Number(row.trial_days || 0) <= 0) {
+      sets.push("trial_days = ?"); vals.push(p.trial_days);
+    }
+    if (!sets.length) continue;
+    vals.push(row.id);
+    await db.run(`UPDATE plans SET ${sets.join(", ")} WHERE id = ?`, vals);
+    updated++;
+  }
+  return updated;
 }
 
 /**
@@ -517,6 +595,8 @@ async function runSeed({ demo = false } = {}) {
   await migrate();
   const plans = await seedPlans();
   if (plans) console.log(`Seeded ${plans} subscription plan(s).`);
+  const synced = await syncPlanOffers();
+  if (synced) console.log(`Updated ${synced} plan(s) with the current tier offers.`);
   await seedSuperAdmin();
   if (demo) {
     const existing = await db.get("SELECT COUNT(*) AS n FROM madaris");
@@ -529,7 +609,7 @@ async function runSeed({ demo = false } = {}) {
   await db.close();
 }
 
-module.exports = { seedPlans, seedSuperAdmin, seedDemo, runSeed, normalizeSuperAdminUsernames };
+module.exports = { DEFAULT_PLANS, seedPlans, syncPlanOffers, seedSuperAdmin, seedDemo, runSeed, normalizeSuperAdminUsernames };
 
 if (require.main === module) {
   require("./db-target").announce({ allowCreate: true });

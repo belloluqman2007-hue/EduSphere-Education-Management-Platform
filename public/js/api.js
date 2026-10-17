@@ -33,15 +33,30 @@
       credentials: "same-origin",
       body: body instanceof FormData ? body : (body ? JSON.stringify(body) : undefined),
     });
-    if (res.status === 403 && headers["X-CSRF-Token"]) {
-      // CSRF token expired — refresh once and retry
-      csrfToken = null;
-      return request(method, path, body, Object.assign({ retried: true }, opts));
-    }
     let data = null;
     const ct = res.headers.get("content-type") || "";
     if (ct.includes("application/json")) data = await res.json().catch(() => null);
+
+    // A 403 is either an expired CSRF token (retry once) or a real refusal.
+    // The body is read FIRST so a plan-gated action is never mistaken for a
+    // stale token and silently retried into the same wall.
+    const featureGated = Boolean(data && data.code === "feature_gated");
+    if (res.status === 403 && headers["X-CSRF-Token"] && !featureGated && !opts.retried) {
+      csrfToken = null;
+      return request(method, path, body, Object.assign({ retried: true }, opts));
+    }
     if (!res.ok) {
+      /* A plan-gated action is a SALES moment, not a dead end: the server sends
+         the feature, the tier that carries it and what that tier includes, and
+         the subscription module turns it into the upsell dialog. Any surface
+         (admin console, teacher workspace, portal) can listen for this. */
+      if (featureGated && typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+        try {
+          window.dispatchEvent(new CustomEvent("edusphere:feature-gated", {
+            detail: Object.assign({ path, method }, data),
+          }));
+        } catch (e) { /* non-fatal */ }
+      }
       // A 401 on an authenticated call means the session ended server-side
       // (logged out elsewhere, expired, deactivated). Tell the dashboard so
       // it can fall back to the sign-in screen instead of painting a shell

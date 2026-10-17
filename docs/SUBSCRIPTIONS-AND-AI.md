@@ -68,6 +68,26 @@ midnight, not when somebody next remembers to update a row.
 results and records stay fully readable. Only *adding new* students and teachers
 is paused.
 
+### Plans, tiers and what each one includes
+
+Three tiers are published: **Free** (50 students / 3 teachers — the paperless
+basics), **Basic** (300 / 15 — fees, portals, messaging, exports, library) and
+**Premium** (unlimited — the AI copilot, advanced analytics, online exams,
+payroll/HR, branding, trust & operations). Each tier is described to a school as
+what it **gets**, with a one-line "quick win", never as a bare list of ceilings.
+
+What a tier means lives in exactly one file,
+`server/services/plan-catalogue.js`, and everything else reads it: the seed, the
+feature gate, the pricing endpoint, the admin pricing screen, the upsell dialog
+and the AI assistant's own answers about plans. A gated action is refused with
+**HTTP 403 + `code: "feature_gated"`** carrying the feature, the plan that
+includes it and that plan's benefits — which `public/js/api.js` turns into the
+upsell dialog anywhere in the app.
+
+Full detail — the feature keys, the precedence rules, which routes are gated and
+which are deliberately not — is in
+[`PLAN-TIERS-AND-FEATURE-GATING.md`](./PLAN-TIERS-AND-FEATURE-GATING.md).
+
 ### Automatic messaging
 
 `subscription.sweep()` runs whenever an institution loads its subscription and
@@ -155,6 +175,27 @@ a failed model call falls back to the same knowledge-base lookup.
 | `escalate_to_human` | app, whatsapp | Opens a support ticket / hands over the chat |
 | `register_interest` | public | Records a demo/ sign-up lead |
 
+### The AI copilot (Premium)
+
+Separate from the chat tools, four endpoints do real work on the school's own
+data. Each is behind its own feature key, so a school on a lower tier gets the
+403 + upsell rather than a silent failure, and `GET /api/ai/copilot` lists all
+four with `entitled` flags — the list itself is never gated, because it is the
+advertisement.
+
+| Endpoint | Feature key | Returns |
+|---|---|---|
+| `POST /api/ai/copilot/report-comments` | `ai_comments` | A draft comment per student, from real results + attendance. Drafts only — nothing is written to a report sheet. |
+| `GET /api/ai/copilot/at-risk` | `ai_risk_alerts` | Students below the pass mark or the 75% attendance floor, with reasons, a risk score, suggested actions and a draft parent message. |
+| `POST /api/ai/copilot/questions` | `ai_questions` | Questions for a subject, drawn from the school's own bank first; `save: true` files them for review. |
+| `GET /api/ai/copilot/insights` | `analytics_advanced` | A plain-language answer plus the computed analytics behind it. |
+
+The assistant widget renders these as chips (`public/js/edusphere-ai.js`): an
+unlocked chip runs the capability in the chat, a locked chip carries a padlock
+and opens the same upsell dialog. Without an `AI_API_KEY` every endpoint still
+answers from computed data (`mode: "template" | "bank" | "computed"`) instead of
+inventing numbers.
+
 **There is deliberately no tool that changes a plan or approves a payment.**
 The assistant can request an upgrade, which still requires a real transfer to be
 confirmed by a human. That is the guardrail that stops a prompt-injected
@@ -198,8 +239,11 @@ exists.
 
 | Area | File |
 |---|---|
-| Billing logic | `server/services/subscription.js` |
+| Tier definitions + offer copy | `server/services/plan-catalogue.js` |
+| Billing logic (`checkFeature`, `entitlements`) | `server/services/subscription.js` |
+| Feature gate middleware | `server/middleware/subscription.js` |
 | Billing routes | `server/routes/subscription.js` |
+| Public pricing endpoint | `server/routes/public.js` (`GET /api/public/plans`) |
 | Limit/expiry gate | `checkPlanLimits` in `server/util.js` |
 | AI logic | `server/services/ai.js` |
 | AI routes | `server/routes/ai.js` |
@@ -208,4 +252,4 @@ exists.
 | Widget bootstrap | `public/js/ai-boot.js` |
 | Styles | `public/css/subscription.css` |
 | Schema | migrations `042_subscriptions_and_billing`, `043_edusphere_ai_assistant` |
-| Tests | `test/subscription.test.js` (18 tests) |
+| Tests | `test/subscription.test.js` (billing lifecycle), `test/subscription-features.test.js` (tiers + gating), `test/subscription-ui.test.js` (jsdom pricing screen + upsell) |

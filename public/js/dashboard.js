@@ -4263,47 +4263,88 @@
   async function pageSuperPlans(content) {
     const data = await window.API.get("/platform/plans").catch(() => ({ plans: [] }));
     const plans = data.plans || [];
+    // The feature catalogue the editor renders: one source of truth shared with
+    // the seed, the gates and the pricing page (see services/plan-catalogue.js).
+    const featureCatalogue = data.feature_catalogue || { groups: [], features: [], tiers: [] };
     content.innerHTML = `
       <div class="dash-page-head"><div><div class="dash-crumb">Platform</div><h2>Subscription Plans</h2><p>Limits and pricing applied to institutions. −1 means unlimited.</p></div>
         <button class="dash-btn dash-btn-primary" id="saAddPlan">${I.plus} New Plan</button></div>
       <div class="dash-card"><div class="dash-table-wrap"><table class="dash-table">
-        <thead><tr><th>Code</th><th>Name</th><th>Price / month</th><th>Student limit</th><th>Teacher limit</th><th>Madrasas</th><th></th></tr></thead>
+        <thead><tr><th>Code</th><th>Name</th><th>Offer</th><th>Price / month</th><th>Price / year</th><th>Students</th><th>Teachers</th><th>Features on</th><th>Institutions</th><th></th></tr></thead>
         <tbody>
           ${plans.length ? plans.map((p) => `
             <tr>
               <td><strong>${esc(p.code)}</strong></td>
               <td>${esc(p.name)}${p.name_ar ? ` · <span lang="ar" dir="rtl">${esc(p.name_ar)}</span>` : ""}</td>
+              <td>${p.offer && p.offer.tagline ? `<span class="hint">“${esc(p.offer.tagline)}”</span>` : `<span class="hint">${esc(p.description || "")}</span>`}</td>
               <td>${fmtMoney(p.price_ngn)}</td>
+              <td>${fmtMoney(p.price_yearly_ngn)}</td>
               <td>${fmtLimit(p.student_limit)}</td>
               <td>${fmtLimit(p.teacher_limit)}</td>
+              <td>${Object.values(p.features || {}).filter(Boolean).length}</td>
               <td>${Number(p.madaris_count) || 0}</td>
               <td style="text-align:right;"><button class="dash-btn dash-btn-ghost dash-btn-sm" data-plan-edit="${p.id}">${I.edit} Edit</button></td>
             </tr>`).join("")
-            : `<tr class="dash-empty-row"><td colspan="7">No plans yet.</td></tr>`}
+            : `<tr class="dash-empty-row"><td colspan="10">No plans yet.</td></tr>`}
         </tbody>
       </table></div></div>
     `;
-    content.querySelector("#saAddPlan").addEventListener("click", () => openPlanModal(null, content, plans));
+    content.querySelector("#saAddPlan").addEventListener("click", () => openPlanModal(null, content, plans, featureCatalogue));
     content.querySelectorAll("[data-plan-edit]").forEach((b) => b.addEventListener("click", () => {
       const p = plans.find((x) => String(x.id) === b.getAttribute("data-plan-edit"));
-      openPlanModal(p, content, plans);
+      openPlanModal(p, content, plans, featureCatalogue);
     }));
   }
 
-  function openPlanModal(plan, content, plans) {
+  /**
+   * Plan editor. The feature map is edited as SWITCHES grouped by capability —
+   * the same keys the seed writes and the route gates read — because a raw JSON
+   * box let an operator typo a key and silently switch a paying school off.
+   * Tier presets fill every switch from the catalogue in one click.
+   */
+  function openPlanModal(plan, content, plans, catalogue) {
     const isNew = !plan;
-    const features = (plan && plan.features && typeof plan.features === "object") ? JSON.stringify(plan.features) : "";
-    const wrap = openModal(isNew ? "New Plan" : "Edit Plan", `
+    const cat = catalogue || { groups: [], features: [], tiers: [] };
+    const current = (plan && plan.features && typeof plan.features === "object") ? plan.features : {};
+    const featureList = cat.features || [];
+    const groups = cat.groups || [];
+    const featuresHTML = groups.map((g) => {
+      const items = featureList.filter((f) => f.group === g.key);
+      if (!items.length) return "";
+      return `
+        <fieldset class="dash-field" style="grid-column:1/-1;border:1px solid var(--d-line);border-radius:10px;padding:10px 12px;">
+          <legend style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--d-muted);padding:0 6px;">${esc(g.title)}</legend>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:6px 14px;">
+            ${items.map((f) => `
+              <label style="display:flex;gap:8px;align-items:flex-start;font-size:.82rem;line-height:1.35;" title="${esc(f.blurb || "")}">
+                <input type="checkbox" name="feature_${esc(f.key)}" value="1" ${current[f.key] ? "checked" : ""} style="margin-top:2px;">
+                <span>${esc(f.label)} <span class="hint">(${esc(f.minimum_tier)})</span></span>
+              </label>`).join("")}
+          </div>
+        </fieldset>`;
+    }).join("");
+    const wrap = openModal(isNew ? "New Plan" : `Edit Plan — ${plan.name}`, `
       <form id="saPlanForm">
         <div class="dash-form-grid">
           <div class="dash-field"><label>Code <span class="req">*</span></label><input name="code" value="${esc(plan ? plan.code : "")}" ${isNew ? "" : "readonly"} required></div>
           <div class="dash-field"><label>Name <span class="req">*</span></label><input name="name" value="${esc(plan ? plan.name : "")}" required></div>
           <div class="dash-field"><label>Name (Arabic)</label><input name="name_ar" value="${esc(plan ? plan.name_ar || "" : "")}"></div>
+          <div class="dash-field"><label>Tagline (shown on the pricing page)</label><input name="description" maxlength="255" value="${esc(plan ? plan.description || "" : "")}" placeholder="Everything a growing school needs"></div>
           <div class="dash-field"><label>Price (₦ / month)</label><input name="price_ngn" type="number" min="0" step="0.01" value="${plan ? Number(plan.price_ngn) : 0}"></div>
+          <div class="dash-field"><label>Price (₦ / year)</label><input name="price_yearly_ngn" type="number" min="0" step="0.01" value="${plan ? Number(plan.price_yearly_ngn || 0) : 0}"></div>
           <div class="dash-field"><label>Student limit</label><input name="student_limit" type="number" value="${plan ? Number(plan.student_limit) : -1}"></div>
           <div class="dash-field"><label>Teacher limit</label><input name="teacher_limit" type="number" value="${plan ? Number(plan.teacher_limit) : -1}"></div>
+          <div class="dash-field"><label>Trial days</label><input name="trial_days" type="number" min="0" value="${plan ? Number(plan.trial_days || 0) : 0}"></div>
           <div class="dash-field"><label>Sort order</label><input name="sort_order" type="number" value="${plan ? Number(plan.sort_order) : 99}"></div>
-          <div class="dash-field" style="grid-column:1/-1;"><label>Features (JSON)</label><textarea name="features" placeholder='{"portal": true, "exports": true}'>${esc(features)}</textarea></div>
+          <div class="dash-field" style="grid-column:1/-1;">
+            <label>Apply a tier preset</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${(cat.tiers || []).map((t) => `<button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-tier-preset="${esc(t.code)}" title="${esc(t.tagline || "")}">${esc(t.name)} (${(t.feature_keys || []).length})</button>`).join("")}
+              <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm" data-tier-preset="none">Clear all</button>
+            </div>
+            <span class="hint">Presets fill every switch below from the shared tier catalogue.</span>
+          </div>
+          ${featuresHTML || `<div class="dash-field" style="grid-column:1/-1;"><label>Features (JSON)</label><textarea name="features">${esc(JSON.stringify(current))}</textarea></div>`}
         </div>
         <div class="dash-modal-foot" style="margin:18px -22px -20px;border-top:1px solid var(--d-line);">
           <button class="dash-btn dash-btn-ghost" type="button" id="saPlanCancel">Cancel</button>
@@ -4311,15 +4352,32 @@
         </div>
       </form>`);
     wrap.querySelector("#saPlanCancel").addEventListener("click", closeModal);
+    wrap.querySelectorAll("[data-tier-preset]").forEach((btn) => btn.addEventListener("click", () => {
+      const code = btn.getAttribute("data-tier-preset");
+      const tier = (cat.tiers || []).find((t) => t.code === code);
+      const keys = new Set(code === "none" || !tier ? [] : (tier.feature_keys || []));
+      wrap.querySelectorAll('input[type="checkbox"][name^="feature_"]').forEach((box) => {
+        box.checked = keys.has(String(box.name).replace(/^feature_/, ""));
+      });
+    }));
     wrap.querySelector("#saPlanForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      // Switches when the catalogue is available; the JSON box only as a
+      // fallback for a deployment whose API predates it.
       let features = {};
-      const rawFeatures = String(fd.get("features") || "").trim();
-      if (rawFeatures) { try { features = JSON.parse(rawFeatures); } catch (err) { toast("Features must be valid JSON (or blank).", "error"); return; } }
+      if (featureList.length) {
+        for (const f of featureList) features[f.key] = Boolean(fd.get(`feature_${f.key}`));
+      } else {
+        const rawFeatures = String(fd.get("features") || "").trim();
+        if (rawFeatures) { try { features = JSON.parse(rawFeatures); } catch (err) { toast("Features must be valid JSON (or blank).", "error"); return; } }
+      }
       const body = {
         code: fd.get("code"), name: fd.get("name"), name_ar: fd.get("name_ar"),
+        description: fd.get("description"),
         price_ngn: Number(fd.get("price_ngn") || 0),
+        price_yearly_ngn: Number(fd.get("price_yearly_ngn") || 0),
+        trial_days: Number(fd.get("trial_days") || 0),
         student_limit: Number(fd.get("student_limit") === "" ? -1 : fd.get("student_limit")),
         teacher_limit: Number(fd.get("teacher_limit") === "" ? -1 : fd.get("teacher_limit")),
         sort_order: Number(fd.get("sort_order") || 0),

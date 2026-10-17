@@ -14,6 +14,7 @@ const db = require("../db");
 const { asyncHandler, err, ok, cleanStr, toNum, logActivity } = require("../util");
 const { requireSuperAdmin } = require("../middleware/auth");
 const analytics = require("../services/analytics");
+const catalogue = require("../services/plan-catalogue");
 const institution = require("../services/institution");
 
 const router = express.Router();
@@ -458,12 +459,56 @@ function crypto_randomPassword() {
 
 /* ------------------------------ plans ---------------------------------- */
 
+/**
+ * Plans.features is the entitlement map every gate reads, so it is validated on
+ * the way in: catalogue keys are coerced to booleans, keys the catalogue does
+ * not know are kept only if they were already boolean (an operator's own
+ * experiment, never a string that would read as truthy), and a plan whose code
+ * matches a known tier starts from that tier's defaults so a brand-new "basic"
+ * row cannot be created with nothing switched on.
+ */
+function normaliseFeatureInput(input, planCode) {
+  const raw = input && typeof input === "object" ? input : {};
+  const out = catalogue.featuresForTier(planCode);
+  for (const [key, value] of Object.entries(raw)) {
+    if (catalogue.isKnownFeature(key)) out[key] = Boolean(value);
+    else if (typeof value === "boolean") out[key] = value;
+  }
+  return out;
+}
+
 router.get("/plans", asyncHandler(async (req, res) => {
   const rows = await db.all(
     `SELECT p.*, (SELECT COUNT(*) FROM madaris m WHERE m.plan_id = p.id) AS madaris_count
      FROM plans p ORDER BY p.sort_order`
   );
-  ok(res, { plans: rows.map((p) => Object.assign({}, p, { features: JSON.parse(p.features || "{}") })) });
+  ok(res, {
+    plans: rows.map((p) => {
+      // `features` is the NORMALISED map (stored values + tier defaults for any
+      // key the row predates) and `offer` is the marketing copy for that tier,
+      // so the operator edits exactly what a school is shown and gated on.
+      const offer = catalogue.offerFor(p);
+      return Object.assign({}, p, { features: offer.features, offer });
+    }),
+    // The catalogue the editor renders: groups, every switchable key with its
+    // label/blurb/lowest tier, and the tier presets.
+    feature_catalogue: {
+      groups: catalogue.FEATURE_GROUPS.map((g) => ({ key: g.key, title: g.title })),
+      features: catalogue.FEATURE_KEYS.map((key) => ({
+        key,
+        label: catalogue.FEATURES[key].label,
+        blurb: catalogue.FEATURES[key].blurb,
+        group: catalogue.FEATURES[key].group,
+        minimum_tier: catalogue.FEATURES[key].tier,
+      })),
+      tiers: catalogue.TIER_ORDER.map((code) => ({
+        code,
+        name: catalogue.TIERS[code].name,
+        tagline: catalogue.TIERS[code].tagline,
+        feature_keys: catalogue.tierFeatureKeys(code),
+      })),
+    },
+  });
 }));
 
 router.post("/plans", asyncHandler(async (req, res) => {
@@ -481,7 +526,7 @@ router.post("/plans", asyncHandler(async (req, res) => {
       toNum(b.price_ngn, 0), toNum(b.price_yearly_ngn, 0),
       toNum(b.student_limit, -1), toNum(b.teacher_limit, -1),
       toNum(b.trial_days, 0), b.is_public === false || b.is_public === 0 || b.is_public === "0" ? 0 : 1,
-      JSON.stringify(b.features || {}), toNum(b.sort_order, 99),
+      JSON.stringify(normaliseFeatureInput(b.features, code)), toNum(b.sort_order, 99),
     ]
   );
   ok(res, { ok: true, id: r.lastInsertRowid });
@@ -501,7 +546,7 @@ router.patch("/plans/:id", asyncHandler(async (req, res) => {
     else if (f === "description") vals.push(cleanStr(b[f], 255));
     else vals.push(toNum(b[f], 0));
   }
-  if (b.features !== undefined) { sets.push("features = ?"); vals.push(JSON.stringify(b.features)); }
+  if (b.features !== undefined) { sets.push("features = ?"); vals.push(JSON.stringify(normaliseFeatureInput(b.features, p.code))); }
   if (!sets.length) return err(res, 400, "Nothing to update.");
   vals.push(p.id);
   await db.run(`UPDATE plans SET ${sets.join(", ")} WHERE id = ?`, vals);

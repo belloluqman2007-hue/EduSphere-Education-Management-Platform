@@ -30,10 +30,13 @@ const db = require("../db");
 const { asyncHandler, err, ok, cleanStr, toNum, validDate, logActivity } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { effectiveTenantId, getTeacherAssignments } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const csv = require("../services/csv");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
+// Student health records are part of the Premium "Academics" bundle.
+router.use(requireFeature("health"));
 
 const STAFF = requireRole("madrasa_admin", "teacher", "super_admin");
 const ADMIN = requireRole("madrasa_admin");

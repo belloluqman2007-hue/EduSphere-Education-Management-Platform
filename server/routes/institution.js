@@ -34,6 +34,7 @@ const { imageUploader } = require("../middleware/upload");
 const institution = require("../services/institution");
 const mi = require("../services/my-institution");
 const { requireStaffPermission, can } = require("../services/permissions");
+const { gateFeature } = require("../middleware/subscription");
 
 const router = express.Router();
 
@@ -313,6 +314,17 @@ module.exports = function institutionRoutes(resolveMadrasa, adminOrSupport) {
     if (built.error) return err(res, 400, built.error);
     if (!built.sets.length) return err(res, 400, "Nothing to update.");
 
+    /* Plan gates for the two Premium "Branding & growth" capabilities. Both are
+       checked against the tenant resolved above (never a client-supplied id)
+       and both answer with the upgrade offer, so the My Institution screens can
+       show what the school would get instead of a bare refusal. */
+    if (section === "appearance") {
+      if (!(await gateFeature(req, res, m.id, "branding_custom"))) return;
+    }
+    if (body.custom_domain !== undefined && String(body.custom_domain || "").trim()) {
+      if (!(await gateFeature(req, res, m.id, "custom_domain"))) return;
+    }
+
     // A custom host is a tenant selector. Never allow two institutions to
     // claim the same hostname, otherwise the first database row could decide
     // which tenant a browser sees.
@@ -343,6 +355,7 @@ module.exports = function institutionRoutes(resolveMadrasa, adminOrSupport) {
   router.post("/appearance/reset", adminOrSupport, requireStaffPermission("website.edit"), asyncHandler(async (req, res) => {
     const m = await resolveMadrasa(req, res);
     if (!m) return;
+    if (!(await gateFeature(req, res, m.id, "branding_custom"))) return;
     const columns = [...mi.COLOR_FIELDS, "font_family", "header_style", "footer_style",
       "button_style", "card_style", "homepage_layout", "website_theme"];
     await db.run(
