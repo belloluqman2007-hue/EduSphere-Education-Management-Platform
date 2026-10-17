@@ -27,6 +27,7 @@
       and a per-surface rate limit in the route.
    ========================================================================== */
 const db = require("../db");
+const catalogue = require("./plan-catalogue");
 const config = require("../config");
 const { cleanStr } = require("../util");
 
@@ -360,20 +361,79 @@ const SEED_KNOWLEDGE = [
   },
 ];
 
+/* ------------------------- the three tier offers ------------------------- */
+/* Written from the SAME catalogue the seed, the feature gates and the pricing
+   page use, so the assistant can never quote a benefit the server would
+   refuse. Regenerated on every boot: if the operator changes a plan's copy the
+   answers follow, and an answer the operator wrote themselves is never
+   touched (matching is on scope + question). */
+function tierKnowledge() {
+  const out = [];
+  for (const code of catalogue.TIER_ORDER) {
+    const tier = catalogue.TIERS[code];
+    const keys = catalogue.tierFeatureKeys(code);
+    const included = keys.map((k) => catalogue.FEATURES[k].label);
+    out.push({
+      scope: "public",
+      topic: "Plans",
+      keywords: `${code} plan tier ${tier.name.toLowerCase()} include includes features benefits what do i get`,
+      question: `What is included in the ${tier.name} plan?`,
+      answer: `${tier.name} — "${tier.tagline}". ${tier.promise} It includes ${included.join(", ")}. ` +
+        `Quick win: ${tier.quick_win} Current prices, student/teacher limits and the full comparison are on the Plans & Pricing page.`,
+    });
+  }
+  const free = catalogue.TIERS.free;
+  const basic = catalogue.TIERS.basic;
+  const premium = catalogue.TIERS.premium;
+  const onlyIn = (code, below) => catalogue.tierFeatureKeys(code)
+    .filter((k) => !catalogue.tierFeatureKeys(below).includes(k))
+    .map((k) => catalogue.FEATURES[k].label);
+  out.push({
+    scope: "public",
+    topic: "Plans",
+    keywords: "difference between plans compare free basic premium which plan should i choose upgrade worth it",
+    question: "What is the difference between the Free, Basic and Premium plans?",
+    answer:
+      `Free — "${free.tagline}": ${free.limits_copy.students}, ${free.limits_copy.teachers}, ` +
+      `${onlyIn("free", "").slice(0, 6).join(", ")}. ${free.quick_win}\n` +
+      `Basic — "${basic.tagline}": ${basic.limits_copy.students}, ${basic.limits_copy.teachers}, and it adds ` +
+      `${onlyIn("basic", "free").join(", ")}. ${basic.quick_win}\n` +
+      `Premium — "${premium.tagline}": ${premium.limits_copy.students} and ${premium.limits_copy.teachers.toLowerCase()}, and it adds ` +
+      `${onlyIn("premium", "basic").join(", ")}. ${premium.quick_win}\n` +
+      `Prices and the year-by-year saving are on the Plans & Pricing page; upgrading takes effect as soon as your payment is confirmed.`,
+  });
+  out.push({
+    scope: "app",
+    topic: "Plans",
+    keywords: "feature locked not included upgrade which plan do i need premium basic gated",
+    question: "A feature says it is not included in my plan. What do I do?",
+    answer:
+      "That message names the plan that includes the feature. Open Subscription → Plans to see exactly what each tier gets and what it costs, then choose the plan and click Upgrade: you will get an invoice with our bank details and a payment reference. Attach your receipt and the team confirms it — usually the same day. Nothing you already have is ever removed while a payment is pending, and your administrator can also ask EduSphere AI to create the upgrade request.",
+  });
+  return out;
+}
+
 async function seedKnowledge() {
+  let entries;
   try {
-    const row = await db.get("SELECT COUNT(*) AS n FROM ai_knowledge");
-    if (row && Number(row.n) > 0) return 0;
+    entries = await db.all("SELECT scope, question FROM ai_knowledge");
   } catch (e) {
     return 0; // table not migrated yet
   }
-  for (const k of SEED_KNOWLEDGE) {
+  const existing = new Set((entries || []).map((r) => `${String(r.scope).toLowerCase()}::${String(r.question).trim().toLowerCase()}`));
+  const all = SEED_KNOWLEDGE.concat(tierKnowledge());
+  let inserted = 0;
+  let sort = (entries || []).length;
+  for (const k of all) {
+    const key = `${String(k.scope).toLowerCase()}::${String(k.question).trim().toLowerCase()}`;
+    if (existing.has(key)) continue; // an operator may have edited it: leave it alone
     await db.run(
       "INSERT INTO ai_knowledge (scope, topic, question, answer, keywords, sort_order) VALUES (?,?,?,?,?,?)",
-      [k.scope, k.topic, k.question, k.answer, k.keywords, SEED_KNOWLEDGE.indexOf(k)]
+      [k.scope, k.topic, k.question, k.answer, k.keywords, sort++]
     );
+    inserted++;
   }
-  return SEED_KNOWLEDGE.length;
+  return inserted;
 }
 
 module.exports = {

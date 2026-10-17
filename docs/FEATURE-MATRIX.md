@@ -114,3 +114,48 @@ Legend: ✅ present before this pass · 🆕 added in this pass · ♻️ extend
   asserts an *unpublished* report is refused (403) before asserting the published one
   renders, and the public-checker title regex accepts the new document title in either
   language. Both changes encode the stronger behaviour this pass implements.
+
+---
+
+## Plan tiers & feature gating pass (2026-10-17)
+
+Legend: ✅ present before this pass · 🆕 added in this pass · ♻️ extended in this pass
+
+| # | User | Feature | Backend | API | Frontend | Permissions | Tests | Status |
+|---|------|---------|---------|-----|----------|-------------|-------|--------|
+| 52 | All | **One tier catalogue** — `services/plan-catalogue.js` defines 37 feature keys (label, blurb, group, lowest tier), the Free ⊂ Basic ⊂ Premium contents, and each tier's offer copy (tagline, promise, badge, quick win, benefit groups, headline, limits-as-capacity). Seed, gate, pricing endpoint, upsell and AI answers all read it, so copy and enforcement cannot drift | 🆕 module | ♻️ carried in every payload below | ♻️ rendered, never hard-coded | — | 🆕 subscription-features | ✅ |
+| 53 | Ops | **Plans seeded + gap-filled** — `seedPlans()` writes the three tiers on an empty table; `syncPlanOffers()` runs on boot and fills missing feature keys, a blank tagline and a missing yearly price/trial **without** reversing an operator edit or touching limits | ♻️ `plans` (no schema change) | — | — | super admin | 🆕 subscription-features | ✅ |
+| 54 | All | **Feature gate** — `checkFeature()` + `requireFeature()` middleware: tenant from the session only, super_admin exempt, precedence suspended → expired → enforcement switch → unknown key (fail open) → feature, so a lapsed Premium school is told to renew rather than sold an upgrade | 🆕 `middleware/subscription.js` | 🆕 403 `code:"feature_gated"` with feature, required plan, benefits, hint, `can_upgrade` | ♻️ `api.js` dispatches `edusphere:feature-gated` | ✅ alongside existing role + granular permissions | 🆕 subscription-features | ✅ |
+| 55 | All | **Gating applied to 20+ surfaces** — portals, online exams, question bank, fee **writes** (reads stay open), messaging/SMS/WhatsApp per channel, exports (+ bulk), payroll, leave, library, health, expenses, ID cards, certificates, custom report templates, admissions pipeline, branding & custom domain, urgent support, advanced analytics, the four copilot capabilities | ♻️ routers | ♻️ 403 on the gated route only | ♻️ upsell on every gated click | ✅ | 🆕 subscription-features | ✅ |
+| 56 | Public | **Anonymous pricing endpoint** — `GET /api/public/plans` returns the three offers with benefit groups, quick wins, limits as capacity, price + yearly saving, trial, a feature-by-feature comparison matrix and how payment works. No institution data, no internal ids | — | 🆕 `/api/public/plans` (rate-limited) | 🆕 marketing-ready payload | anonymous | 🆕 subscription-features | ✅ |
+| 57 | Admin | **Pricing screen that sells** — Subscription → Plans: billing-cycle switch, three offer cards (current / recommended flags, promise, capacity, quick win, grouped benefits, one CTA), "everything included" dialog, "compare every feature" matrix, how-payment-works, plus included / next-tier cards on the overview | — | ♻️ `/subscription/plans` now carries `offer`, `current_plan_code`, `entitlements` | ♻️ `subscription.js` + `subscription.css` | ✅ existing | 🆕 subscription-ui (jsdom) | ✅ |
+| 58 | All | **Upsell dialog anywhere** — `Upsell` listens for `edusphere:feature-gated` on `window` and enriches itself from the anonymous endpoint, so a gated click in the admin console, the teacher workspace or a parent portal all explain the tier and (for an administrator) open the upgrade form; other roles get the explanation without a button they cannot press | — | ♻️ same 403 | 🆕 `window.EduSphereUpsell` | ✅ role-aware CTA | 🆕 subscription-ui | ✅ |
+| 59 | Admin | **Premium analytics** — `analytics.advancedAnalytics()` behind `analytics_advanced`: attendance heatmap by class × weekday, weekday/class patterns, chronic-absence list, teacher performance (results average, pass rate, engagement), fee forecast from the actual collection trend, and plain-language insights | 🆕 service function | 🆕 `GET /api/madrasa/analytics/advanced` | — (consumed by the copilot) | ✅ admin/support + gate | 🆕 subscription-features | ✅ |
+| 60 | Admin/Teacher | **AI copilot** — `GET /api/ai/copilot` (capability list with `entitled` + gate, never gated itself) and four working endpoints: report-comment drafts from real marks/attendance, at-risk students with reasons + draft parent message, question generation from the school's own bank, analytics Q&A. Every one computes from tenant data without an API key instead of inventing numbers | ♻️ `services/analytics.js`, `services/ai.js` | 🆕 `/api/ai/copilot*` (4) | 🆕 copilot chips in the assistant widget (padlock → upsell) | ✅ per-capability feature keys | 🆕 subscription-features | ✅ |
+| 61 | All | **AI answers about the tiers** — `tierKnowledge()` generates "what is included in the X plan", the tier comparison and an app-scope "a feature says it is not included" answer straight from the catalogue; `seedKnowledge()` is now idempotent per `scope::question` so an upgraded deployment gains them without duplicating or overwriting an operator's edit | ♻️ `ai_knowledge` | ♻️ existing chat routes | ♻️ assistant replies | — | 🆕 subscription-features | ✅ |
+| 62 | Super admin | **Plan editor as switches** — Platform → Subscription Plans edits features as grouped toggles with one-click tier presets instead of a raw JSON box, shows each tier's offer/price/features-on count, and the write endpoints validate the map (catalogue keys coerced to booleans) | ♻️ `routes/platform.js` | ♻️ `GET/POST/PATCH /platform/plans` (+ `feature_catalogue`) | ♻️ `dashboard.js` | super admin | — | ✅ |
+
+### Plan-tier pass preservation notes
+
+- **No new tables, no schema change.** Tiers live in the existing `plans.features`
+  JSON column; the catalogue module is the only new file plus one middleware.
+- **Limits, expiry, suspension and grace behaviour are untouched** — the feature
+  gate is a *separate* check that runs after them, and `checkPlanLimits` in
+  `server/util.js` still owns ceilings.
+- **Reads are never gated by a tier flag.** A school that downgrades keeps seeing
+  its own fee ledger, receipts, exports of existing data and announcements; only
+  creating new records in a capability it no longer has stops.
+- **Fail-open on the unknown.** A key the catalogue does not know is allowed, so a
+  typo in a route can never lock a school out of its own data.
+- **No invented modules.** `multi_campus`, `api_access`, `sso` and
+  `backups_restore` are catalogue/entitlement keys only — there is no tenant
+  surface for them yet, so nothing is gated on them.
+- **Two fixture/test adjustments encode the stronger behaviour:**
+  `test/helpers.js` now gives the fixture plan every feature key (so module tests
+  test their module, not the tier matrix), and `test/subscription.test.js` inserts
+  Basic/Premium with their real feature maps (so an upgrade in a test unlocks what
+  production unlocks). The fixture plan keeps its `free` code and its 50/3 limits.
+- **Frontend is additive.** `api.js` gained one branch (a `feature_gated` 403 is
+  dispatched, never CSRF-retried — that retry loop was also a latent infinite
+  loop and is now bounded); `subscription.js` gained the plans screen and the
+  `Upsell` dialog; no existing screen lost behaviour.

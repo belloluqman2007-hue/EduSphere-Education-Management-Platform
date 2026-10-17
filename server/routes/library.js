@@ -5,11 +5,14 @@ const { asyncHandler, err, ok, cleanStr, toNum, clampNum, validDate, logActivity
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { requirePermission, requireStaffPermission } = require("../services/permissions");
 const { effectiveTenantId } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const { imageUploader } = require("../middleware/upload");
 const csv = require("../services/csv");
 
 const router = express.Router();
 router.use(requireAuth, requireTenant);
+// Library & loans are included from Basic upwards.
+router.use(requireFeature("library"));
 const STAFF = requireRole("madrasa_admin", "teacher");
 const ADMIN = requireRole("madrasa_admin");
 const TYPES = new Set(["student", "teacher"]);

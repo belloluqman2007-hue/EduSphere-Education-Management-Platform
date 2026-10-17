@@ -23,6 +23,7 @@ const config = require("../config");
 const { asyncHandler, ok, err, cleanStr, toNum, validDate, logActivity } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
 const { effectiveTenantId, loadTenantRow } = require("../middleware/tenant");
+const { requireFeature } = require("../middleware/subscription");
 const csv = require("../services/csv");
 const { requireStaffPermission } = require("../services/permissions");
 
@@ -31,6 +32,9 @@ const budgetRouter = express.Router();
 
 router.use(requireAuth, requireTenant);
 budgetRouter.use(requireAuth, requireTenant);
+// Expenses, budgets and the financial reports are Premium ("Finance & HR").
+router.use(requireFeature("expenses"));
+budgetRouter.use(requireFeature("expenses"));
 
 const ADMIN = requireRole("madrasa_admin", "super_admin");
 const STAFF = requireRole("madrasa_admin", "teacher", "super_admin");

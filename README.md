@@ -278,6 +278,35 @@ applied**:
 Applying a template requires the `roles.manage` permission, only works on
 teacher-role accounts, and is written to the audit log.
 
+## Plans & tiers (Free / Basic / Premium)
+
+Three published tiers, each described as what a school **gets** — a promise, a
+quick win and grouped benefits — never as a bare list of ceilings.
+
+| | Free | Basic | Premium |
+|---|---|---|---|
+| Promise | *Start running your school digitally* | *Everything a growing school needs* | *A modern, AI-powered school* |
+| Students / teachers | 50 / 3 | 300 / 15 | Unlimited |
+| Price | ₦0 forever | ₦8,000 mo · ₦80,000 yr | ₦20,000 mo · ₦200,000 yr |
+| Quick win | Replace paper registers and manual report cards | Collect fees online and keep parents informed automatically | Save teacher hours, boost parent satisfaction, and grow enrollment |
+| Includes | Attendance, student & teacher records, printable report cards, announcements, community support | Everything in Free **plus** fees & payments, messaging + delivery log, student & parent portals, attendance analytics & exports, standard report templates, basic analytics, library, email support | Everything in Basic **plus** the AI copilot, advanced analytics, online exams, parent experience (online payment, WhatsApp/SMS, PTM), payroll/expenses/budgets/leave, branding & growth (custom domain, theme builder, admissions portal, alumni, multi-campus), academics (custom templates, bulk reports, behaviour, ID cards, health, certificates), trust & ops (audit exports, 2FA/SSO, backups, API access, priority support) |
+
+The tier definitions live in **one** file — `server/services/plan-catalogue.js` —
+and the seed, the feature gate, `GET /api/public/plans`, the admin pricing
+screen, the upsell dialog and the AI assistant's answers all read it, so the
+promise and the enforcement can never drift apart.
+
+A gated action is refused with **HTTP 403 + `code: "feature_gated"`**, carrying
+the feature, the plan that includes it, and that plan's benefits; the frontend
+turns any such response into an upsell dialog with a working "Upgrade" button
+(and, for a teacher or parent, an explanation instead of a button they cannot
+use). Expiry and suspension still outrank the tier: a lapsed Premium school is
+told to renew, not sold an upgrade. Limits, grace periods and the
+never-delete-existing-data rule are unchanged.
+
+Details: [`docs/PLAN-TIERS-AND-FEATURE-GATING.md`](docs/PLAN-TIERS-AND-FEATURE-GATING.md)
+and [`docs/SUBSCRIPTIONS-AND-AI.md`](docs/SUBSCRIPTIONS-AND-AI.md).
+
 ## Project structure
 
 ```
@@ -300,7 +329,8 @@ server/            Express API (Node 22, no framework magic)
 public/            static mobile-first SPA (hash routing, EN/AR, RTL,
                    light/dark theme, public site rendered without a session)
 test/              npm test suite + smoke.sh end-to-end
-docs/              isolation audit, database, deployment, security docs
+docs/              isolation audit, database, deployment, security,
+                   subscriptions & AI, plan tiers & feature gating
 render.yaml        NEW Render service definition (production)
 ```
 
@@ -455,10 +485,11 @@ render.yaml        NEW Render service definition (production)
 
 ## Future SaaS roadmap (designed for, NOT built)
 
-Subscriptions, provider-backed SMS/WhatsApp/email delivery, certificates,
-ID cards and a native mobile app. (Timetables, online admissions,
+Provider-backed SMS/WhatsApp/email delivery and a native mobile app.
+(Subscriptions and the three published tiers, timetables, online admissions,
 assignments, public result checking, payroll, staff leave, parent-teacher
-meeting booking, **online examinations** and **parent online fee payment**
-are now built.) The schema and routes are shaped so the rest can be added
-without re-architecture — the payment gateway (Paystack or Flutterwave) is
-configured through the environment and is optional per deployment.
+meeting booking, certificates, ID cards, **online examinations**, **parent
+online fee payment** and the **AI copilot** are now built.) The schema and
+routes are shaped so the rest can be added without re-architecture — the
+payment gateway (Paystack or Flutterwave) is configured through the
+environment and is optional per deployment.

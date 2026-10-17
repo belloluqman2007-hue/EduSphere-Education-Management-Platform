@@ -33,6 +33,8 @@ const reportSheet = require("../services/report-sheet");
 const { publicLimiter, publicWriteLimiter, verifyLimiter, scanLimiter } = require("../middleware/ratelimit");
 const institution = require("../services/institution");
 const myInstitution = require("../services/my-institution");
+const subscription = require("../services/subscription");
+const catalogue = require("../services/plan-catalogue");
 const cardCreds = require("../services/card-credentials");
 
 const router = express.Router();
@@ -212,6 +214,59 @@ function today() {
 }
 
 /* ------------------------------ landing / directory -------------------- */
+
+/**
+ * GET /api/public/plans — the tier offers, anonymously.
+ *
+ * The marketing surface for subscriptions: the registration page, the public
+ * website and the upsell dialog opened for a teacher or parent (who cannot call
+ * the tenant-scoped /api/subscription/plans) all read the SAME offer copy from
+ * here. Prices, limits and trial length come from the operator's plan rows;
+ * the benefits, taglines and quick wins come from the shared plan catalogue, so
+ * nothing published here can disagree with what the feature gates enforce.
+ * No tenant data, no institution names, no invoice history.
+ */
+router.get("/plans", publicLimiter, asyncHandler(async (req, res) => {
+  const plans = await subscription.plansForUpgrade();
+  const offers = catalogue.offersFor(plans).map((offer) => ({
+    code: offer.code,
+    name: offer.name,
+    name_ar: offer.name_ar,
+    tagline: offer.tagline,
+    promise: offer.promise,
+    badge: offer.badge,
+    quick_win: offer.quick_win,
+    quick_win_detail: offer.quick_win_detail,
+    benefit_groups: offer.benefit_groups,
+    headline: offer.headline,
+    limits: offer.limits,
+    price: offer.price,
+    trial_days: offer.trial_days,
+    included: offer.benefits.map((b) => ({ key: b.key, label: b.label, group: b.group })),
+  }));
+  const settings = await subscription.getSettings();
+  ok(res, {
+    plans: offers,
+    feature_groups: catalogue.FEATURE_GROUPS.map((g) => ({ key: g.key, title: g.title })),
+    comparison: catalogue.FEATURE_KEYS.map((key) => {
+      const meta = catalogue.FEATURES[key];
+      const row = { key, label: meta.label, group: meta.group, blurb: meta.blurb, required_plan: meta.tier };
+      for (const code of catalogue.TIER_ORDER) row[code] = catalogue.tierFeatureKeys(code).includes(key);
+      return row;
+    }),
+    currency: settings.billing_currency || "NGN",
+    contact: {
+      email: settings.billing_contact_email || "",
+      phone: settings.billing_contact_phone || "",
+    },
+    how_payment_works: [
+      "Choose a plan and a billing cycle.",
+      "Transfer the amount to the account on your invoice, quoting the reference we generate.",
+      "Attach your receipt under Invoices & Payments.",
+      "We confirm the payment and your plan extends — usually the same day.",
+    ],
+  });
+}));
 
 router.get("/site", publicLimiter, asyncHandler(async (req, res) => {
   const site = await publicSettings();

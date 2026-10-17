@@ -58,6 +58,10 @@ tenantRouter.get("/plans", asyncHandler(async (req, res) => {
   ok(res, {
     plans,
     current_plan_id: current ? current.plan.id : null,
+    current_plan_code: current ? current.plan.code : "",
+    // What the school has today, and what the next tier would unlock — the
+    // pricing page leads with this rather than making anybody diff two cards.
+    entitlements: current ? current.entitlements : null,
     billing: {
       bank_name: settings.billing_bank_name,
       account_number: settings.billing_account_number,

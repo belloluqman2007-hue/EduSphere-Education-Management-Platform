@@ -8,6 +8,9 @@
      • the effective status (active / grace / expired / suspended) derived from
        plan_expires_at + grace_ends_at, never from a stale column alone,
      • usage against the plan's student/teacher limits,
+     • FEATURE ENTITLEMENTS — which catalogue keys this plan carries, the
+       `checkFeature()` gate every premium route uses, and the upgrade offer
+       that goes back with a refusal,
      • the invoice lifecycle (request → proof → operator approval → period
        extension),
      • the warning sweep that messages an institution before it hits a wall.
@@ -21,6 +24,7 @@
    ========================================================================== */
 const db = require("../db");
 const communication = require("./communication");
+const catalogue = require("./plan-catalogue");
 const { cleanStr, toNum, logActivity } = require("../util");
 
 /* ------------------------------ constants -------------------------------- */
@@ -172,6 +176,17 @@ async function summary(madrasaId) {
   // gated. `blocks` tells the UI which write actions will be refused.
   const blocks = status === "suspended" || status === "expired";
 
+  // The offer (marketing copy + normalised entitlements) is computed from the
+  // shared catalogue so this payload, the pricing page and the upsell modal all
+  // describe the same product.
+  const offer = catalogue.offerFor({
+    id: row.plan_id, code: row.plan_code, name: row.plan_name, name_ar: row.plan_name_ar,
+    description: row.description, price_ngn: row.price_ngn, price_yearly_ngn: row.price_yearly_ngn,
+    trial_days: row.trial_days, student_limit: limits.students, teacher_limit: limits.teachers,
+    features: row.features,
+  });
+  const entitled = catalogue.entitlements(offer.features, row.plan_code);
+
   return {
     madrasa: { id: row.id, name: row.name_en, slug: row.slug, status: row.status },
     plan: {
@@ -183,10 +198,13 @@ async function summary(madrasaId) {
       price_monthly_ngn: Number(row.price_ngn || 0),
       price_yearly_ngn: Number(row.price_yearly_ngn || 0),
       trial_days: Number(row.trial_days || 0),
-      features,
+      features: offer.features,
       student_limit: limits.students,
       teacher_limit: limits.teachers,
+      // What this plan GETS a school, in the words the pricing page uses.
+      offer,
     },
+    entitlements: entitled,
     subscription: {
       status,
       billing_cycle: String(row.billing_cycle || "yearly"),
@@ -248,6 +266,136 @@ async function capacity(madrasaId, kind) {
     };
   }
   return { allowed: true, reason: "ok", metric };
+}
+
+/* --------------------------- feature entitlements ------------------------ */
+
+/**
+ * The normalised entitlement map for one institution: every catalogue key set
+ * to true/false, with legacy `plans.features` rows filled from their tier
+ * defaults. `null` when the institution does not exist.
+ */
+async function featureSet(madrasaId) {
+  const id = Number(madrasaId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const row = await tenantRow(id);
+  if (!row) return null;
+  const offer = catalogue.offerFor(row);
+  return {
+    madrasa_id: id,
+    plan: { id: row.plan_id, code: row.plan_code, name: row.plan_name || row.plan_code || "" },
+    status: effectiveStatus(row),
+    features: offer.features,
+    offer,
+    entitlements: catalogue.entitlements(offer.features, row.plan_code),
+  };
+}
+
+/** Grouped "what your plan includes / what the next tier unlocks" for the UI. */
+async function entitlements(madrasaId) {
+  const set = await featureSet(madrasaId);
+  return set ? set.entitlements : null;
+}
+
+/**
+ * THE FEATURE GATE.
+ *
+ * Answers "may this institution use `key`?" — the companion to `capacity()`,
+ * which answers "may it add another student?". Same rules about trust: the
+ * madrasa id always comes from the route's authenticated session, never from
+ * the client, and the plan is read fresh (a stored status column can be stale
+ * the moment a date passes).
+ *
+ * Order of precedence, deliberately identical to `capacity()` so a school that
+ * is suspended or expired gets the SAME answer it has always got:
+ *   1. suspended → refused (operator action, nothing else matters)
+ *   2. expired   → refused (renew)
+ *   3. feature   → refused with an upgrade hint naming the tier that has it
+ *   4. otherwise → allowed
+ *
+ * Two cases fail OPEN on purpose, and both are documented here rather than
+ * hidden in a catch block:
+ *   • no tenant / no plan row (platform operator, or a pre-plans database) —
+ *     there is nothing to bill and no tier to compare against;
+ *   • `billing_enabled = 0`, the operator's master switch for enforcement.
+ * An UNKNOWN feature key also fails open (with `reason: "unknown_feature"`):
+ * gating is a commercial control, not a security one — roles and tenant
+ * isolation are — and a typo in a route must not lock a school out of a module
+ * it has paid for.
+ *
+ * @returns {{allowed:boolean, reason:string, key:string, feature?:object,
+ *            plan?:object, required_plan?:object, message?:string, hint?:string,
+ *            upgrade?:object}}
+ */
+async function checkFeature(madrasaId, key, preloaded = {}) {
+  const id = Number(madrasaId);
+  const featureKey = String(key || "");
+  if (!Number.isInteger(id) || id <= 0) {
+    return { allowed: true, reason: "no_tenant", key: featureKey };
+  }
+  const row = preloaded.row !== undefined ? preloaded.row : await tenantRow(id);
+  if (!row) return { allowed: true, reason: "no_tenant", key: featureKey };
+
+  const settings = preloaded.settings || (await getSettings());
+  const status = effectiveStatus(row, settings);
+  const planCode = String(row.plan_code || "");
+  const planName = row.plan_name || planCode || "your plan";
+  const planInfo = { id: row.plan_id, code: planCode, name: planName };
+
+  if (status === "suspended") {
+    return {
+      allowed: false, reason: "suspended", key: featureKey, plan: planInfo,
+      message: "This institution's subscription is suspended. Please settle the outstanding subscription to continue.",
+    };
+  }
+  if (status === "expired") {
+    return {
+      allowed: false, reason: "expired", key: featureKey, plan: planInfo,
+      message: "Your subscription has expired. Renew it from Subscription → Plans to continue using this feature.",
+    };
+  }
+  if (!settings.billing_enabled) {
+    return { allowed: true, reason: "enforcement_disabled", key: featureKey, plan: planInfo };
+  }
+  if (!catalogue.isKnownFeature(featureKey)) {
+    return { allowed: true, reason: "unknown_feature", key: featureKey, plan: planInfo };
+  }
+
+  const features = catalogue.normalizeFeatures(row.features, planCode);
+  if (features[featureKey]) {
+    return { allowed: true, reason: "ok", key: featureKey, plan: planInfo, feature: catalogue.featureMeta(featureKey) };
+  }
+
+  const gate = catalogue.gatePayload(featureKey, planCode, planName);
+  const target = catalogue.upgradeTierFor(planCode, featureKey);
+  return Object.assign({ allowed: false, reason: "feature", key: featureKey, plan: planInfo }, gate, {
+    // Everything the upsell UI needs to render a real offer, plus the CTA an
+    // administrator can actually click. Teachers/students/parents see the same
+    // explanation without a button they are not allowed to press.
+    upgrade: target
+      ? {
+          required_plan_code: target.code,
+          required_plan_name: target.name,
+          tagline: target.tagline,
+          quick_win: target.quick_win,
+          headline: target.headline,
+          benefit_groups: target.benefit_groups,
+          route: "subscription/plans",
+          api: "/api/subscription/plans",
+        }
+      : null,
+  });
+}
+
+/**
+ * Convenience wrapper for routes that resolve their own tenant: returns the
+ * gate result, or `null` when the caller should simply continue.
+ */
+async function assertFeature(res, madrasaId, key, extra = {}) {
+  const gate = await checkFeature(madrasaId, key);
+  if (gate.allowed) return gate;
+  res.status(403).json(Object.assign({ error: gate.message }, gate, extra));
+  return null;
 }
 
 /* ------------------------------ warnings --------------------------------- */
@@ -359,9 +507,15 @@ async function plansForUpgrade() {
     "SELECT id, code, name, name_ar, description, price_ngn, price_yearly_ngn, student_limit, teacher_limit, features, trial_days, sort_order FROM plans WHERE is_active = 1 AND is_public = 1 ORDER BY sort_order, price_ngn"
   );
   return rows.map((p) => {
-    let features = {};
-    try { features = JSON.parse(p.features || "{}"); } catch (e) { features = {}; }
-    return Object.assign({}, p, { features, price_ngn: Number(p.price_ngn || 0), price_yearly_ngn: Number(p.price_yearly_ngn || 0) });
+    // The offer carries the normalised feature map, the tier marketing copy and
+    // the rendered benefit list, so the pricing page never hard-codes a tier.
+    const offer = catalogue.offerFor(p);
+    return Object.assign({}, p, {
+      features: offer.features,
+      offer,
+      price_ngn: Number(p.price_ngn || 0),
+      price_yearly_ngn: Number(p.price_yearly_ngn || 0),
+    });
   });
 }
 
@@ -645,8 +799,10 @@ async function reconcile() {
 
 module.exports = {
   STATUSES, CYCLES, INVOICE_STATUSES, SETTING_DEFAULTS,
+  catalogue,
   getSettings, setSetting,
   summary, usage, capacity, sweep, reconcile,
+  checkFeature, featureSet, entitlements, assertFeature,
   plansForUpgrade, cyclePrice, requestUpgrade, listInvoices, getInvoice,
   activate, rejectInvoice, grant, setStatus,
   platformList, platformPending, platformStats,
