@@ -733,6 +733,11 @@ const PLATFORM_SETTING_DEFAULTS = {
   billing_grace_days: "14",
   billing_warn_percent: "80",
   billing_enabled: "1",
+  // The customer-facing WhatsApp line used by the public website's "Chat on
+  // WhatsApp" button and by the assistant's hand-off. International format;
+  // a Nigerian 0803… number is normalised to 234803… automatically.
+  whatsapp_ai_number: "",
+  whatsapp_ai_message: "Hello EduSphere, I would like to know more about the platform.",
 };
 
 router.get("/settings", asyncHandler(async (req, res) => {

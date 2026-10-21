@@ -134,46 +134,77 @@ Nothing in the service, the schema or the UI has to change.
 
 ## 2. EduSphere AI
 
-One assistant, three surfaces, one knowledge base.
+One assistant, **seven spaces**, one knowledge base. The full design is in
+[`AI-SPACES.md`](./AI-SPACES.md); this is the summary.
 
-| Surface | Endpoint | Who | Can see |
+| Space | Endpoint | Who | Knows |
 |---|---|---|---|
-| **Dashboard** | `POST /api/ai/chat` | Signed-in admins | Their own plan, usage, invoices |
-| **Public website** | `POST /api/public/ai/chat` | Anyone | Nothing institution-specific |
-| **WhatsApp** | `POST /api/ai/whatsapp/webhook` | Anyone who messages the line | Nothing institution-specific |
+| **Public website** | `POST /api/public/ai/chat` | anyone | registration, plans, guides — no institution data |
+| **Platform console** | `POST /api/ai/chat` (super admin) | operator | platform totals, registrations, payment requests, tickets |
+| **School dashboard** | `POST /api/ai/chat` | `madrasa_admin` | that school's plan, usage, people, attendance, fees |
+| **Teacher workspace** | `POST /api/ai/chat` | `teacher` | their own classes, timetable and pending work |
+| **Student portal** | `POST /api/ai/chat` | `student` | their own results, attendance, fees, work |
+| **Parent portal** | `POST /api/ai/chat` | `parent` | their linked children only |
+| **WhatsApp** | `POST /api/ai/whatsapp/webhook` | anyone | short public answers + a human |
+
+The space is decided **on the server** from the authenticated role; the browser
+never chooses it. Conversations are keyed by space and user, so one persona's
+thread is never mixed with another's.
 
 ### Grounding
 
 The assistant answers from the curated `ai_knowledge` table, edited under
-**Platform → AI Assistant**. Retrieval is keyword-based and scoped:
+**Platform → AI Assistant**, plus live read-only tools. Each space reads only
+its own scope chain:
 
-| Surface | Reads knowledge from |
+| Space | Reads knowledge from |
 |---|---|
-| `app` | `app` + `public` + `all` |
 | `public` | `public` + `all` |
 | `whatsapp` | `whatsapp` + `public` + `all` |
+| `super_admin` | `super_admin` + `admin` + `public` + `all` |
+| `admin` | `admin` + `public` + `all` |
+| `teacher` | `teacher` + `all` |
+| `student` | `student` + `all` |
+| `parent` | `parent` + `all` |
 
-Adding or editing an answer takes effect on the next question — no deployment.
+`app` was the old name of the administrator scope; boot renames any surviving
+`app` row to `admin`, and retrieval treats the two as the same scope. Adding or
+editing an answer takes effect on the next question — no deployment.
 
 ### Degradation
 
-With **no `AI_API_KEY`** the assistant still works: it matches the question
-against the knowledge base and returns the stored answer verbatim, flagged
-`mode: "knowledge-base"`. Responses cite the entries used. This means the
-assistant is useful on day one and never breaks when a provider is down —
-a failed model call falls back to the same knowledge-base lookup.
+With **no `AI_API_KEY`** every space still works. A confident keyword match
+returns the stored answer verbatim (`mode: "knowledge-base"`); otherwise the
+assistant returns that space's own menu — what it can help with, the questions
+it can answer, and the right hand-off (`mode: "menu"`). There is no "assistant
+not switched on" dead end, and a failed model call falls back to the same two
+paths.
 
 ### Tools (server-side, tenant-pinned)
 
-| Tool | Surface | What it does |
+| Tool | Space | What it does |
 |---|---|---|
-| `list_plans` | all | Plan catalogue with Naira prices and limits |
-| `get_my_subscription` | app | Current plan, status, renewal date, days left |
-| `get_my_usage` | app | Students/teachers used vs limits |
-| `get_my_invoices` | app | Recent invoices and their status |
-| `create_upgrade_request` | app | Creates an invoice + payment instructions (**does not activate anything**) |
-| `escalate_to_human` | app, whatsapp | Opens a support ticket / hands over the chat |
-| `register_interest` | public | Records a demo/ sign-up lead |
+| `list_plans` | public, admin, super admin, WhatsApp | Plan catalogue with Naira prices and limits |
+| `get_contact_details` | public, admin, WhatsApp | Contact details, WhatsApp link, registration URLs |
+| `register_interest` | public | Records a demo / sign-up lead |
+| `get_platform_overview` | super admin | Institutions, people, plan mix, pending work |
+| `list_institutions` | super admin | Every school with plan, status and usage |
+| `list_payment_requests` | super admin | Invoices waiting to be checked |
+| `list_registrations` | super admin | Applications waiting for review |
+| `list_support_tickets` | super admin | The shared ticket queue |
+| `get_recent_activity` | super admin | Recent audited actions |
+| `get_ai_knowledge_stats` | super admin | Answers per space |
+| `get_my_subscription` / `get_my_usage` / `get_my_invoices` | admin | This school's billing state |
+| `get_institution_snapshot` | admin | Students, teachers, attendance, fee position |
+| `create_upgrade_request` | admin | Creates an invoice + payment instructions (**never activates**) |
+| `escalate_to_human` | admin, WhatsApp | Opens a support ticket / hands the chat over |
+| `get_my_classes` / `get_my_timetable` / `get_my_pending_work` | teacher | Their own teaching day |
+| `get_my_profile` … `get_my_quran_progress` | student | Their own record |
+| `get_my_children` / `get_child_overview` / `get_my_meetings` | parent | Linked children only |
+
+The console's tools are read-only. **There is no tool that changes a plan,
+approves a payment, suspends an institution or deletes anything** — not in any
+space.
 
 ### The AI copilot (Premium)
 
@@ -181,7 +212,8 @@ Separate from the chat tools, four endpoints do real work on the school's own
 data. Each is behind its own feature key, so a school on a lower tier gets the
 403 + upsell rather than a silent failure, and `GET /api/ai/copilot` lists all
 four with `entitled` flags — the list itself is never gated, because it is the
-advertisement.
+advertisement. The copilot is restricted to `madrasa_admin` and `super_admin`;
+students, parents and teachers get a plain 403.
 
 | Endpoint | Feature key | Returns |
 |---|---|---|
@@ -205,9 +237,17 @@ Every tool receives its tenant id from the authenticated session (`ctx.madrasaId
 never from the model, so no amount of prompt engineering can make the assistant
 read another institution's data.
 
-### WhatsApp
+### WhatsApp, and the website's "Chat on WhatsApp" button
 
-Add to `.env`:
+The public website offers two entry points to the same line: a floating green
+**WhatsApp** button, and **Chat on WhatsApp** inside the AI panel. Both open
+`https://wa.me/<number>?text=<prefilled message>` — real WhatsApp, not a mock
+chat. The number comes from `WHATSAPP_AI_DISPLAY_NUMBER`, or **Platform →
+Settings → WhatsApp line**, or the platform's public/billing contact phone. A
+local `0803…` number is normalised to `234803…`. With no number configured the
+buttons are not rendered at all, rather than opening a dead link.
+
+To have the assistant answer inside WhatsApp, connect the Meta Cloud API:
 
 ```
 WHATSAPP_AI_PROVIDER=meta
@@ -215,16 +255,18 @@ WHATSAPP_AI_TOKEN=...
 WHATSAPP_AI_PHONE_NUMBER_ID=...
 WHATSAPP_AI_VERIFY_TOKEN=...   # you choose this
 WHATSAPP_AI_APP_SECRET=...     # enables signature verification
+WHATSAPP_AI_DISPLAY_NUMBER=2348012345678
 ```
 
 Register `https://your-domain/api/ai/whatsapp/webhook` with Meta. Inbound
-messages are answered and stored per phone number; replying **human** hands the
-whole thread to the EduSphere team.
+messages are answered and stored per phone number; a greeting gets the menu, a
+question is answered from the WhatsApp + public answers, and replying **human**
+hands the whole thread to the EduSphere team.
 
-The webhook is mounted **before** the global JSON parser so the HMAC-SHA256
-signature is checked against the exact bytes Meta signed. With the provider left
-at `none` the endpoint still records the conversation and returns the reply in
-its HTTP response, so the bot can be tested end to end before a live number
+The webhook is mounted **before** the authenticated API router and checks the
+HMAC-SHA256 signature against the exact bytes Meta signed. With the provider
+left at `none` the endpoint still records the conversation and returns the reply
+in its HTTP response, so the bot can be tested end to end before a live number
 exists.
 
 ### Cost control

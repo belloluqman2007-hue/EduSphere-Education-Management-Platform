@@ -4568,6 +4568,22 @@
         </form>
       </div></div>
 
+      <div class="dash-page-head" style="margin-top:26px"><div><div class="dash-crumb">Platform</div><h2>WhatsApp line</h2>
+        <p>The number behind "Chat on WhatsApp" on the public website, and the message the button pre-fills. The same assistant answers on this line once the Meta credentials are configured.</p></div></div>
+      <div class="dash-card"><div class="dash-card-pad">
+        <form id="saWhatsAppForm">
+          <div class="dash-form-grid">
+            <div class="dash-field"><label>WhatsApp number</label>
+              <input name="whatsapp_ai_number" value="${esc(s.whatsapp_ai_number || "")}" placeholder="e.g. +234 801 234 5678" autocomplete="tel">
+              <small class="sub-muted">International format. A local 0803… number is converted to 234803… automatically.</small></div>
+            <div class="dash-field"><label>Pre-filled message</label>
+              <input name="whatsapp_ai_message" value="${esc(s.whatsapp_ai_message || "")}" placeholder="Hello EduSphere, I would like to know more about the platform."></div>
+          </div>
+          <button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px;">${I.check} Save WhatsApp Settings</button>
+          <p class="hint" style="margin-top:12px;">When the number is blank the button is hidden — the website never opens a dead WhatsApp link.</p>
+        </form>
+      </div></div>
+
       <div class="dash-page-head" style="margin-top:26px"><div><div class="dash-crumb">Platform</div><h2>Billing &amp; Payments</h2>
         <p>Where institutions send their subscription transfers, and how the billing lifecycle behaves. Shown on every upgrade screen and invoice.</p></div></div>
       <div class="dash-card"><div class="dash-card-pad">
@@ -4597,6 +4613,17 @@
       body.public_directory_enabled = fd.get("public_directory_enabled") === "on";
       try { await window.API.put("/platform/settings", body); toast("Settings saved.", "success"); }
       catch (err) { toast(err.message || "Could not save settings.", "error"); }
+    });
+    content.querySelector("#saWhatsAppForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        await window.API.put("/platform/settings", {
+          whatsapp_ai_number: String(fd.get("whatsapp_ai_number") || "").trim(),
+          whatsapp_ai_message: String(fd.get("whatsapp_ai_message") || "").trim(),
+        });
+        toast("WhatsApp settings saved.", "success");
+      } catch (err) { toast(err.message || "Could not save WhatsApp settings.", "error"); }
     });
     content.querySelector("#saBillingForm").addEventListener("submit", async (e) => {
       e.preventDefault();

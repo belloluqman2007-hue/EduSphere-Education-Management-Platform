@@ -516,7 +516,7 @@ test("the AI knowledge base carries the tier answers and re-seeds idempotently",
   assert.ok(compare, "it can also compare the tiers");
 
   const gated = await ctx.db.get(
-    "SELECT answer FROM ai_knowledge WHERE scope = 'app' AND question LIKE '%not included in my plan%'"
+    "SELECT answer FROM ai_knowledge WHERE scope = 'admin' AND question LIKE '%not included in my plan%'"
   );
   assert.ok(gated, "an in-app answer tells a blocked user what to do");
 

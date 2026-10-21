@@ -2,14 +2,18 @@
 /* ============================================================================
    EDUSPHERE AI — routes
    ----------------------------------------------------------------------------
-   Four mounts, one assistant:
+   Four mounts, one assistant with seven spaces (see services/ai-spaces.js):
 
-     /api/ai/*            logged-in dashboard assistant (tenant-scoped tools)
-     /api/public/ai/*     the public marketing website
+     /api/ai/*            signed-in assistant — the space follows the ROLE
+                          (super_admin | admin | teacher | student | parent)
+     /api/public/ai/*     the public marketing website (+ the WhatsApp CTA)
      /api/ai/whatsapp     the WhatsApp line (webhook, provider-signature verified)
-     /api/platform/ai/*   the operator's knowledge-base editor
+     /api/platform/ai/*   the operator's knowledge-base editor + space overview
 
    SECURITY MODEL (read this before adding a tool):
+   The browser never chooses the space. It is derived from the role that
+   requireAuth read from the database, so a student cannot ask for the
+   administrator's assistant by changing a request parameter.
    A tool's `run(args, ctx)` receives the tenant id from `ctx`, which the route
    built from the AUTHENTICATED SESSION. The model never supplies a tenant id,
    so prompt injection cannot make it read another institution's data.
@@ -21,12 +25,14 @@ const crypto = require("crypto");
 const db = require("../db");
 const config = require("../config");
 const ai = require("../services/ai");
+const spaces = require("../services/ai-spaces");
+const whatsappLine = require("../services/whatsapp-line");
 const analytics = require("../services/analytics");
 const grading = require("../services/grading");
 const subscription = require("../services/subscription");
-const { requireAuth, requireSuperAdmin } = require("../middleware/auth");
+const { requireAuth, requireRole, requireSuperAdmin } = require("../middleware/auth");
+const { effectiveTenantId, getTeacherAssignments } = require("../middleware/tenant");
 const { requireFeature } = require("../middleware/subscription");
-const { effectiveTenantId } = require("../middleware/tenant");
 const { asyncHandler, err, ok, cleanStr, toNum, logActivity } = require("../util");
 
 const appRouter = express.Router();
@@ -53,7 +59,74 @@ const appLimiter = rateLimit({ windowMs: 60 * 1000, max: 20 });
 const publicLimiter = rateLimit({ windowMs: 60 * 1000, max: 10 });
 
 /* ============================================================================
-   SHARED TOOLS
+   SHARED HELPERS FOR THE TOOLS
+   ========================================================================== */
+
+function todayIso() { return new Date().toISOString().slice(0, 10); }
+function dayName() { return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date().getUTCDay()]; }
+function n(v) { const x = Number(v); return Number.isFinite(x) ? x : 0; }
+function r1(v) { return Math.round(n(v) * 10) / 10; }
+function fullName(row) { return row ? `${row.first_name || ""} ${row.last_name || ""}`.trim() : ""; }
+
+async function activeTerm(tid) {
+  try { return await analytics.currentTerm(tid, todayIso()); } catch (e) { return null; }
+}
+
+/** One compact snapshot of the institution — the admin assistant's "how are we
+    doing?" answer. Every figure is a real query against this tenant only. */
+async function institutionSnapshot(tid) {
+  const [students, teachers, classes, att, term, madrasa] = await Promise.all([
+    db.get("SELECT COUNT(*) AS n FROM students WHERE madrasa_id = ? AND status IN ('active','promoted','suspended')", [tid]),
+    db.get("SELECT COUNT(*) AS n FROM users WHERE madrasa_id = ? AND role = 'teacher' AND is_active = 1", [tid]),
+    db.get("SELECT COUNT(*) AS n FROM classes WHERE madrasa_id = ? AND is_active = 1", [tid]),
+    db.get(
+      `SELECT COUNT(*) AS marked,
+              SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) AS present,
+              SUM(CASE WHEN status = 'late' THEN 1 ELSE 0 END) AS late,
+              SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) AS absent
+         FROM attendance WHERE madrasa_id = ? AND day = ?`,
+      [tid, todayIso()]
+    ),
+    activeTerm(tid),
+    db.get("SELECT name_en, category FROM madaris WHERE id = ?", [tid]),
+  ]);
+  let fees = null;
+  try {
+    // Lazy require: fees.js is a large route module and this keeps the AI
+    // route's load order unchanged. Its export is the SAME balance
+    // calculation the finance screens use, so the AI cannot quote a different
+    // number from the school's own report.
+    const { buildBalances } = require("./fees");
+    const rows = await buildBalances(tid, {});
+    fees = {
+      billed_ngn: Math.round(rows.reduce((s, x) => s + n(x.total_fees), 0)),
+      collected_ngn: Math.round(rows.reduce((s, x) => s + n(x.amount_paid), 0)),
+      outstanding_ngn: Math.round(rows.reduce((s, x) => s + n(x.outstanding_balance), 0)),
+      students_owing: rows.filter((x) => n(x.outstanding_balance) > 0).length,
+    };
+  } catch (e) {
+    fees = null;
+  }
+  return {
+    institution: madrasa ? madrasa.name_en : "",
+    category: madrasa ? madrasa.category || "islamic" : "",
+    today: todayIso(),
+    term: term ? { name: term.name_en, id: Number(term.id) } : null,
+    students: n(students && students.n),
+    teachers: n(teachers && teachers.n),
+    classes: n(classes && classes.n),
+    attendance_today: {
+      marked: n(att && att.marked),
+      present: n(att && att.present),
+      late: n(att && att.late),
+      absent: n(att && att.absent),
+    },
+    fees,
+  };
+}
+
+/* ============================================================================
+   PUBLIC, PLAN AND CONTACT TOOLS (shared where a space may use them)
    ========================================================================== */
 
 /** Public, non-sensitive plan catalogue. Safe on every surface.
@@ -95,13 +168,36 @@ const TOOL_LIST_PLANS = {
   run: async () => planCatalogue(),
 };
 
+async function contactDetails() {
+  const s = await subscription.getSettings();
+  const wa = await whatsappLine.line();
+  return {
+    email: s.billing_contact_email || "",
+    phone: s.billing_contact_phone || "",
+    whatsapp: wa.available ? { number: wa.display, link: wa.link } : null,
+    register_islamic_school: "/register-madrasa",
+    register_western_academy: "/register-academy",
+    sign_in: "/login",
+    plans_page: "/#plans",
+    note: "Visitors can register their institution directly from the website, and can continue on WhatsApp at any time.",
+  };
+}
+
+const TOOL_CONTACT = {
+  name: "get_contact_details",
+  description: "Get EduSphere's public contact details (email, phone, WhatsApp link) and the registration and sign-in URLs.",
+  parameters: { type: "object", properties: {} },
+  run: async () => contactDetails(),
+};
+
 /* ============================================================================
-   APP SURFACE (logged-in institution)
+   INSTITUTION ADMIN
    ========================================================================== */
 
-function appTools(ctx) {
+function adminTools(ctx) {
   return [
     TOOL_LIST_PLANS,
+    TOOL_CONTACT,
     {
       name: "get_my_subscription",
       description: "Get the caller's current plan, subscription status, renewal date and how many days are left.",
@@ -146,6 +242,12 @@ function appTools(ctx) {
           })),
         };
       },
+    },
+    {
+      name: "get_institution_snapshot",
+      description: "Get a live snapshot of THIS institution: students on roll, teachers, classes, today's attendance, the current term, and the fee position (billed, collected, outstanding). Use it for 'how are we doing?' questions.",
+      parameters: { type: "object", properties: {} },
+      run: async () => institutionSnapshot(ctx.madrasaId),
     },
     {
       name: "create_upgrade_request",
@@ -201,35 +303,765 @@ function appTools(ctx) {
   ];
 }
 
+/* ============================================================================
+   TEACHER — only their own classes, and only read-only
+   ========================================================================== */
+
+async function teacherScope(tid, userId) {
+  const scope = await getTeacherAssignments(tid, userId);
+  const classIds = scope.anyClassAnySubject
+    ? (await db.all("SELECT id FROM classes WHERE madrasa_id = ? AND is_active = 1", [tid])).map((c) => Number(c.id))
+    : [...scope.assignedClassIds];
+  return { scope, classIds };
+}
+
+function teacherTools(ctx) {
+  return [
+    {
+      name: "get_my_classes",
+      description: "List the classes and subjects assigned to this teacher, with the number of students in each class.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const { scope, classIds } = await teacherScope(ctx.madrasaId, ctx.userId);
+        const classes = classIds.length
+          ? await db.all(
+            `SELECT c.id, c.name_en,
+                    (SELECT COUNT(*) FROM students s WHERE s.madrasa_id = c.madrasa_id AND s.class_id = c.id AND s.status IN ('active','promoted','suspended')) AS students
+               FROM classes c WHERE c.madrasa_id = ? AND c.id IN (${classIds.map(() => "?").join(",")}) ORDER BY c.sort_order, c.name_en`,
+            [ctx.madrasaId].concat(classIds)
+          )
+          : [];
+        const assignments = [...scope.classSubjects].map((k) => {
+          const [classId, subjectId] = k.split(":").map(Number);
+          return { class_id: classId, subject_id: subjectId };
+        });
+        return {
+          classes: classes.map((c) => ({ id: Number(c.id), name: c.name_en, students: n(c.students) })),
+          subject_pairs: assignments,
+          note: classes.length ? undefined : "No classes are assigned to this teacher yet — the school administrator controls this under Teachers → Teaching assignments.",
+        };
+      },
+    },
+    {
+      name: "get_my_timetable",
+      description: "Get this teacher's own timetable slots. Defaults to today; pass a day name (Monday…Saturday) for another day.",
+      parameters: {
+        type: "object",
+        properties: { day: { type: "string", description: "Optional English day name, e.g. Monday." } },
+      },
+      run: async (args) => {
+        const day = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].includes(String(args.day || "")) ? String(args.day) : dayName();
+        const rows = await db.all(
+          `SELECT ts.period, ts.start_time, ts.end_time, ts.room, c.name_en AS class_name, sub.name_en AS subject_name
+             FROM timetable_slots ts
+             JOIN classes c ON c.id = ts.class_id AND c.madrasa_id = ts.madrasa_id
+             LEFT JOIN subjects sub ON sub.id = ts.subject_id
+            WHERE ts.madrasa_id = ? AND ts.teacher_id = ? AND ts.day = ?
+            ORDER BY ts.period`,
+          [ctx.madrasaId, ctx.userId, day]
+        );
+        return { day, slots: rows.map((r) => ({ period: Number(r.period), time: `${r.start_time || ""}–${r.end_time || ""}`, class: r.class_name, subject: r.subject_name || "", room: r.room || "" })) };
+      },
+    },
+    {
+      name: "get_my_pending_work",
+      description: "What is waiting on this teacher today: classes that meet but still have no attendance register, their own assignments with ungraded submissions, and the result workflow counts for their class/subject pairs.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const day = dayName();
+        const today = todayIso();
+        const slots = await db.all(
+          "SELECT DISTINCT class_id, c.name_en FROM timetable_slots ts JOIN classes c ON c.id = ts.class_id WHERE ts.madrasa_id = ? AND ts.teacher_id = ? AND ts.day = ?",
+          [ctx.madrasaId, ctx.userId, day]
+        );
+        const classIds = slots.map((s) => Number(s.class_id));
+        let attendancePending = [];
+        if (classIds.length) {
+          const marked = await db.all(
+            `SELECT DISTINCT class_id FROM attendance WHERE madrasa_id = ? AND day = ? AND class_id IN (${classIds.map(() => "?").join(",")})`,
+            [ctx.madrasaId, today].concat(classIds)
+          );
+          const markedSet = new Set(marked.map((m) => Number(m.class_id)));
+          attendancePending = slots.filter((s) => !markedSet.has(Number(s.class_id))).map((s) => s.name_en);
+        }
+        const ungraded = await db.get(
+          `SELECT COUNT(*) AS n FROM assignment_submissions x
+             JOIN homework h ON h.id = x.assignment_id AND h.madrasa_id = x.madrasa_id
+            WHERE x.madrasa_id = ? AND x.score IS NULL
+              AND (h.teacher_id = ? OR (h.teacher_id IS NULL AND h.created_by = ?))`,
+          [ctx.madrasaId, ctx.userId, ctx.userId]
+        );
+        const term = await activeTerm(ctx.madrasaId);
+        let results = { draft: 0, submitted: 0, returned: 0, approved: 0, published: 0 };
+        if (term) {
+          const rows = await db.all(
+            "SELECT status, COUNT(*) AS n FROM results WHERE madrasa_id = ? AND term_id = ? AND (entered_by = ? OR modified_by = ?) GROUP BY status",
+            [ctx.madrasaId, term.id, ctx.userId, ctx.userId]
+          );
+          for (const row of rows) if (results[row.status] !== undefined) results[row.status] = n(row.n);
+        }
+        return { day, attendance_pending: attendancePending, ungraded_submissions: n(ungraded && ungraded.n), results, term: term ? term.name_en : null };
+      },
+    },
+  ];
+}
+
+/* ============================================================================
+   STUDENT — their own record, nothing else
+   ========================================================================== */
+
+async function studentRow(tid, studentId) {
+  if (!studentId) return null;
+  return db.get(
+    `SELECT s.*, c.name_en AS class_en FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id AND c.madrasa_id = s.madrasa_id
+      WHERE s.id = ? AND s.madrasa_id = ?`,
+    [studentId, tid]
+  );
+}
+
+async function studentResults(tid, studentId, limitTerms = 4) {
+  const terms = await db.all(
+    `SELECT ts.term_id, ts.average, ts.overall_grade, ts.position, ts.published_at,
+            t.name_en AS term_name, a.label AS session_label
+       FROM term_summaries ts
+       JOIN terms t ON t.id = ts.term_id
+       JOIN academic_sessions a ON a.id = ts.session_id
+      WHERE ts.madrasa_id = ? AND ts.student_id = ? AND ts.published_at IS NOT NULL
+      ORDER BY ts.published_at DESC, ts.id DESC LIMIT ?`,
+    [tid, studentId, limitTerms]
+  );
+  const out = terms.map((t) => ({
+    term: t.term_name,
+    session: t.session_label,
+    average: t.average === null || t.average === undefined ? null : r1(t.average),
+    grade: t.overall_grade || "",
+    position: t.position ? Number(t.position) : null,
+    published_at: String(t.published_at).slice(0, 10),
+  }));
+  if (terms.length) {
+    const latest = terms[0];
+    const subjects = await db.all(
+      `SELECT sub.name_en, r.total, r.status FROM results r
+         JOIN subjects sub ON sub.id = r.subject_id AND sub.madrasa_id = r.madrasa_id
+        WHERE r.madrasa_id = ? AND r.student_id = ? AND r.term_id = ?
+          AND r.status IN ('approved','published','locked')
+        ORDER BY sub.name_en`,
+      [tid, studentId, latest.term_id]
+    );
+    out[0].subjects = subjects.map((s) => ({ subject: s.name_en, total: r1(s.total), status: s.status }));
+  }
+  return out;
+}
+
+async function studentAttendance(tid, studentId) {
+  const rows = await db.all(
+    "SELECT status, COUNT(*) AS n FROM attendance WHERE madrasa_id = ? AND student_id = ? GROUP BY status",
+    [tid, studentId]
+  );
+  const out = { present: 0, absent: 0, late: 0, excused: 0, total: 0 };
+  for (const row of rows) {
+    if (out[row.status] !== undefined) out[row.status] = n(row.n);
+    out.total += n(row.n);
+  }
+  out.percentage = out.total ? r1(((out.present + out.late + out.excused) / out.total) * 100) : null;
+  return out;
+}
+
+async function studentFees(tid, student) {
+  const fees = await db.all(
+    `SELECT f.id, f.amount_ngn, f.due_date, f.name_en FROM fee_items f
+      WHERE f.madrasa_id = ? AND f.status = 'active' AND (f.class_id IS NULL OR f.class_id = ?)`,
+    [tid, student.class_id || 0]
+  );
+  if (!fees.length) return { billed_ngn: 0, paid_ngn: 0, balance_ngn: 0, next_due_date: null, items: [] };
+  const feeIds = fees.map((f) => Number(f.id));
+  const marks = feeIds.map(() => "?").join(",");
+  const [assigned, payments] = await Promise.all([
+    db.all(`SELECT fee_item_id, amount_due FROM fee_assignments WHERE madrasa_id = ? AND student_id = ? AND fee_item_id IN (${marks})`, [tid, student.id].concat(feeIds)),
+    db.all(`SELECT fee_item_id, SUM(amount_ngn) AS paid FROM fee_payments WHERE madrasa_id = ? AND student_id = ? AND status = 'successful' AND fee_item_id IN (${marks}) GROUP BY fee_item_id`, [tid, student.id].concat(feeIds)),
+  ]);
+  const assignedBy = new Map(assigned.map((a) => [Number(a.fee_item_id), n(a.amount_due)]));
+  const paidBy = new Map(payments.map((p) => [Number(p.fee_item_id), n(p.paid)]));
+  let billed = 0; let paid = 0; let nextDue = null;
+  const items = [];
+  for (const fee of fees) {
+    const due = assignedBy.has(Number(fee.id)) ? assignedBy.get(Number(fee.id)) : n(fee.amount_ngn);
+    const got = paidBy.get(Number(fee.id)) || 0;
+    billed += due; paid += got;
+    const outstanding = Math.max(0, due - got);
+    if (outstanding > 0 && fee.due_date && (!nextDue || String(fee.due_date).slice(0, 10) < nextDue)) nextDue = String(fee.due_date).slice(0, 10);
+    items.push({ item: fee.name_en, due_ngn: due, paid_ngn: got, outstanding_ngn: outstanding, due_date: fee.due_date ? String(fee.due_date).slice(0, 10) : null });
+  }
+  return {
+    billed_ngn: Math.round(billed), paid_ngn: Math.round(paid),
+    balance_ngn: Math.max(0, Math.round(billed - paid)), next_due_date: nextDue, items,
+  };
+}
+
+async function classTimetable(tid, classId, day) {
+  if (!classId) return [];
+  const rows = await db.all(
+    `SELECT ts.period, ts.start_time, ts.end_time, ts.room, sub.name_en AS subject_name
+       FROM timetable_slots ts LEFT JOIN subjects sub ON sub.id = ts.subject_id
+      WHERE ts.madrasa_id = ? AND ts.class_id = ? AND ts.day = ?
+      ORDER BY ts.period`,
+    [tid, classId, day]
+  );
+  return rows.map((r) => ({ period: Number(r.period), time: `${r.start_time || ""}–${r.end_time || ""}`, subject: r.subject_name || "", room: r.room || "" }));
+}
+
+function studentTools(ctx) {
+  return [
+    {
+      name: "get_my_profile",
+      description: "Get the student's own record: name, admission number, class and institution.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s) return { error: "No student record is linked to this login. The school office can link it." };
+        return { name: fullName(s), name_ar: s.name_ar || "", admission_no: s.admission_no, class: s.class_en || "", status: s.status, institution: ctx.institutionName || "" };
+      },
+    },
+    {
+      name: "get_my_results",
+      description: "Get the student's own PUBLISHED term results, newest first, with the subject marks of the latest published term.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s) return { error: "No student record is linked to this login." };
+        const terms = await studentResults(ctx.madrasaId, s.id);
+        return { terms, note: terms.length ? undefined : "No term has been published yet." };
+      },
+    },
+    {
+      name: "get_my_attendance",
+      description: "Get the student's own attendance totals and percentage.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s) return { error: "No student record is linked to this login." };
+        return studentAttendance(ctx.madrasaId, s.id);
+      },
+    },
+    {
+      name: "get_my_fees",
+      description: "Get the student's own fee statement: billed, paid, outstanding balance and the next due date.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s) return { error: "No student record is linked to this login." };
+        return studentFees(ctx.madrasaId, s);
+      },
+    },
+    {
+      name: "get_my_timetable",
+      description: "Get the student's class timetable for today, or for a named day.",
+      parameters: {
+        type: "object",
+        properties: { day: { type: "string", description: "Optional English day name, e.g. Monday." } },
+      },
+      run: async (args) => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s) return { error: "No student record is linked to this login." };
+        const day = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].includes(String(args.day || "")) ? String(args.day) : dayName();
+        return { day, slots: await classTimetable(ctx.madrasaId, s.class_id, day) };
+      },
+    },
+    {
+      name: "get_my_assignments",
+      description: "List the student's pending published assignments for their class, with due dates and submission state.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s || !s.class_id) return { error: "No class is assigned to this student yet." };
+        const rows = await db.all(
+          `SELECT h.id, h.title, h.due_date, sub.name_en AS subject_name,
+                  (SELECT x.status FROM assignment_submissions x WHERE x.madrasa_id = h.madrasa_id AND x.assignment_id = h.id AND x.student_id = ?) AS submission_status
+             FROM homework h LEFT JOIN subjects sub ON sub.id = h.subject_id
+            WHERE h.madrasa_id = ? AND h.kind = 'assignment' AND h.status = 'published' AND h.class_id = ?
+              AND (h.due_date IS NULL OR h.due_date >= ?)
+            ORDER BY h.due_date IS NULL, h.due_date LIMIT 12`,
+          [s.id, ctx.madrasaId, s.class_id, todayIso()]
+        );
+        return { assignments: rows.map((r) => ({ title: r.title, subject: r.subject_name || "", due_date: r.due_date ? String(r.due_date).slice(0, 10) : null, status: r.submission_status || "not submitted" })) };
+      },
+    },
+    {
+      name: "get_my_exams",
+      description: "List the student's class exams that are scheduled, ongoing or published, soonest first.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s || !s.class_id) return { error: "No class is assigned to this student yet." };
+        const rows = await db.all(
+          `SELECT e.title, e.exam_date, e.start_time, e.end_time, e.classroom, sub.name_en AS subject_name, e.status
+             FROM exams e LEFT JOIN subjects sub ON sub.id = e.subject_id
+            WHERE e.madrasa_id = ? AND e.class_id = ? AND e.status IN ('scheduled','ongoing','published') AND e.exam_date >= ?
+            ORDER BY e.exam_date, e.start_time LIMIT 12`,
+          [ctx.madrasaId, s.class_id, todayIso()]
+        );
+        return { exams: rows.map((r) => ({ title: r.title, subject: r.subject_name || "", date: String(r.exam_date).slice(0, 10), time: `${r.start_time || ""}–${r.end_time || ""}`, room: r.classroom || "", status: r.status })) };
+      },
+    },
+    {
+      name: "get_my_library",
+      description: "List the student's active library loans, due dates and any overdue fines.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const rows = await db.all(
+          `SELECT b.title, l.issue_date, l.due_date, l.status, l.fine_ngn
+             FROM library_loans l JOIN library_books b ON b.id = l.book_id AND b.madrasa_id = l.madrasa_id
+            WHERE l.madrasa_id = ? AND l.borrower_user_id = ? AND l.status IN ('active','overdue')
+            ORDER BY l.due_date`,
+          [ctx.madrasaId, ctx.userId]
+        );
+        return { loans: rows.map((r) => ({ title: r.title, issued: String(r.issue_date).slice(0, 10), due: String(r.due_date).slice(0, 10), status: r.status, fine_ngn: n(r.fine_ngn) })) };
+      },
+    },
+    {
+      name: "get_my_quran_progress",
+      description: "For Islamic institutions: the student's own recorded Qur'an progress entries.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const s = await studentRow(ctx.madrasaId, ctx.studentId);
+        if (!s) return { error: "No student record is linked to this login." };
+        let rows = [];
+        try {
+          rows = await db.all(
+            `SELECT surah, juz, ayah_from, ayah_to, memorization_progress, revision_progress, performance_status, teacher_comments, progress_date
+               FROM quran_progress WHERE madrasa_id = ? AND student_id = ? ORDER BY progress_date DESC, id DESC LIMIT 10`,
+            [ctx.madrasaId, s.id]
+          );
+        } catch (e) { rows = []; }
+        return { entries: rows.map((r) => ({ surah: r.surah, juz: r.juz || "", ayahs: r.ayah_from ? `${r.ayah_from}–${r.ayah_to || ""}` : "", memorisation: n(r.memorization_progress), revision: n(r.revision_progress), status: r.performance_status, comment: r.teacher_comments || "", date: String(r.progress_date).slice(0, 10) })) };
+      },
+    },
+  ];
+}
+
+/* ============================================================================
+   PARENT — only children linked to this account
+   ========================================================================== */
+
+async function linkedChildren(tid, parentUserId) {
+  return db.all(
+    `SELECT s.*, c.name_en AS class_en
+       FROM students s
+       JOIN parent_links pl ON pl.student_id = s.id AND pl.madrasa_id = s.madrasa_id
+       LEFT JOIN classes c ON c.id = s.class_id AND c.madrasa_id = s.madrasa_id
+      WHERE pl.madrasa_id = ? AND pl.user_id = ? AND s.madrasa_id = ?`,
+    [tid, parentUserId, tid]
+  );
+}
+
+async function childOverview(tid, student) {
+  const [results, attendance, fees, exams, timetable] = await Promise.all([
+    studentResults(tid, student.id, 2),
+    studentAttendance(tid, student.id),
+    studentFees(tid, student),
+    student.class_id
+      ? db.all(
+        `SELECT e.title, e.exam_date, e.start_time, e.end_time, sub.name_en AS subject_name
+           FROM exams e LEFT JOIN subjects sub ON sub.id = e.subject_id
+          WHERE e.madrasa_id = ? AND e.class_id = ? AND e.exam_date >= ?
+          ORDER BY e.exam_date LIMIT 6`,
+        [tid, student.class_id, todayIso()]
+      )
+      : [],
+    classTimetable(tid, student.class_id, dayName()),
+  ]);
+  return {
+    child: { student_id: Number(student.id), name: fullName(student), class: student.class_en || "", admission_no: student.admission_no },
+    latest_result: results.length ? results[0] : null,
+    attendance,
+    fees,
+    upcoming_exams: exams.map((e) => ({ title: e.title, subject: e.subject_name || "", date: String(e.exam_date).slice(0, 10), time: `${e.start_time || ""}–${e.end_time || ""}` })),
+    today_timetable: timetable,
+  };
+}
+
+function parentTools(ctx) {
+  return [
+    {
+      name: "get_my_children",
+      description: "List the children linked to this parent account, with their class and admission number.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const children = await linkedChildren(ctx.madrasaId, ctx.userId);
+        return {
+          children: children.map((c) => ({ student_id: Number(c.id), name: fullName(c), class: c.class_en || "", admission_no: c.admission_no })),
+          note: children.length ? undefined : "No child is linked to this account yet — the school office creates that link.",
+        };
+      },
+    },
+    {
+      name: "get_child_overview",
+      description: "Get one linked child's published result, attendance, fee balance, upcoming exams and today's timetable. Only children linked to this account can be read.",
+      parameters: {
+        type: "object",
+        properties: { student_id: { type: "number", description: "The child's student id from get_my_children." } },
+        required: ["student_id"],
+      },
+      run: async (args) => {
+        const children = await linkedChildren(ctx.madrasaId, ctx.userId);
+        const wanted = Number(args.student_id || 0);
+        const child = children.find((c) => Number(c.id) === wanted);
+        if (!child) return { error: "That child is not linked to this parent account." };
+        return childOverview(ctx.madrasaId, child);
+      },
+    },
+    {
+      name: "get_my_meetings",
+      description: "List this parent's upcoming parent-teacher meeting bookings with the child, teacher, time and status.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        let rows = [];
+        try {
+          rows = await db.all(
+            `SELECT b.slot_time, b.status, b.notes, s.first_name, s.last_name,
+                    tps.date AS session_date, tps.location, u.full_name AS teacher_name
+               FROM ptm_bookings b
+               JOIN students s ON s.id = b.student_id AND s.madrasa_id = b.madrasa_id
+               JOIN ptm_sessions tps ON tps.id = b.ptm_session_id AND tps.madrasa_id = b.madrasa_id
+               JOIN users u ON u.id = b.teacher_user_id AND u.madrasa_id = b.madrasa_id
+              WHERE b.madrasa_id = ? AND b.parent_user_id = ? AND b.status <> 'cancelled'
+              ORDER BY tps.date DESC, b.slot_time LIMIT 10`,
+            [ctx.madrasaId, ctx.userId]
+          );
+        } catch (e) { rows = []; }
+        return {
+          meetings: rows.map((r) => ({
+            child: `${r.first_name} ${r.last_name}`.trim(),
+            teacher: r.teacher_name,
+            date: String(r.session_date).slice(0, 10),
+            time: r.slot_time,
+            location: r.location || "",
+            status: r.status,
+          })),
+        };
+      },
+    },
+  ];
+}
+
+/* ============================================================================
+   SUPER ADMIN — the platform as a whole, read-only
+   ========================================================================== */
+
+function superAdminTools() {
+  return [
+    TOOL_LIST_PLANS,
+    {
+      name: "get_platform_overview",
+      description: "Platform-wide totals: institutions (total and active), students, teachers, administrators, parent accounts, plan mix, subscription status mix and pending work (registrations, payment requests, tickets).",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const [madaris, active, students, teachers, admins, parents] = await Promise.all([
+          db.get("SELECT COUNT(*) AS n FROM madaris"),
+          db.get("SELECT COUNT(*) AS n FROM madaris WHERE status = 'active'"),
+          db.get("SELECT COUNT(*) AS n FROM students WHERE status IN ('active','promoted','suspended')"),
+          db.get("SELECT COUNT(*) AS n FROM users WHERE role = 'teacher' AND is_active = 1"),
+          db.get("SELECT COUNT(*) AS n FROM users WHERE role = 'madrasa_admin' AND is_active = 1"),
+          db.get("SELECT COUNT(*) AS n FROM users WHERE role = 'parent' AND is_active = 1"),
+        ]);
+        let plans = [];
+        let subs = [];
+        let pending = { registrations: 0, payment_requests: 0, tickets: 0 };
+        try {
+          plans = await db.all("SELECT p.code, p.name, COUNT(m.id) AS n FROM plans p LEFT JOIN madaris m ON m.plan_id = p.id GROUP BY p.code, p.name ORDER BY p.sort_order");
+        } catch (e) { plans = []; }
+        try {
+          subs = await db.all("SELECT COALESCE(subscription_status,'active') AS status, COUNT(*) AS n FROM madaris GROUP BY COALESCE(subscription_status,'active')");
+        } catch (e) { subs = []; }
+        try { pending.registrations = n((await db.get("SELECT COUNT(*) AS n FROM madrasa_registrations WHERE status = 'Pending'")).n); } catch (e) { /* optional */ }
+        try { pending.payment_requests = n((await db.get("SELECT COUNT(*) AS n FROM subscription_invoices WHERE status IN ('pending','awaiting_approval')")).n); } catch (e) { /* optional */ }
+        try { pending.tickets = n((await db.get("SELECT COUNT(*) AS n FROM support_tickets WHERE status IN ('open','awaiting_reply')")).n); } catch (e) { /* optional */ }
+        return {
+          institutions: { total: n(madaris && madaris.n), active: n(active && active.n) },
+          students: n(students && students.n),
+          teachers: n(teachers && teachers.n),
+          administrators: n(admins && admins.n),
+          parent_accounts: n(parents && parents.n),
+          plans: plans.map((p) => ({ code: p.code, name: p.name, institutions: n(p.n) })),
+          subscriptions: subs.map((s) => ({ status: s.status, institutions: n(s.n) })),
+          pending,
+        };
+      },
+    },
+    {
+      name: "list_institutions",
+      description: "List institutions with their plan, status, student and teacher counts, subscription status and expiry. Optionally filter by status (active/suspended) or by a name search.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: { type: "string", description: "Optional: active or suspended." },
+          search: { type: "string", description: "Optional name or slug fragment." },
+          limit: { type: "number", description: "Maximum rows, default 25." },
+        },
+      },
+      run: async (args) => {
+        const limit = Math.min(50, Math.max(1, Number(args.limit) || 25));
+        const where = ["1=1"];
+        const params = [];
+        if (args.status) { where.push("m.status = ?"); params.push(cleanStr(args.status, 20)); }
+        if (args.search) { where.push("(LOWER(m.name_en) LIKE ? OR LOWER(m.slug) LIKE ?)"); const q = `%${cleanStr(args.search, 80).toLowerCase()}%`; params.push(q, q); }
+        const rows = await db.all(
+          `SELECT m.id, m.name_en, m.slug, m.status, m.city, m.state_name,
+                  p.code AS plan_code, p.name AS plan_name,
+                  COALESCE(m.subscription_status,'active') AS subscription_status, m.plan_expires_at,
+                  (SELECT COUNT(*) FROM students s WHERE s.madrasa_id = m.id AND s.status IN ('active','promoted','suspended')) AS students,
+                  (SELECT COUNT(*) FROM users u WHERE u.madrasa_id = m.id AND u.role = 'teacher' AND u.is_active = 1) AS teachers
+             FROM madaris m LEFT JOIN plans p ON p.id = m.plan_id
+            WHERE ${where.join(" AND ")}
+            ORDER BY m.name_en LIMIT ?`,
+          params.concat([limit])
+        );
+        return {
+          institutions: rows.map((r) => ({
+            id: Number(r.id), name: r.name_en, slug: r.slug, status: r.status,
+            plan: r.plan_name || r.plan_code || "—", subscription_status: r.subscription_status,
+            expires_at: r.plan_expires_at ? String(r.plan_expires_at).slice(0, 10) : null,
+            students: n(r.students), teachers: n(r.teachers), location: [r.city, r.state_name].filter(Boolean).join(", "),
+          })),
+        };
+      },
+    },
+    {
+      name: "list_payment_requests",
+      description: "List subscription invoices that are pending or awaiting approval, with the institution, plan, amount and reference. Use this to tell the operator what money is waiting to be checked.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        let rows = [];
+        try {
+          rows = await db.all(
+            `SELECT i.invoice_no, i.amount_ngn, i.billing_cycle, i.status, i.reference, i.created_at,
+                    m.name_en AS madrasa_name, p.name AS plan_name
+               FROM subscription_invoices i
+               JOIN madaris m ON m.id = i.madrasa_id
+               LEFT JOIN plans p ON p.id = i.plan_id
+              WHERE i.status IN ('pending','awaiting_approval')
+              ORDER BY i.id DESC LIMIT 50`
+          );
+        } catch (e) { rows = []; }
+        return { payment_requests: rows.map((r) => ({ invoice_no: r.invoice_no, institution: r.madrasa_name, plan: r.plan_name || "", amount_ngn: n(r.amount_ngn), cycle: r.billing_cycle, status: r.status, reference: r.reference, created: String(r.created_at).slice(0, 10) })) };
+      },
+    },
+    {
+      name: "list_registrations",
+      description: "List school registration applications. Defaults to Pending; pass status Approved or Rejected for history.",
+      parameters: { type: "object", properties: { status: { type: "string", description: "Pending (default), Approved or Rejected." } } },
+      run: async (args) => {
+        const status = ["Pending", "Approved", "Rejected"].includes(String(args.status || "")) ? String(args.status) : "Pending";
+        let rows = [];
+        try {
+          rows = await db.all(
+            `SELECT registration_id, name, city, state_name, admin_full_name, admin_email, admin_phone, submitted_at, status
+               FROM madrasa_registrations WHERE status = ? ORDER BY id DESC LIMIT 40`,
+            [status]
+          );
+        } catch (e) { rows = []; }
+        return { status, registrations: rows.map((r) => ({ reference: r.registration_id, institution: r.name, location: [r.city, r.state_name].filter(Boolean).join(", "), administrator: r.admin_full_name, email: r.admin_email || "", phone: r.admin_phone || "", submitted_at: r.submitted_at ? String(r.submitted_at).slice(0, 10) : null })) };
+      },
+    },
+    {
+      name: "list_support_tickets",
+      description: "List support tickets from institutions, newest first. Optionally filter by status (open, awaiting_reply, resolved, closed).",
+      parameters: { type: "object", properties: { status: { type: "string" } } },
+      run: async (args) => {
+        const where = ["1=1"];
+        const params = [];
+        if (args.status) { where.push("t.status = ?"); params.push(cleanStr(args.status, 20)); }
+        let rows = [];
+        try {
+          rows = await db.all(
+            `SELECT t.id, t.subject, t.status, t.priority, t.category, t.created_at, m.name_en AS madrasa_name
+               FROM support_tickets t LEFT JOIN madaris m ON m.id = t.madrasa_id
+              WHERE ${where.join(" AND ")}
+              ORDER BY t.id DESC LIMIT 40`,
+            params
+          );
+        } catch (e) { rows = []; }
+        return { tickets: rows.map((r) => ({ id: Number(r.id), subject: r.subject, institution: r.madrasa_name || "", status: r.status, priority: r.priority, category: r.category, created: String(r.created_at).slice(0, 10) })) };
+      },
+    },
+    {
+      name: "get_recent_activity",
+      description: "Recent audited actions across the platform, with the user and institution.",
+      parameters: { type: "object", properties: { limit: { type: "number" } } },
+      run: async (args) => {
+        const limit = Math.min(50, Math.max(1, Number(args.limit) || 20));
+        let rows = [];
+        try {
+          rows = await db.all(
+            `SELECT a.action, a.entity, a.entity_id, a.created_at, u.username, m.name_en AS madrasa_name
+               FROM activity_log a LEFT JOIN users u ON u.id = a.user_id LEFT JOIN madaris m ON m.id = a.madrasa_id
+              ORDER BY a.id DESC LIMIT ?`,
+            [limit]
+          );
+        } catch (e) { rows = []; }
+        return { activity: rows.map((r) => ({ action: r.action, entity: r.entity || "", entity_id: r.entity_id || "", user: r.username || "system", institution: r.madrasa_name || "platform", at: String(r.created_at).slice(0, 19) })) };
+      },
+    },
+    {
+      name: "get_ai_knowledge_stats",
+      description: "How many AI knowledge-base answers exist per space, and how many are active.",
+      parameters: { type: "object", properties: {} },
+      run: async () => ({ spaces: await ai.knowledgeStats() }),
+    },
+  ];
+}
+
+/* ============================================================================
+   PUBLIC / WHATSAPP TOOLS
+   ========================================================================== */
+
+function publicTools() {
+  return [
+    TOOL_LIST_PLANS,
+    TOOL_CONTACT,
+    {
+      name: "register_interest",
+      description: "Record that a visitor wants a demo or wants to register their institution. Ask for the institution name and a contact detail first.",
+      parameters: {
+        type: "object",
+        properties: {
+          institution_name: { type: "string" },
+          contact: { type: "string", description: "Email or phone number" },
+          note: { type: "string" },
+        },
+        required: ["institution_name"],
+      },
+      run: async (args) => {
+        const name = cleanStr(args.institution_name, 160);
+        const contact = cleanStr(args.contact, 120);
+        if (!name) return { error: "An institution name is needed." };
+        logActivity(db, { userId: null, action: "ai.public_lead", entity: "lead", meta: { name, contact, note: cleanStr(args.note, 200) } });
+        return { ok: true, message: "Thank you — the EduSphere team will reach out. You can also register directly on the website." };
+      },
+    },
+  ];
+}
+
+function whatsappTools(ctx) {
+  return [
+    TOOL_LIST_PLANS,
+    TOOL_CONTACT,
+    {
+      name: "escalate_to_human",
+      description: "Hand this WhatsApp conversation to the EduSphere support team. Use it when the person asks for a human or agent, or when you cannot help.",
+      parameters: { type: "object", properties: { summary: { type: "string" } }, required: [] },
+      run: async (args) => {
+        await db.run("UPDATE ai_conversations SET escalated = 1 WHERE id = ?", [ctx.conversationId]);
+        logActivity(db, { action: "ai.whatsapp_escalate", entity: "ai_conversation", entityId: String(ctx.conversationId), meta: { from: ctx.from, summary: cleanStr(args && args.summary, 200) } });
+        return { ok: true, message: "Handed to the EduSphere team — someone will continue this chat shortly." };
+      },
+    },
+  ];
+}
+
 appRouter.use(requireAuth);
 
+/** The space for this request. Decided by the role the SERVER authenticated in
+    `requireAuth` — a browser can never claim to be the operator. */
+function currentSurface(req) {
+  return spaces.surfaceForRole(req.user.role);
+}
+
+function conversationExternalId(surface, req) {
+  return `${surface}-user-${req.user.id}`;
+}
+
+/** Who is asking, in the model's words. Built from the session, never from the
+    request body, and never carrying another tenant's identity. */
+async function requestContext(req, surface, tid) {
+  const context = {
+    role: req.user.role,
+    userName: req.user.fullName || req.user.username,
+    today: todayIso(),
+  };
+  if (!tid) return context;
+  const m = await db.get("SELECT name_en, category FROM madaris WHERE id = ?", [tid]);
+  if (m) {
+    context.institutionName = m.name_en;
+    context.category = m.category || "islamic";
+  }
+  if (surface === "admin") {
+    try {
+      const s = await subscription.summary(tid);
+      if (s) {
+        context.plan = s.plan.name;
+        context.subscriptionStatus = s.subscription.status;
+      }
+    } catch (e) { /* the assistant still works without a subscription row */ }
+  }
+  if (surface === "student" && req.user.studentId) {
+    const s = await studentRow(tid, req.user.studentId);
+    if (s) context.studentName = fullName(s);
+  }
+  if (surface === "parent") {
+    const children = await linkedChildren(tid, req.user.id);
+    context.children = children.map((c) => fullName(c)).filter(Boolean);
+  }
+  return context;
+}
+
+function toolsFor(surface, ctx) {
+  switch (surface) {
+    case "super_admin": return superAdminTools();
+    case "admin": return adminTools(ctx);
+    case "teacher": return teacherTools(ctx);
+    case "student": return studentTools(ctx);
+    case "parent": return parentTools(ctx);
+    default: return publicTools();
+  }
+}
+
 appRouter.get("/status", asyncHandler(async (req, res) => {
-  const tid = effectiveTenantId(req);
+  const surface = currentSurface(req);
+  const tid = effectiveTenantId(req) || req.user.madrasaId || null;
   const m = tid ? await db.get("SELECT name_en FROM madaris WHERE id = ?", [tid]) : null;
-  ok(res, { enabled: true, ai_model: ai.enabled ? ai.model : "", live: ai.enabled, institution: m ? m.name_en : "" });
+  ok(res, {
+    surface,
+    role: req.user.role,
+    space: spaces.publicSpace(surface),
+    welcome: await ai.welcome(surface),
+    live: ai.enabled,
+    ai_model: ai.enabled ? ai.model : "",
+    institution: m ? m.name_en : "",
+    whatsapp: await whatsappLine.line(),
+  });
 }));
 
 appRouter.post("/chat", appLimiter, asyncHandler(async (req, res) => {
-  const tid = effectiveTenantId(req);
-  if (!tid) return err(res, 400, "No institution on this session.");
+  const surface = currentSurface(req);
+  const tid = effectiveTenantId(req) || req.user.madrasaId || null;
+  if (spaces.isTenantSurface(surface) && !tid) return err(res, 400, "No institution on this session.");
+
   const message = cleanStr(req.body && req.body.message, 4000);
   if (!message) return err(res, 400, "Type a message.");
 
-  const m = await db.get("SELECT name_en FROM madaris WHERE id = ?", [tid]);
-  const conv = await ai.conversation({ surface: "app", madrasaId: tid, userId: req.user.id, externalId: `user-${req.user.id}` });
+  const context = await requestContext(req, surface, tid);
+  context.madrasaId = tid;
+  context.userId = req.user.id;
+
+  const conv = await ai.conversation({
+    surface,
+    madrasaId: surface === "super_admin" ? null : tid,
+    userId: req.user.id,
+    externalId: conversationExternalId(surface, req),
+  });
   const history = await ai.history(conv.id);
   const messages = history.concat([{ role: "user", content: message }]);
 
-  const ctx = { madrasaId: tid, userId: req.user.id, userName: req.user.full_name || req.user.username, institutionName: m ? m.name_en : "" };
-
   let out;
   try {
-    out = await ai.ask({ surface: "app", messages, tools: appTools(ctx), context: ctx });
+    out = await ai.ask({ surface, messages, tools: toolsFor(surface, context), context });
   } catch (e) {
-    // The model is down; the knowledge base may still have the answer.
-    const hits = await ai.retrieve("app", message, 3);
-    const fb = ai.fallbackAnswer("app", message, hits);
-    out = fb || { content: "The assistant is temporarily unavailable. Please use Chat & Support to reach the EduSphere team.", sources: [], mode: "error", toolCalls: [], tokens: null };
+    // The model is down; the knowledge base (or the space's own menu) may
+    // still answer, and it is still scoped to this space.
+    const hits = await ai.retrieve(surface, message, 3);
+    out = ai.fallbackAnswer(surface, message, hits) || await ai.menuAnswer(surface);
   }
 
   await ai.saveMessage(conv.id, "user", message);
@@ -238,22 +1070,35 @@ appRouter.post("/chat", appLimiter, asyncHandler(async (req, res) => {
     reply: out.content,
     sources: out.sources || [],
     mode: out.mode,
+    surface,
     conversation_id: conv.id,
     actions: (out.toolCalls || []).map((t) => t.name),
   });
 }));
 
 appRouter.get("/history", asyncHandler(async (req, res) => {
-  const tid = effectiveTenantId(req);
-  const conv = await ai.conversation({ surface: "app", madrasaId: tid, userId: req.user.id, externalId: `user-${req.user.id}` });
-  ok(res, { conversation_id: conv.id, messages: await ai.history(conv.id, 50) });
+  const surface = currentSurface(req);
+  const tid = effectiveTenantId(req) || req.user.madrasaId || null;
+  const conv = await ai.conversation({
+    surface,
+    madrasaId: surface === "super_admin" ? null : tid,
+    userId: req.user.id,
+    externalId: conversationExternalId(surface, req),
+  });
+  ok(res, { surface, conversation_id: conv.id, messages: await ai.history(conv.id, 50) });
 }));
 
 appRouter.post("/reset", asyncHandler(async (req, res) => {
-  const tid = effectiveTenantId(req);
-  const conv = await ai.conversation({ surface: "app", madrasaId: tid, userId: req.user.id, externalId: `user-${req.user.id}` });
+  const surface = currentSurface(req);
+  const tid = effectiveTenantId(req) || req.user.madrasaId || null;
+  const conv = await ai.conversation({
+    surface,
+    madrasaId: surface === "super_admin" ? null : tid,
+    userId: req.user.id,
+    externalId: conversationExternalId(surface, req),
+  });
   await db.run("DELETE FROM ai_messages WHERE conversation_id = ?", [conv.id]);
-  ok(res, { ok: true });
+  ok(res, { ok: true, surface });
 }));
 
 /* ============================================================================
@@ -280,6 +1125,10 @@ appRouter.post("/reset", asyncHandler(async (req, res) => {
    • The tenant id comes from the session, and every query filters by it — the
      copilot reads one school's data and cannot be pointed at another.
    ========================================================================== */
+
+/* The copilot reads whole-school data, so it is for the people who run the
+   school. A student or parent gets a plain 403 rather than a school-wide view. */
+appRouter.use("/copilot", requireRole("madrasa_admin", "super_admin"));
 
 const COPILOT_CAPABILITIES = [
   {
@@ -466,7 +1315,7 @@ appRouter.post("/copilot/report-comments", requireFeature("ai_comments"), asyncH
   if (ai.enabled && b.polish !== false) {
     try {
       const out = await ai.ask({
-        surface: "app",
+        surface: "admin",
         messages: [{
           role: "user",
           content:
@@ -721,7 +1570,7 @@ appRouter.post("/copilot/questions", requireFeature("ai_questions"), asyncHandle
     if (ai.enabled && b.use_model !== false) {
       try {
         const out = await ai.ask({
-          surface: "app",
+          surface: "admin",
           messages: [{
             role: "user",
             content:
@@ -813,7 +1662,7 @@ appRouter.get("/copilot/insights", requireFeature("analytics_advanced"), asyncHa
   if (ai.enabled && req.query.polish !== "false") {
     try {
       const out = await ai.ask({
-        surface: "app",
+        surface: "admin",
         messages: [{
           role: "user",
           content: `Summarise these school analytics insights for a head teacher in under 120 words. Use only the facts given.\n\n${answer}\n\nTerm: ${data.term ? data.term.nameEn : "n/a"}. Attendance window: ${data.window.days} days.`,
@@ -831,46 +1680,49 @@ appRouter.get("/copilot/insights", requireFeature("analytics_advanced"), asyncHa
 
 /* ============================================================================
    PUBLIC WEBSITE SURFACE
+   ----------------------------------------------------------------------------
+   What a visitor can do here:
+     GET  /api/public/ai/info     the space, the WhatsApp line and the links
+     GET  /api/public/ai/whatsapp the WhatsApp line on its own (the CTA)
+     POST /api/public/ai/chat     ask the public assistant
+     GET  /api/public/ai/status   is the assistant live? (kept for compatibility)
    ========================================================================== */
 
-function publicTools() {
-  return [
-    TOOL_LIST_PLANS,
-    {
-      name: "get_contact_details",
-      description: "Get EduSphere's public contact details for sales and support.",
-      parameters: { type: "object", properties: {} },
-      run: async () => {
-        const s = await subscription.getSettings();
-        return {
-          email: s.billing_contact_email || "",
-          phone: s.billing_contact_phone || "",
-          note: "Visitors can also register their institution directly from the EduSphere website.",
-        };
-      },
+async function publicInfo() {
+  const wa = await whatsappLine.line();
+  const s = await subscription.getSettings();
+  return {
+    surface: "public",
+    space: spaces.publicSpace("public"),
+    welcome: await ai.welcome("public"),
+    live: ai.enabled,
+    model: ai.enabled ? ai.model : "",
+    whatsapp: wa,
+    contact: { email: s.billing_contact_email || "", phone: s.billing_contact_phone || "" },
+    links: {
+      register_islamic_school: "/register-madrasa",
+      register_western_academy: "/register-academy",
+      sign_in: "/login",
+      plans: "/#plans",
+      registration_status: "/register-madrasa",
     },
-    {
-      name: "register_interest",
-      description: "Record that a visitor wants a demo or wants to register their institution. Ask for the institution name and a contact detail first.",
-      parameters: {
-        type: "object",
-        properties: {
-          institution_name: { type: "string" },
-          contact: { type: "string", description: "Email or phone number" },
-          note: { type: "string" },
-        },
-        required: ["institution_name"],
-      },
-      run: async (args) => {
-        const name = cleanStr(args.institution_name, 160);
-        const contact = cleanStr(args.contact, 120);
-        if (!name) return { error: "An institution name is needed." };
-        logActivity(db, { userId: null, action: "ai.public_lead", entity: "lead", meta: { name, contact, note: cleanStr(args.note, 200) } });
-        return { ok: true, message: "Thank you — the EduSphere team will reach out. You can also register directly on the website." };
-      },
-    },
-  ];
+  };
 }
+
+publicRouter.get("/info", asyncHandler(async (req, res) => {
+  ok(res, await publicInfo());
+}));
+
+/* The CTA on its own: a tiny endpoint so the website can render the WhatsApp
+   button without loading the whole assistant. */
+publicRouter.get("/whatsapp", asyncHandler(async (req, res) => {
+  const wa = await whatsappLine.line();
+  ok(res, { whatsapp: wa, message: wa.available ? "Chat with EduSphere on WhatsApp" : "The WhatsApp line is not configured yet." });
+}));
+
+publicRouter.get("/status", asyncHandler(async (req, res) => {
+  ok(res, { surface: "public", enabled: true, live: ai.enabled, model: ai.enabled ? ai.model : "" });
+}));
 
 publicRouter.post("/chat", publicLimiter, asyncHandler(async (req, res) => {
   const message = cleanStr(req.body && req.body.message, 2000);
@@ -882,24 +1734,33 @@ publicRouter.post("/chat", publicLimiter, asyncHandler(async (req, res) => {
 
   let out;
   try {
-    out = await ai.ask({ surface: "public", messages, tools: publicTools(), context: {} });
+    out = await ai.ask({ surface: "public", messages, tools: publicTools(), context: { today: todayIso() } });
   } catch (e) {
     const hits = await ai.retrieve("public", message, 3);
-    const fb = ai.fallbackAnswer("public", message, hits);
-    out = fb || { content: "The assistant is temporarily unavailable. Please try again shortly.", sources: [], mode: "error", toolCalls: [] };
+    out = ai.fallbackAnswer("public", message, hits) || await ai.menuAnswer("public");
   }
 
   await ai.saveMessage(conv.id, "user", message);
   await ai.saveMessage(conv.id, "assistant", out.content, { sources: out.sources, tokens: out.tokens });
-  ok(res, { reply: out.content, sources: out.sources || [], mode: out.mode, session_id: sessionId });
-}));
-
-publicRouter.get("/status", asyncHandler(async (req, res) => {
-  ok(res, { enabled: true, live: ai.enabled, model: ai.enabled ? ai.model : "" });
+  ok(res, {
+    reply: out.content,
+    sources: out.sources || [],
+    mode: out.mode,
+    session_id: sessionId,
+    surface: "public",
+    whatsapp: await whatsappLine.line(),
+    suggestions: spaces.publicSpace("public").suggestions,
+  });
 }));
 
 /* ============================================================================
    WHATSAPP SURFACE
+   ----------------------------------------------------------------------------
+   The same assistant, on the number customers already message. Two ways in:
+     • the public website's "Chat on WhatsApp" button (wa.me/<number>)
+     • someone messaging the line directly
+   Either way the conversation is stored under its own surface and answered
+   from the WhatsApp space's knowledge and short-reply prompt.
    ========================================================================== */
 
 const WA = config.WHATSAPP_AI || { provider: "none", token: "", phoneNumberId: "", verifyToken: "" };
@@ -920,22 +1781,6 @@ async function sendWhatsApp(to, text) {
   return { ok: false, provider: WA.provider || "none", skipped: true };
 }
 
-function whatsappTools(ctx) {
-  return [
-    TOOL_LIST_PLANS,
-    {
-      name: "escalate_to_human",
-      description: "Hand this WhatsApp conversation to the EduSphere support team. Use it when the person asks for a human or agent, or when you cannot help.",
-      parameters: { type: "object", properties: { summary: { type: "string" } }, required: [] },
-      run: async (args) => {
-        await db.run("UPDATE ai_conversations SET escalated = 1 WHERE id = ?", [ctx.conversationId]);
-        logActivity(db, { action: "ai.whatsapp_escalate", entity: "ai_conversation", entityId: String(ctx.conversationId), meta: { from: ctx.from, summary: cleanStr(args && args.summary, 200) } });
-        return { ok: true, message: "Handed to the EduSphere team — someone will continue this chat shortly." };
-      },
-    },
-  ];
-}
-
 /** Meta Cloud API sends the payload; the signature is HMAC-SHA256 of the RAW
     body with the app secret, in the x-hub-signature-256 header. */
 function validWhatsAppSignature(raw, signature) {
@@ -945,6 +1790,25 @@ function validWhatsAppSignature(raw, signature) {
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   try { return crypto.timingSafeEqual(a, b); } catch (e) { return false; }
+}
+
+const WA_GREETINGS = new Set(["hi", "hello", "hey", "hi there", "hello there", "start", "menu", "good morning", "good afternoon", "good evening"]);
+const WA_HUMAN = /^(human|agent|person|support|talk to (a )?(human|person|agent)|speak to (a )?(human|person|agent))$/i;
+
+async function whatsappMenuReply() {
+  const space = spaces.spaceOf("whatsapp");
+  const wa = await whatsappLine.line();
+  const lines = [space.greeting, "", "You can ask me:"];
+  for (const q of space.suggestions.slice(0, 4)) lines.push(`• ${q}`);
+  if (wa.available) lines.push("", `Or use the website: ${wa.link}`.slice(0, 900));
+  lines.push("", "Reply *human* at any time to speak to our team.");
+  return lines.filter((l) => l !== "").join("\n");
+}
+
+async function whatsappEscalate(from, conversationId, summary) {
+  try { await db.run("UPDATE ai_conversations SET escalated = 1 WHERE id = ?", [conversationId]); } catch (e) { /* non-fatal */ }
+  logActivity(db, { action: "ai.whatsapp_escalate", entity: "ai_conversation", entityId: String(conversationId), meta: { from, summary: summary || "Requested a human" } });
+  return "Thank you — I have handed this conversation to the EduSphere team. Someone will continue right here shortly. You do not need to repeat anything.";
 }
 
 whatsappRouter.get("/webhook", (req, res) => {
@@ -974,24 +1838,49 @@ whatsappRouter.post("/webhook", express.json({ verify: (req, _res, buf) => { req
   if (!message || !message.from) return res.json({ received: true }); // status updates etc.
 
   const from = String(message.from);
+  const type = String(message.type || "text");
   const incoming = String((message.text && message.text.body) || "").trim();
-  if (!incoming) {
-    await sendWhatsApp(from, "Send a message and EduSphere AI will help. Reply *human* at any time to speak to our team.");
-    return res.json({ received: true });
-  }
 
   const conv = await ai.conversation({ surface: "whatsapp", externalId: `wa-${from}` });
+  const ctx = { conversationId: conv.id, from, surface: "whatsapp" };
+
+  // A greeting, a non-text message, or an empty one gets the menu — the same
+  // thing a person would do, instead of an error.
+  if (!incoming || type !== "text") {
+    const reply = !incoming || WA_GREETINGS.has(incoming.toLowerCase())
+      ? await whatsappMenuReply()
+      : "I can read text messages here. Tell me what you need in a few words — registration, plans, or how EduSphere works — or reply *human* to speak to our team.";
+    await ai.saveMessage(conv.id, "user", incoming || `[${type}]`);
+    await ai.saveMessage(conv.id, "assistant", reply);
+    const delivery = await sendWhatsApp(from, reply);
+    return res.json({ received: true, delivered: delivery.ok, provider: delivery.provider, mode: "menu" });
+  }
+
+  if (WA_GREETINGS.has(incoming.toLowerCase())) {
+    const reply = await whatsappMenuReply();
+    await ai.saveMessage(conv.id, "user", incoming);
+    await ai.saveMessage(conv.id, "assistant", reply);
+    const delivery = await sendWhatsApp(from, reply);
+    return res.json({ received: true, delivered: delivery.ok, provider: delivery.provider, mode: "menu" });
+  }
+
+  if (WA_HUMAN.test(incoming)) {
+    const reply = await whatsappEscalate(from, conv.id, incoming);
+    await ai.saveMessage(conv.id, "user", incoming);
+    await ai.saveMessage(conv.id, "assistant", reply);
+    const delivery = await sendWhatsApp(from, reply);
+    return res.json({ received: true, delivered: delivery.ok, provider: delivery.provider, mode: "escalated" });
+  }
+
   const history = await ai.history(conv.id, 12);
   const messages = history.concat([{ role: "user", content: incoming }]);
-  const ctx = { conversationId: conv.id, from, surface: "whatsapp" };
 
   let out;
   try {
     out = await ai.ask({ surface: "whatsapp", messages, tools: whatsappTools(ctx), context: ctx });
   } catch (e) {
     const hits = await ai.retrieve("whatsapp", incoming, 3);
-    const fb = ai.fallbackAnswer("whatsapp", incoming, hits);
-    out = fb || { content: "I am having trouble answering right now. Reply *human* and our team will take over.", sources: [], mode: "error", toolCalls: [] };
+    out = ai.fallbackAnswer("whatsapp", incoming, hits) || await ai.menuAnswer("whatsapp");
   }
 
   await ai.saveMessage(conv.id, "user", incoming);
@@ -1001,9 +1890,41 @@ whatsappRouter.post("/webhook", express.json({ verify: (req, _res, buf) => { req
 }));
 
 /* ============================================================================
-   PLATFORM — knowledge base editor
+   PLATFORM — knowledge base editor + space overview
    ========================================================================== */
 platformRouter.use(requireSuperAdmin);
+
+/** The spaces, in the operator's language, with real counts. This is what the
+    knowledge editor renders as its scope picker and help panel. */
+platformRouter.get("/spaces", asyncHandler(async (req, res) => {
+  const stats = await ai.knowledgeStats();
+  const byScope = new Map(stats.map((s) => [s.scope, s]));
+  const out = Object.keys(spaces.SPACES).map((key) => {
+    const space = spaces.spaceOf(key);
+    const stat = byScope.get(key) || { total: 0, active: 0 };
+    return {
+      key,
+      label: space.label,
+      subtitle: space.subtitle,
+      audience: space.audience,
+      scopes: space.scopes,
+      suggestions: space.suggestions,
+      capabilities: space.capabilities,
+      answers: stat.total,
+      active_answers: stat.active,
+      handoff: space.handoff,
+    };
+  });
+  const all = byScope.get("all") || { total: 0, active: 0 };
+  ok(res, {
+    spaces: out,
+    everywhere: { scope: "all", label: "Everywhere", answers: all.total, active_answers: all.active },
+    live: ai.enabled,
+    model: ai.enabled ? ai.model : "",
+    whatsapp: await whatsappLine.line(),
+    scopes: spaces.ALL_SCOPES,
+  });
+}));
 
 platformRouter.get("/knowledge", asyncHandler(async (req, res) => {
   const scope = cleanStr(req.query.scope, 20);
@@ -1013,16 +1934,22 @@ platformRouter.get("/knowledge", asyncHandler(async (req, res) => {
   ok(res, { entries: rows, live: ai.enabled, model: ai.enabled ? ai.model : "" });
 }));
 
+function validScope(value) {
+  const scope = cleanStr(value, 20);
+  return spaces.ALL_SCOPES.includes(scope) ? scope : null;
+}
+
 platformRouter.post("/knowledge", asyncHandler(async (req, res) => {
   const b = req.body || {};
   const question = cleanStr(b.question, 255);
   const answer = cleanStr(b.answer, 8000);
   if (!question || !answer) return err(res, 400, "A question and an answer are required.");
+  const scope = validScope(b.scope) || "public";
   const r = await db.run(
     "INSERT INTO ai_knowledge (scope, topic, question, answer, keywords, sort_order) VALUES (?,?,?,?,?,?)",
-    [cleanStr(b.scope, 20) || "public", cleanStr(b.topic, 80), question, answer, cleanStr(b.keywords, 500), toNum(b.sort_order, 99)]
+    [scope, cleanStr(b.topic, 80), question, answer, cleanStr(b.keywords, 500), toNum(b.sort_order, 99)]
   );
-  ok(res, { ok: true, id: r.lastInsertRowid });
+  ok(res, { ok: true, id: r.lastInsertRowid, scope });
 }));
 
 platformRouter.patch("/knowledge/:id", asyncHandler(async (req, res) => {
@@ -1031,7 +1958,12 @@ platformRouter.patch("/knowledge/:id", asyncHandler(async (req, res) => {
   const b = req.body || {};
   const sets = [];
   const vals = [];
-  for (const [f, max] of [["scope", 20], ["topic", 80], ["question", 255], ["keywords", 500]]) {
+  if (b.scope !== undefined) {
+    const scope = validScope(b.scope);
+    if (!scope) return err(res, 400, "Unknown scope.");
+    sets.push("scope = ?"); vals.push(scope);
+  }
+  for (const [f, max] of [["topic", 80], ["question", 255], ["keywords", 500]]) {
     if (b[f] !== undefined) { sets.push(`${f} = ?`); vals.push(cleanStr(b[f], max)); }
   }
   if (b.answer !== undefined) { sets.push("answer = ?"); vals.push(cleanStr(b.answer, 8000)); }
@@ -1059,7 +1991,7 @@ platformRouter.get("/conversations", asyncHandler(async (req, res) => {
         `SELECT c.*, (SELECT COUNT(*) FROM ai_messages m WHERE m.conversation_id = c.id) AS messages,
                 (SELECT content FROM ai_messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message
            FROM ai_conversations c ORDER BY c.updated_at DESC LIMIT 100`);
-  ok(res, { conversations: rows });
+  ok(res, { conversations: rows, surfaces: Object.keys(spaces.SPACES) });
 }));
 
 platformRouter.get("/conversations/:id", asyncHandler(async (req, res) => {

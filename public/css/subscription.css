@@ -338,3 +338,103 @@
   .ai-panel { right: 8px; left: 8px; bottom: 8px; width: auto; height: min(72vh, 560px); }
   .ai-launcher { right: 14px; bottom: 14px; }
 }
+
+/* ============================================================================
+   EDUSPHERE AI — per-space widget additions
+   ----------------------------------------------------------------------------
+   The WhatsApp entry points exist only when the server reports a configured
+   number (the element is not rendered otherwise), so there is no dead button
+   to style around. Everything below inherits the dashboard tokens, so it works
+   in both presentation themes and in dark mode.
+   ========================================================================== */
+.ai-panel-heading { min-width: 0; }
+.ai-panel-heading .ai-panel-title,
+.ai-panel-heading .ai-panel-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The public website's second launcher: straight into WhatsApp. */
+.ai-wa-launcher {
+  position: fixed; right: 22px; bottom: 84px; z-index: 900;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 16px; border-radius: 999px; text-decoration: none;
+  background: #25D366; color: #05331c;
+  font: inherit; font-weight: 700; font-size: .84rem;
+  box-shadow: 0 12px 28px rgba(12, 92, 49, .28);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.ai-wa-launcher:hover { transform: translateY(-2px); box-shadow: 0 16px 34px rgba(12, 92, 49, .34); }
+.ai-wa-launcher svg { width: 19px; height: 19px; flex: none; }
+.ai-wa-launcher:focus-visible,
+.ai-wa-cta:focus-visible,
+.ai-action-links a:focus-visible { outline: 3px solid #0b6b3a; outline-offset: 3px; }
+
+/* The WhatsApp hand-off inside the panel. */
+.ai-wa-cta {
+  display: flex; align-items: center; gap: 10px;
+  margin: 10px 12px 0; padding: 10px 12px;
+  border-radius: 12px; text-decoration: none;
+  background: rgba(37, 211, 102, .12);
+  border: 1px solid rgba(37, 211, 102, .45);
+  color: var(--d-text, #1d1a28);
+}
+.ai-wa-cta:hover { background: rgba(37, 211, 102, .2); }
+.ai-wa-cta > span:nth-child(2) { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.ai-wa-cta strong { font-size: .82rem; }
+.ai-wa-cta small { font-size: .7rem; color: var(--d-muted, #5f5b6b); }
+.ai-wa-cta-icon {
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  display: grid; place-items: center; background: #25D366; color: #05331c;
+}
+.ai-wa-cta-icon svg { width: 17px; height: 17px; }
+.ai-wa-cta > svg { width: 14px; height: 14px; color: var(--d-muted, #5f5b6b); flex: none; }
+
+/* Registration shortcuts on the public assistant. */
+.ai-action-links {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 0 12px 10px; background: var(--d-bg, #f6f6f9);
+}
+.ai-action-links a {
+  flex: 1 1 46%; text-align: center; text-decoration: none;
+  padding: 8px 10px; border-radius: 9px; font-size: .74rem; font-weight: 600;
+  border: 1px solid var(--d-line, #dedce6); background: var(--d-surface, #fff);
+  color: var(--d-text, #1d1a28);
+}
+.ai-action-links a:hover { border-color: var(--d-accent, #6b6486); }
+
+/* -------------------- knowledge base: the space picker -------------------- */
+.ai-space-grid {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+.ai-space-card {
+  display: grid; gap: 4px; text-align: left; cursor: pointer;
+  padding: 12px 14px; border-radius: 12px; font: inherit;
+  border: 1px solid var(--d-line, #dedce6); background: var(--d-surface, #fff);
+  color: var(--d-text, #1d1a28);
+  transition: border-color .15s ease, transform .15s ease;
+}
+.ai-space-card:hover { border-color: var(--d-accent, #6b6486); transform: translateY(-1px); }
+.ai-space-card:focus-visible { outline: 3px solid var(--d-focus, #4b4566); outline-offset: 2px; }
+.ai-space-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ai-space-card-head strong { font-size: .86rem; }
+.ai-space-card-sub { font-size: .76rem; color: var(--d-muted, #5f5b6b); }
+.ai-space-card-aud { font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; color: var(--d-muted, #5f5b6b); opacity: .85; }
+.ai-space-card--all { border-style: dashed; }
+.ai-filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ai-filter-bar label { font-weight: 600; font-size: .84rem; }
+.ai-filter-bar select {
+  padding: 8px 10px; border-radius: 8px; font: inherit; font-size: .84rem;
+  border: 1px solid var(--d-line, #dedce6); background: var(--d-surface, #fff); color: var(--d-text, #1d1a28);
+}
+
+@media (max-width: 560px) {
+  .ai-wa-launcher { right: 14px; bottom: 74px; padding: 10px 14px; }
+  .ai-wa-launcher span { display: none; }
+  .ai-wa-launcher { width: 46px; height: 46px; justify-content: center; padding: 0; }
+  .ai-wa-launcher svg { width: 24px; height: 24px; }
+  .ai-action-links a { flex: 1 1 100%; }
+  .ai-panel:has(.ai-wa-cta) { height: min(80vh, 560px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-launcher, .ai-wa-launcher, .ai-space-card { transition: none; }
+}

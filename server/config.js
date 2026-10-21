@@ -315,6 +315,10 @@ const WHATSAPP_AI = {
   phoneNumberId: String(process.env.WHATSAPP_AI_PHONE_NUMBER_ID || "").trim(),
   verifyToken: String(process.env.WHATSAPP_AI_VERIFY_TOKEN || "").trim(),
   appSecret: String(process.env.WHATSAPP_AI_APP_SECRET || "").trim(),
+  // The customer-facing number, in international format, WITHOUT the leading
+  // "+" (e.g. 2348012345678). This is what the public website's "Chat on
+  // WhatsApp" button opens. It can also be set in Platform → Settings.
+  displayNumber: String(process.env.WHATSAPP_AI_DISPLAY_NUMBER || "").replace(/\D+/g, "").trim(),
   get enabled() { return this.provider !== "none" && !!this.token && !!this.phoneNumberId; },
 };
 
