@@ -572,6 +572,18 @@
       : provResolved.source === "env"
         ? "The server environment sets part of this configuration but not a usable key + base URL, so every space answers from the knowledge base below."
         : "No model is connected, so every space answers from the knowledge base below plus live data. That works — it is just less conversational.";
+    /* The last REALISTIC probe (the one that mirrors a live public turn).
+       A green "Test connection" beside an assistant that never used the model
+       is exactly the bug this block exists to prevent: if the model is on and
+       the last real probe failed, say so, with the provider's own reason. */
+    const lastProbe = (prov && prov.last_probe) || null;
+    const probeFailed = Boolean(provResolved.enabled && lastProbe && lastProbe.ok === false);
+    const probeReason = probeFailed ? String(lastProbe.error || "the provider refused the request") : "";
+    const degradedBlock = probeFailed ? `
+        <div id="aiProviderDegraded" style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <span class="dash-pill danger" id="aiProviderFailure">Model unavailable: ${e2(probeReason)}</span>
+          <button type="button" class="dash-btn dash-btn-sm dash-btn-ghost" id="aiProviderDiagnoseAgain" data-ai-diagnose>Run diagnostics</button>
+        </div>` : "";
     const lockedEnv = ["apiKey", "baseUrl", "model"]
       .filter((k) => provEnv.locked && provEnv.locked[k])
       .map((k) => ({ apiKey: "AI_API_KEY", baseUrl: "AI_BASE_URL", model: "AI_MODEL" }[k]));
@@ -595,6 +607,7 @@
           <span class="dash-pill ${provResolved.enabled ? "ok" : "warn"}" id="aiProviderStatus">${e2(providerStatus)}</span>
           ${provResolved.enabled ? "" : `<div class="sub-muted" style="flex-basis:100%">${e2(notLiveCopy)}</div>`}
         </div>
+        ${degradedBlock}
 
         <form id="aiProviderForm" style="margin-top:14px" autocomplete="off">
           <div class="dash-form-grid">
@@ -620,9 +633,11 @@
           <label class="dash-checkbox-row" style="margin-top:14px"><input type="checkbox" name="enabled" ${provStored.enabled ? "checked" : ""}> Use the model (leave unticked to answer from the knowledge base only)</label>
           <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
             <button type="button" class="dash-btn dash-btn-ghost" id="aiProviderTest">Test connection</button>
+            <button type="button" class="dash-btn dash-btn-ghost" id="aiProviderDiagnose" data-ai-diagnose>Run diagnostics</button>
             <button type="submit" class="dash-btn dash-btn-primary" id="aiProviderSave">${I.check} Save &amp; apply</button>
             <span id="aiTestResult" class="sub-muted" role="status"></span>
           </div>
+          <div id="aiDiagnoseResult" class="sub-muted" role="status" style="margin-top:10px"></div>
           ${envNote}
         </form>
 
@@ -732,13 +747,20 @@
         testResult.className = "sub-muted";
         testResult.textContent = "Testing…";
         try {
-          const out = await window.API.post("/platform/ai/test", readProviderForm());
+          // "real" is the default on the server too: the same system prompt,
+          // knowledge block, tool schemas and max_tokens a live turn sends, so
+          // a green result here means the assistant will actually answer.
+          const out = await window.API.post("/platform/ai/test", Object.assign(readProviderForm(), { mode: "real" }));
           if (out && out.ok) {
             testResult.className = "dash-pill ok";
-            testResult.textContent = `Connected · ${out.model} · ${out.latencyMs} ms`;
+            testResult.textContent = `Connected · ${out.model} · ${out.latencyMs} ms` +
+              (out.httpStatus ? ` · HTTP ${out.httpStatus}` : "");
           } else {
             testResult.className = "dash-pill danger";
-            testResult.textContent = `Failed · ${(out && out.error) || "the provider refused the request"}`;
+            // The provider's own words (scrubbed of the key server-side) plus
+            // its HTTP status — "Failed" alone hid a 429 for months.
+            const status = out && out.httpStatus ? `HTTP ${out.httpStatus} · ` : "";
+            testResult.textContent = `Failed · ${status}${(out && out.error) || "the provider refused the request"}`;
           }
         } catch (err) {
           testResult.className = "dash-pill danger";
@@ -746,6 +768,40 @@
         } finally {
           testBtn.disabled = false;
         }
+      });
+
+      // "Run diagnostics": the resolved configuration plus one REALISTIC turn,
+      // reported verbatim. Reads nothing the browser already has, and never
+      // receives the key.
+      const diagnoseResult = content.querySelector("#aiDiagnoseResult");
+      content.querySelectorAll("[data-ai-diagnose]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const buttons = Array.from(content.querySelectorAll("[data-ai-diagnose]"));
+          buttons.forEach((b) => { b.disabled = true; });
+          if (diagnoseResult) {
+            diagnoseResult.className = "sub-muted";
+            diagnoseResult.textContent = "Sending the real public turn…";
+          }
+          try {
+            const out = await window.API.get("/platform/ai/diagnose");
+            const tokens = out && out.tokens ? Number(out.tokens.in || 0) + Number(out.tokens.out || 0) : 0;
+            if (!diagnoseResult) return;
+            if (out && out.ok) {
+              diagnoseResult.className = "dash-pill ok";
+              diagnoseResult.textContent = `Real turn works · ${out.latencyMs} ms · ${tokens} tokens`;
+            } else {
+              diagnoseResult.className = "dash-pill danger";
+              diagnoseResult.textContent = `Model unavailable · ${(out && out.error) || "the provider refused the request"}`;
+            }
+          } catch (err) {
+            if (diagnoseResult) {
+              diagnoseResult.className = "dash-pill danger";
+              diagnoseResult.textContent = err.message || "Could not run diagnostics.";
+            }
+          } finally {
+            buttons.forEach((b) => { b.disabled = false; });
+          }
+        });
       });
 
       providerForm.addEventListener("submit", async (ev) => {
