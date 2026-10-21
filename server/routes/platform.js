@@ -712,6 +712,15 @@ router.post("/tickets/:id/notes", asyncHandler(async (req, res) => {
 
 /* Keys stored as "0"/"1" but spoken about as booleans everywhere else. */
 const BOOL_KEYS = new Set(["public_directory_enabled"]);
+/* Values that must NEVER reach a browser. GET /settings used to return every
+   platform_settings row verbatim; the AI provider key lives in this table, so
+   it is redacted to the sentinel instead. PUT treats the sentinel (or an
+   omitted field) as "leave unchanged", so a round-trip from the settings form
+   cannot blank a secret by accident. The real key is written only through
+   Platform → AI Assistant, which encrypts it at rest. */
+const SECRET_KEYS = new Set(["ai_api_key"]);
+const SECRET_MASK = "••••";
+
 const PLATFORM_SETTING_DEFAULTS = {
   public_site_title: "EduSphere",
   public_site_tagline: "Multi-Madrasa Management Platform",
@@ -740,6 +749,14 @@ const PLATFORM_SETTING_DEFAULTS = {
   whatsapp_ai_message: "Hello EduSphere, I would like to know more about the platform.",
 };
 
+/** Replaces every stored secret with the sentinel before the response leaves. */
+function redactSecrets(out) {
+  for (const key of SECRET_KEYS) {
+    if (key in out) out[key] = out[key] ? SECRET_MASK : "";
+  }
+  return out;
+}
+
 router.get("/settings", asyncHandler(async (req, res) => {
   const rows = await db.all("SELECT key_name, value FROM platform_settings");
   // Defaults first, so the settings screen always shows the live values even
@@ -747,7 +764,7 @@ router.get("/settings", asyncHandler(async (req, res) => {
   const out = Object.assign({}, PLATFORM_SETTING_DEFAULTS);
   rows.forEach((r) => { out[r.key_name] = r.value; });
   for (const k of BOOL_KEYS) out[k] = !(out[k] === "0" || out[k] === "false" || out[k] === false || out[k] === 0);
-  ok(res, { settings: out });
+  ok(res, { settings: redactSecrets(out) });
 }));
 
 router.put("/settings", asyncHandler(async (req, res) => {
@@ -756,6 +773,12 @@ router.put("/settings", asyncHandler(async (req, res) => {
   for (const [k, v] of Object.entries(b)) {
     const key = cleanStr(k, 80);
     if (!key) continue;
+    if (SECRET_KEYS.has(key)) {
+      const incoming = String(v == null ? "" : v).trim();
+      // Sentinel, blank or missing → leave the stored secret exactly as it is.
+      if (!incoming || incoming === SECRET_MASK || /^•+$/.test(incoming)) continue;
+      return err(res, 400, "The AI provider key is saved under Platform → AI Assistant, where it is stored encrypted. Please set it there.");
+    }
     let val = typeof v === "object" ? JSON.stringify(v) : String(v);
     if (BOOL_KEYS.has(key)) val = (v === true || v === 1 || v === "1" || v === "true") ? "1" : "0";
     if (dialect === "sqlite") {

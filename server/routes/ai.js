@@ -25,6 +25,7 @@ const crypto = require("crypto");
 const db = require("../db");
 const config = require("../config");
 const ai = require("../services/ai");
+const aiConfig = require("../services/ai-config");
 const spaces = require("../services/ai-spaces");
 const whatsappLine = require("../services/whatsapp-line");
 const analytics = require("../services/analytics");
@@ -57,6 +58,10 @@ function rateLimit({ windowMs, max }) {
 }
 const appLimiter = rateLimit({ windowMs: 60 * 1000, max: 20 });
 const publicLimiter = rateLimit({ windowMs: 60 * 1000, max: 10 });
+/* "Test connection" spends a real (tiny) provider call, so it gets its own
+   bucket. 5/minute is enough to fix a typo, useless for probing a key. */
+const AI_TEST_RATE_LIMIT = Math.max(1, Number(process.env.AI_TEST_RATE_LIMIT || 5));
+const aiTestLimiter = rateLimit({ windowMs: 60 * 1000, max: AI_TEST_RATE_LIMIT });
 
 /* ============================================================================
    SHARED HELPERS FOR THE TOOLS
@@ -1021,13 +1026,17 @@ appRouter.get("/status", asyncHandler(async (req, res) => {
   const surface = currentSurface(req);
   const tid = effectiveTenantId(req) || req.user.madrasaId || null;
   const m = tid ? await db.get("SELECT name_en FROM madaris WHERE id = ?", [tid]) : null;
+  // Resolved, not read from config.AI: a model connected under Platform → AI
+  // Assistant is live on the next request, and `source` says which layer won.
+  const modelCfg = await aiConfig.resolve();
   ok(res, {
     surface,
     role: req.user.role,
     space: spaces.publicSpace(surface),
     welcome: await ai.welcome(surface),
-    live: ai.enabled,
-    ai_model: ai.enabled ? ai.model : "",
+    live: modelCfg.enabled,
+    source: modelCfg.source,
+    ai_model: modelCfg.enabled ? modelCfg.model : "",
     institution: m ? m.name_en : "",
     whatsapp: await whatsappLine.line(),
   });
@@ -1161,12 +1170,13 @@ const COPILOT_CAPABILITIES = [
 appRouter.get("/copilot", asyncHandler(async (req, res) => {
   const tid = effectiveTenantId(req);
   if (!tid) return err(res, 400, "No institution on this session.");
+  const modelCfg = await aiConfig.resolve();
   const out = [];
   for (const cap of COPILOT_CAPABILITIES) {
     const gate = await subscription.checkFeature(tid, cap.feature);
     out.push(Object.assign({}, cap, {
       entitled: Boolean(gate.allowed),
-      model_live: ai.enabled,
+      model_live: modelCfg.enabled,
       gate: gate.allowed ? null : {
         reason: gate.reason,
         message: gate.message,
@@ -1179,7 +1189,7 @@ appRouter.get("/copilot", asyncHandler(async (req, res) => {
   const summary = await subscription.summary(tid).catch(() => null);
   ok(res, {
     capabilities: out,
-    model: ai.enabled ? ai.model : "",
+    model: modelCfg.enabled ? modelCfg.model : "",
     plan: summary ? { code: summary.plan.code, name: summary.plan.name } : null,
   });
 }));
@@ -1239,6 +1249,7 @@ appRouter.post("/copilot/report-comments", requireFeature("ai_comments"), asyncH
   if (!term) return err(res, 400, "This institution has no academic term yet — create one under Academics first.");
 
   const cfg = await grading.getGradingConfig(tid);
+  const modelCfg = await aiConfig.resolve();
   const students = await db.all(
     `SELECT s.id, s.admission_no, s.first_name, s.last_name, s.name_ar,
             ts.average, ts.overall_grade, ts.position, ts.subject_count,
@@ -1312,7 +1323,7 @@ appRouter.post("/copilot/report-comments", requireFeature("ai_comments"), asyncH
   // With a model configured the drafts are refined in ONE call (token cost
   // matters), and any failure keeps the deterministic text — the teacher still
   // gets a usable comment either way.
-  if (ai.enabled && b.polish !== false) {
+  if (modelCfg.enabled && b.polish !== false) {
     try {
       const out = await ai.ask({
         surface: "admin",
@@ -1349,7 +1360,7 @@ appRouter.post("/copilot/report-comments", requireFeature("ai_comments"), asyncH
   ok(res, {
     ok: true,
     mode,
-    model: ai.enabled ? ai.model : "",
+    model: modelCfg.enabled ? modelCfg.model : "",
     class: { id: Number(klass.id), name: klass.name_en, name_ar: klass.name_ar || "" },
     term: { id: Number(term.id), name: term.name_en },
     grading: { pass_mark: Number(cfg.passMark) },
@@ -1490,6 +1501,7 @@ function shuffle(list, rand = Math.random) {
 appRouter.post("/copilot/questions", requireFeature("ai_questions"), asyncHandler(async (req, res) => {
   const tid = effectiveTenantId(req);
   if (!tid) return err(res, 400, "No institution on this session.");
+  const modelCfg = await aiConfig.resolve();
   const b = req.body || {};
   const subjectId = toNum(b.subject_id, 0);
   const classId = toNum(b.class_id, 0);
@@ -1567,7 +1579,7 @@ appRouter.post("/copilot/questions", requireFeature("ai_questions"), asyncHandle
       };
     });
 
-    if (ai.enabled && b.use_model !== false) {
+    if (modelCfg.enabled && b.use_model !== false) {
       try {
         const out = await ai.ask({
           surface: "admin",
@@ -1629,7 +1641,7 @@ appRouter.post("/copilot/questions", requireFeature("ai_questions"), asyncHandle
   ok(res, {
     ok: true,
     mode,
-    model: ai.enabled ? ai.model : "",
+    model: modelCfg.enabled ? modelCfg.model : "",
     subject: { id: Number(subject.id), name: subject.name_en },
     class: klass ? { id: Number(klass.id), name: klass.name_en } : null,
     topic,
@@ -1649,6 +1661,7 @@ appRouter.post("/copilot/questions", requireFeature("ai_questions"), asyncHandle
 appRouter.get("/copilot/insights", requireFeature("analytics_advanced"), asyncHandler(async (req, res) => {
   const tid = effectiveTenantId(req);
   if (!tid) return err(res, 400, "No institution on this session.");
+  const modelCfg = await aiConfig.resolve();
   const data = await analytics.advancedAnalytics(tid, {
     months: req.query.months,
     attendanceDays: req.query.attendanceDays,
@@ -1659,7 +1672,7 @@ appRouter.get("/copilot/insights", requireFeature("analytics_advanced"), asyncHa
     ? lines.join("\n")
     : "Nothing is being flagged right now — attendance, results and fee collection all look steady for this window.";
   let mode = "computed";
-  if (ai.enabled && req.query.polish !== "false") {
+  if (modelCfg.enabled && req.query.polish !== "false") {
     try {
       const out = await ai.ask({
         surface: "admin",
@@ -1691,12 +1704,14 @@ appRouter.get("/copilot/insights", requireFeature("analytics_advanced"), asyncHa
 async function publicInfo() {
   const wa = await whatsappLine.line();
   const s = await subscription.getSettings();
+  const modelCfg = await aiConfig.resolve();
   return {
     surface: "public",
     space: spaces.publicSpace("public"),
     welcome: await ai.welcome("public"),
-    live: ai.enabled,
-    model: ai.enabled ? ai.model : "",
+    live: modelCfg.enabled,
+    source: modelCfg.source,
+    model: modelCfg.enabled ? modelCfg.model : "",
     whatsapp: wa,
     contact: { email: s.billing_contact_email || "", phone: s.billing_contact_phone || "" },
     links: {
@@ -1721,7 +1736,14 @@ publicRouter.get("/whatsapp", asyncHandler(async (req, res) => {
 }));
 
 publicRouter.get("/status", asyncHandler(async (req, res) => {
-  ok(res, { surface: "public", enabled: true, live: ai.enabled, model: ai.enabled ? ai.model : "" });
+  const modelCfg = await aiConfig.resolve();
+  ok(res, {
+    surface: "public",
+    enabled: true, // the assistant itself is always available — the key only decides conversational depth
+    live: modelCfg.enabled,
+    source: modelCfg.source,
+    model: modelCfg.enabled ? modelCfg.model : "",
+  });
 }));
 
 publicRouter.post("/chat", publicLimiter, asyncHandler(async (req, res) => {
@@ -1894,9 +1916,170 @@ whatsappRouter.post("/webhook", express.json({ verify: (req, _res, buf) => { req
    ========================================================================== */
 platformRouter.use(requireSuperAdmin);
 
+/* ============================================================================
+   AI PROVIDER CONFIGURATION — the dashboard layer
+   ----------------------------------------------------------------------------
+   The super admin connects a model here instead of editing .env on the server:
+
+     GET  /api/platform/ai/settings   stored values + the RESOLVED answer
+     PUT  /api/platform/ai/settings   save (blank/sentinel key = keep existing)
+     POST /api/platform/ai/test       one tiny call against UNSAVED values
+
+   The environment wins per field (services/ai-config.js), so the payload says
+   exactly which layer supplied each value. The API key is NEVER returned —
+   only key_set and key_last4 — and it is stored AES-256-GCM encrypted.
+   ========================================================================== */
+
+/** One payload for the card and for every save/test that needs to re-render. */
+async function aiSettingsPayload() {
+  const stored = await subscription.getSettings();
+  const resolved = await aiConfig.resolve();
+  const env = config.AI;
+  return {
+    settings: {
+      provider: aiConfig.normalizeProvider(stored.ai_provider) || "none",
+      base_url: String(stored.ai_base_url || ""),
+      model: String(stored.ai_model || ""),
+      enabled: !["0", "false", "no", "off"].includes(String(stored.ai_enabled == null ? "1" : stored.ai_enabled).trim().toLowerCase()),
+    },
+    resolved: {
+      enabled: resolved.enabled,
+      provider: resolved.provider,
+      base_url: resolved.baseUrl,
+      model: resolved.model,
+      source: resolved.source,
+      key_set: resolved.keySet,
+      key_last4: resolved.keyLast4,
+      origins: resolved.origins,
+    },
+    // Which fields the environment pins. Values are never echoed — only the
+    // fact that the form is not authoritative for that field.
+    env: {
+      api_key_set: Boolean(env.apiKey),
+      base_url_set: Boolean(env.baseUrl),
+      model_set: Boolean(env.model),
+      locked: resolved.locked,
+    },
+    presets: aiConfig.PRESETS,
+    mask: aiConfig.SECRET_MASK,
+    whatsapp: await whatsappLine.line(),
+  };
+}
+
+platformRouter.get("/settings", asyncHandler(async (req, res) => {
+  ok(res, await aiSettingsPayload());
+}));
+
+platformRouter.put("/settings", asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const provider = b.provider === undefined ? undefined : cleanStr(b.provider, 40).toLowerCase();
+  if (provider !== undefined && !aiConfig.normalizeProvider(provider)) {
+    return err(res, 400, "Choose a provider: openai, groq, openrouter, custom or none.");
+  }
+  let enabled = b.enabled === undefined
+    ? undefined
+    : !(b.enabled === false || b.enabled === 0 || b.enabled === "0" || b.enabled === "false" || b.enabled === "off");
+  // Picking "none" is an explicit "no model": switch the assistant back to the
+  // knowledge base rather than saving a configuration that claims to be on.
+  if (provider === "none") enabled = false;
+
+  const before = await aiConfig.resolve();
+  // Switching the model on without a key/base URL would save a setting that
+  // reads as "enabled" while the assistant silently stays on the knowledge
+  // base. Refuse it with the reason instead.
+  if (enabled === true) {
+    const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
+    const hasKey = (rawKey && !aiConfig.isSecretMask(rawKey)) || before.keySet;
+    const rawBase = b.base_url === undefined ? undefined : cleanStr(b.base_url, 500);
+    const preset = aiConfig.PRESETS[aiConfig.normalizeProvider(provider) || before.provider] || aiConfig.PRESETS.custom;
+    const hasBase = rawBase === undefined ? Boolean(before.baseUrl || preset.baseUrl) : Boolean(rawBase || preset.baseUrl);
+    if (!hasKey || !hasBase) {
+      return err(res, 400, "Add an API key and a base URL (or pick a provider preset) before switching the model on.");
+    }
+  }
+
+  let resolved;
+  try {
+    resolved = await aiConfig.save({
+      provider,
+      baseUrl: b.base_url !== undefined ? b.base_url : b.baseUrl,
+      model: b.model,
+      apiKey: b.api_key !== undefined ? b.api_key : b.apiKey,
+      enabled,
+      clearApiKey: b.clear_api_key === true || b.clear_key === true,
+    });
+  } catch (e) {
+    return err(res, e.status || 400, e.message || "Could not save the AI settings.");
+  }
+
+  // Audited WITHOUT the secret: provider, model and whether a key exists.
+  logActivity(db, {
+    userId: req.user.id, action: "platform.ai.provider", entity: "settings", ip: req.ip,
+    meta: { provider: resolved.provider, model: resolved.model, enabled: resolved.enabled, key_set: resolved.keySet, source: resolved.source },
+  });
+  ok(res, await aiSettingsPayload());
+}));
+
+/**
+ * POST /api/platform/ai/test — one tiny chat/completions call against the
+ * values currently in the form, saved or not. Rate-limited because it spends a
+ * real provider call. Returns `{ ok, latencyMs, model, error }`; a provider
+ * refusal is a 200 with ok:false and the provider's own message, so
+ * "invalid api key" / "model not found" is diagnosable. The key is scrubbed
+ * from every error path by services/ai.js.
+ */
+platformRouter.post("/test", aiTestLimiter, asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const current = await aiConfig.resolve();
+  const provider = aiConfig.normalizeProvider(b.provider) || current.provider || "custom";
+  const preset = aiConfig.PRESETS[provider] || aiConfig.PRESETS.custom;
+
+  const submittedBase = String(b.base_url !== undefined ? b.base_url : (b.baseUrl || "")).trim();
+  let baseUrl = current.baseUrl || preset.baseUrl || "";
+  if (submittedBase) {
+    const checked = aiConfig.validateBaseUrl(submittedBase);
+    if (!checked.ok) return err(res, 400, checked.error);
+    baseUrl = checked.value;
+  }
+
+  const submittedKey = String(b.api_key !== undefined ? b.api_key : (b.apiKey || "")).trim();
+  const apiKey = submittedKey && !aiConfig.isSecretMask(submittedKey) ? submittedKey : current.apiKey;
+  const model = cleanStr(b.model, 120) || preset.model || current.model || "";
+
+  if (!baseUrl) return err(res, 400, "Add a base URL (or choose a provider) before testing.");
+  if (!apiKey) return err(res, 400, "Add an API key before testing.");
+  if (!model) return err(res, 400, "Add a model name before testing.");
+
+  const started = Date.now();
+  try {
+    const data = await ai.chatCompletion(
+      {
+        messages: [{ role: "user", content: "Reply with the single word: ok" }],
+        max_tokens: 8,
+        temperature: 0,
+      },
+      { config: { enabled: true, apiKey, baseUrl, model }, timeoutMs: 15000 }
+    );
+    ok(res, {
+      ok: true,
+      latencyMs: Date.now() - started,
+      model: (data && data.model) || model,
+      error: null,
+    });
+  } catch (e) {
+    ok(res, {
+      ok: false,
+      latencyMs: Date.now() - started,
+      model,
+      error: String((e && e.message) || "The provider refused the request."),
+    });
+  }
+}));
+
 /** The spaces, in the operator's language, with real counts. This is what the
     knowledge editor renders as its scope picker and help panel. */
 platformRouter.get("/spaces", asyncHandler(async (req, res) => {
+  const modelCfg = await aiConfig.resolve();
   const stats = await ai.knowledgeStats();
   const byScope = new Map(stats.map((s) => [s.scope, s]));
   const out = Object.keys(spaces.SPACES).map((key) => {
@@ -1919,19 +2102,21 @@ platformRouter.get("/spaces", asyncHandler(async (req, res) => {
   ok(res, {
     spaces: out,
     everywhere: { scope: "all", label: "Everywhere", answers: all.total, active_answers: all.active },
-    live: ai.enabled,
-    model: ai.enabled ? ai.model : "",
+    live: modelCfg.enabled,
+    source: modelCfg.source,
+    model: modelCfg.enabled ? modelCfg.model : "",
     whatsapp: await whatsappLine.line(),
     scopes: spaces.ALL_SCOPES,
   });
 }));
 
 platformRouter.get("/knowledge", asyncHandler(async (req, res) => {
+  const modelCfg = await aiConfig.resolve();
   const scope = cleanStr(req.query.scope, 20);
   const rows = scope && scope !== "all"
     ? await db.all("SELECT * FROM ai_knowledge WHERE scope = ? ORDER BY sort_order, id", [scope])
     : await db.all("SELECT * FROM ai_knowledge ORDER BY scope, sort_order, id");
-  ok(res, { entries: rows, live: ai.enabled, model: ai.enabled ? ai.model : "" });
+  ok(res, { entries: rows, live: modelCfg.enabled, source: modelCfg.source, model: modelCfg.enabled ? modelCfg.model : "" });
 }));
 
 function validScope(value) {

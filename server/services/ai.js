@@ -37,7 +37,7 @@
       and a per-surface rate limit in the route.
    ========================================================================== */
 const db = require("../db");
-const config = require("../config");
+const aiConfig = require("./ai-config");
 const spaces = require("./ai-spaces");
 const knowledge = require("./ai-knowledge");
 const { cleanStr } = require("../util");
@@ -196,27 +196,54 @@ async function welcome(surface) {
 
 /* ------------------------------ provider --------------------------------- */
 
-async function chatCompletion(payload) {
-  if (!config.AI.enabled) return null;
+/**
+ * One OpenAI-compatible `/chat/completions` call.
+ *
+ * The configuration comes from the RESOLVER (env + dashboard), never from a
+ * boot-time constant — a key saved under Platform → AI Assistant must work on
+ * the very next message. `options.config` lets the "Test connection" endpoint
+ * exercise values that have not been saved yet.
+ *
+ * Returns null when no model is configured; throws with status 502 when the
+ * provider refuses. The key is scrubbed from any error text.
+ */
+async function chatCompletion(payload, options = {}) {
+  const cfg = options.config || await aiConfig.resolve();
+  if (!cfg || !cfg.enabled) return null;
+  const timeoutMs = Number(options.timeoutMs || TIMEOUT_MS);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const scrub = (text) => {
+    let out = String(text == null ? "" : text);
+    if (cfg.apiKey) out = out.split(cfg.apiKey).join("••••");
+    return out;
+  };
   try {
-    const res = await fetch(`${config.AI.baseUrl}/chat/completions`, {
+    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${config.AI.apiKey}`,
+        Authorization: `Bearer ${cfg.apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(Object.assign({ model: config.AI.model }, payload)),
+      body: JSON.stringify(Object.assign({ model: cfg.model }, payload)),
       signal: controller.signal,
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const e = new Error((data && (data.error && data.error.message)) || `AI provider error (${res.status})`);
+      const providerMessage = (data && data.error && (data.error.message || data.error)) ||
+        (data && data.message) || `AI provider error (${res.status})`;
+      const e = new Error(scrub(providerMessage));
       e.status = 502;
+      e.providerStatus = res.status;
       throw e;
     }
     return data;
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw Object.assign(new Error(`The provider did not answer within ${Math.round(timeoutMs / 1000)} seconds.`), { status: 502 });
+    }
+    if (e && typeof e.message === "string") e.message = scrub(e.message);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
@@ -279,9 +306,12 @@ async function ask({ surface = "public", messages = [], tools = [], context = {}
 
   const hits = await retrieve(surface, query, 5);
 
-  // No model configured (or not yet) → answer from the knowledge base, or
-  // from the space's own menu. Both are real answers.
-  if (!config.AI.enabled) {
+  // Resolved per request: a key saved from the dashboard applies immediately,
+  // and an environment override still wins. No model configured (or the
+  // dashboard switched it off) → answer from the knowledge base, or from the
+  // space's own menu. Both are real answers; there is no dead end.
+  const cfg = await aiConfig.resolve();
+  if (!cfg.enabled) {
     const fb = fallbackAnswer(surface, query, hits);
     if (fb) return Object.assign({}, fb, { toolCalls: [] });
     return Object.assign({}, await menuAnswer(surface), { toolCalls: [] });
@@ -304,7 +334,7 @@ async function ask({ surface = "public", messages = [], tools = [], context = {}
     };
     if (toolDefs.length) Object.assign(payload, { tools: toolDefs, tool_choice: "auto" });
 
-    const data = await chatCompletion(payload);
+    const data = await chatCompletion(payload, { config: cfg });
     const choice = data && data.choices && data.choices[0];
     if (!choice) throw Object.assign(new Error("The assistant returned no answer."), { status: 502 });
 
@@ -436,11 +466,12 @@ async function knowledgeStats() {
 
 module.exports = {
   ask, retrieve, fallbackAnswer, menuAnswer, welcome, topQuestions, seedKnowledge, knowledgeStats,
-  conversation, history, saveMessage,
+  conversation, history, saveMessage, chatCompletion,
   surfaceForRole: spaces.surfaceForRole,
   scopesFor: spaces.scopesFor,
   publicSpace: spaces.publicSpace,
   isTenantSurface: spaces.isTenantSurface,
-  get enabled() { return config.AI.enabled; },
-  get model() { return config.AI.model; },
+  // There is deliberately NO synchronous `enabled` / `model` getter any more:
+  // the answer depends on the environment AND the database, so callers must
+  // `await require("./ai-config").resolve()`.
 };

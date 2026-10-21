@@ -171,9 +171,40 @@ its own scope chain:
 `app` row to `admin`, and retrieval treats the two as the same scope. Adding or
 editing an answer takes effect on the next question — no deployment.
 
+### Connecting a model (dashboard, not .env)
+
+The model is configured under **Platform → AI Assistant → Model provider**:
+provider preset (OpenAI / Groq / OpenRouter / custom), base URL, model, API key
+and an on/off switch. Values are stored in `platform_settings`
+(`ai_provider`, `ai_base_url`, `ai_model`, `ai_enabled`, `ai_api_key`) and
+resolved by `server/services/ai-config.js` on every request — a 30-second
+in-process cache, invalidated on save. **A saved key is used by the next
+message; no restart.**
+
+**Precedence is per field and the environment wins.** `AI_API_KEY`,
+`AI_BASE_URL` and `AI_MODEL` in `.env` override the stored counterparts; the
+stored values fill whatever the environment leaves blank. Every status response
+reports `source: "env" | "settings" | "none"` so the UI can say where the
+value came from, and the provider card lists the fields the environment has
+locked.
+
+Safety properties:
+
+- The key is **never returned to a browser** — `GET /api/platform/settings`
+  redacts `ai_api_key` to `••••`, and the AI settings endpoint returns only
+  `key_set` / `key_last4`. It is encrypted at rest with AES-256-GCM
+  (`sha256(SESSION_SECRET)`, the same derivation as signed tokens); without a
+  `SESSION_SECRET` it is stored as-is and a boot warning says so.
+- The base URL is validated before any server-side fetch: `http(s)` only,
+  https-only in production, and no loopback/private/link-local hosts or cloud
+  metadata endpoints. Bad values are a `400` with a readable message.
+- **Test connection** runs one tiny call against the unsaved form values and
+  returns `{ ok, latencyMs, model, error }`; provider messages such as "invalid
+  api key" or "model not found" are surfaced, with the key scrubbed.
+
 ### Degradation
 
-With **no `AI_API_KEY`** every space still works. A confident keyword match
+With **no model connected** every space still works. A confident keyword match
 returns the stored answer verbatim (`mode: "knowledge-base"`); otherwise the
 assistant returns that space's own menu — what it can help with, the questions
 it can answer, and the right hand-off (`mode: "menu"`). There is no "assistant
@@ -288,10 +319,11 @@ exists.
 | Public pricing endpoint | `server/routes/public.js` (`GET /api/public/plans`) |
 | Limit/expiry gate | `checkPlanLimits` in `server/util.js` |
 | AI logic | `server/services/ai.js` |
+| AI provider resolution, encryption, URL validation | `server/services/ai-config.js` |
 | AI routes | `server/routes/ai.js` |
 | Institution UI | `public/js/subscription.js` |
 | AI widget + knowledge editor | `public/js/edusphere-ai.js` |
 | Widget bootstrap | `public/js/ai-boot.js` |
 | Styles | `public/css/subscription.css` |
 | Schema | migrations `042_subscriptions_and_billing`, `043_edusphere_ai_assistant` |
-| Tests | `test/subscription.test.js` (billing lifecycle), `test/subscription-features.test.js` (tiers + gating), `test/subscription-ui.test.js` (jsdom pricing screen + upsell) |
+| Tests | `test/subscription.test.js` (billing lifecycle), `test/subscription-features.test.js` (tiers + gating), `test/subscription-ui.test.js` (jsdom pricing screen + upsell), `test/ai-provider-settings.test.js` (dashboard provider layer, key secrecy, env precedence, SSRF) |

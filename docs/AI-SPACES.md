@@ -28,6 +28,72 @@ wins over an equally relevant answer inherited from a broader one.
 
 ---
 
+## Connecting a model — no .env edit, no restart
+
+**Platform Console → AI Assistant → Model provider** (the card above the
+knowledge table) connects the model from the browser. Nothing is read at boot:
+`server/services/ai-config.js` resolves the configuration on every request with
+a 30-second in-process cache that is invalidated the moment the card saves.
+
+| Setting | Key in `platform_settings` | Notes |
+|---|---|---|
+| Provider | `ai_provider` | `openai`, `groq`, `openrouter`, `custom`, `none` |
+| Base URL | `ai_base_url` | OpenAI-compatible; presets fill it |
+| Model | `ai_model` | presets fill a sensible default, editable |
+| Enabled | `ai_enabled` | `"1"` / `"0"` — the dashboard's on/off switch |
+| API key | `ai_api_key` | **AES-256-GCM** at rest, never returned to a browser |
+
+Presets (all speak the same `/chat/completions` shape):
+
+| Provider | Base URL | Default model |
+|---|---|---|
+| `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| `openrouter` | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
+| `custom` | — (empty, fill your own) | — (empty) |
+
+### Precedence: env wins, the database fills the gaps
+
+The environment is the **override layer**, per field:
+
+```
+AI_API_KEY   → overrides ai_api_key
+AI_BASE_URL  → overrides ai_base_url
+AI_MODEL     → overrides ai_model
+```
+
+Anything unset in the environment falls through to the dashboard. Every status
+response (`/api/ai/status`, `/api/public/ai/info`, `/api/public/ai/status`,
+`/api/platform/ai/spaces`, `/api/platform/ai/settings`) reports
+`source: "env" | "settings" | "none"`, and the settings payload also marks
+which individual fields the environment has locked. A deployment can therefore
+pin a key, or revoke one saved in the dashboard, without editing the database.
+
+### Security properties
+
+- **The key never reaches the browser.** `GET /api/platform/settings` used to
+  return every `platform_settings` row verbatim; it now redacts `ai_api_key`
+  to `••••`, and `PUT` treats the sentinel (or an omitted field) as "leave
+  unchanged". The AI settings payload returns only `key_set` and `key_last4`.
+- **Encrypted at rest** with `aes-256-gcm` and the same
+  `sha256(SESSION_SECRET)` derivation as `server/services/tokens.js`. With no
+  `SESSION_SECRET` the key is stored as-is and a boot warning says so — the
+  platform does not refuse to start over an optional feature.
+- **The base URL is validated** before it is ever fetched server-side: `http(s)`
+  only, https-only in production, and no `localhost`, `127.0.0.0/8`, RFC-1918
+  hosts, link-local addresses, cloud metadata endpoints (`169.254.169.254`) or
+  credentials in the URL. A rejected save is a `400` with a readable reason.
+- **Test connection** (`POST /api/platform/ai/test`) is rate-limited to about
+  5 calls per minute and uses the values in the form, saved or not. Provider
+  errors come back as their own message ("invalid api key", "model not found")
+  with the key scrubbed.
+
+Saving, or switching the model off, applies to the **next message**. The
+knowledge-base fallback is untouched: with no usable key every space still
+answers from `ai_knowledge` and its own menu.
+
+---
+
 ## 1. What each space knows
 
 ### Public website
@@ -92,7 +158,8 @@ Every answer is grounded in:
    **Platform → AI Assistant → the space card**), and
 2. **live read-only tools** for the signed-in spaces.
 
-With **no `AI_API_KEY`** every space still works:
+With **no model connected** — no usable `AI_API_KEY` and nothing saved in
+Platform → AI Assistant — every space still works:
 
 - a confident keyword match returns the stored answer verbatim
   (`mode: "knowledge-base"`);
@@ -223,6 +290,8 @@ audience, scopes, suggestions, capabilities, answer counts, WhatsApp status).
 | `POST` | `/api/public/ai/chat` | anyone |
 | `GET/POST` | `/api/ai/whatsapp/webhook` | Meta (signature-verified when a secret is set) |
 | `GET` | `/api/platform/ai/spaces` | super admin |
+| `GET/PUT` | `/api/platform/ai/settings` | super admin — the provider card (no secret ever returned) |
+| `POST` | `/api/platform/ai/test` | super admin — one tiny provider call against unsaved values (≈5/min) |
 | `GET/POST/PATCH/DELETE` | `/api/platform/ai/knowledge[/:id]` | super admin |
 | `GET` | `/api/platform/ai/conversations[/:id]` | super admin |
 
@@ -246,6 +315,13 @@ WhatsApp thread is never mixed with a website one.
 - the WhatsApp webhook verifies, answers a question, greets, and escalates to a
   human;
 - conversations are separated by space.
+
+`test/ai-provider-settings.test.js` covers the configuration layer: only a
+super admin can read/save/test it, the key never appears in a response, a key
+saved from the dashboard is used by the public assistant on the next message
+without a restart, environment overrides win field-by-field, blank/sentinel
+keys keep the stored one, SSRF-shaped base URLs are refused, and a provider
+failure is reported without echoing the secret.
 
 The existing suites (`subscription.test.js`, `subscription-features.test.js`)
 still cover the tenant isolation, the upgrade-request-without-activation rule,
