@@ -46,6 +46,14 @@ const SETTING_DEFAULTS = {
   billing_enabled: "1",
   whatsapp_ai_number: "",
   whatsapp_ai_message: "",
+  // The dashboard-managed AI provider layer (see services/ai-config.js).
+  // The environment still wins per field; these are what Platform → AI
+  // Assistant writes. ai_api_key is stored AES-256-GCM encrypted.
+  ai_provider: "none",
+  ai_base_url: "",
+  ai_model: "",
+  ai_enabled: "1",
+  ai_api_key: "",
 };
 
 /* ------------------------------ date helpers ----------------------------- */

@@ -4549,8 +4549,26 @@
 
   /* ------------------------- Platform settings ---------------------------- */
   async function pageSuperSettings(content) {
-    const data = await window.API.get("/platform/settings").catch(() => ({ settings: {} }));
+    // The AI provider is configured under Platform → AI Assistant; this page
+    // only summarises it (the key is never part of the payload). Settled
+    // independently so an AI hiccup cannot blank the rest of the settings.
+    const [data, aiSettings] = await Promise.all([
+      window.API.get("/platform/settings").catch(() => ({ settings: {} })),
+      window.API.get("/platform/ai/settings").catch(() => null),
+    ]);
     const s = data.settings || {};
+    const ar = (aiSettings && aiSettings.resolved) || null;
+    const aiEnv = (aiSettings && aiSettings.env) || { locked: {} };
+    const envOverrides = ["apiKey", "baseUrl", "model"].filter((k) => aiEnv.locked && aiEnv.locked[k]).length;
+    const aiSummary = !ar
+      ? `<p class="sub-muted">The AI provider status is unavailable right now — open AI Assistant to check it.</p>`
+      : `<p>Status: <span class="dash-pill ${ar.enabled ? "ok" : "warn"}">${ar.enabled ? "Live" : "Knowledge-base only"}</span>` +
+        (ar.enabled
+          ? ` · <strong>${esc(ar.model || "")}</strong> · from ${ar.source === "env" ? "the server environment" : "the dashboard"}`
+          : " · no model connected") +
+        `</p>
+        <p class="sub-muted">API key: ${ar.key_set ? `saved${ar.key_last4 ? ` (ends ${esc(ar.key_last4)})` : ""}` : "not set"}` +
+        `${envOverrides ? ` · ${envOverrides} field${envOverrides === 1 ? "" : "s"} overridden by environment variables` : ""}</p>`;
     content.innerHTML = `
       <div class="dash-page-head"><div><div class="dash-crumb">Platform</div><h2>Platform Settings</h2><p>Global defaults and the public-directory kill switch.</p></div></div>
       <div class="dash-card"><div class="dash-card-pad">
@@ -4582,6 +4600,13 @@
           <button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px;">${I.check} Save WhatsApp Settings</button>
           <p class="hint" style="margin-top:12px;">When the number is blank the button is hidden — the website never opens a dead WhatsApp link.</p>
         </form>
+      </div></div>
+
+      <div class="dash-page-head" style="margin-top:26px"><div><div class="dash-crumb">Platform</div><h2>AI model</h2>
+        <p>The model behind the assistant. The provider, key and model are set under AI Assistant so the key is stored encrypted — this card only summarises the resolved state.</p></div></div>
+      <div class="dash-card"><div class="dash-card-pad">
+        ${aiSummary}
+        <button class="dash-btn dash-btn-ghost" type="button" data-nav-route="platform/ai" style="margin-top:12px;">Open AI Assistant</button>
       </div></div>
 
       <div class="dash-page-head" style="margin-top:26px"><div><div class="dash-crumb">Platform</div><h2>Billing &amp; Payments</h2>

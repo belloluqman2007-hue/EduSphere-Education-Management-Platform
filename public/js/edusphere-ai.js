@@ -521,10 +521,14 @@
     const { I, esc: e2, toast } = ctx;
     let spaceData;
     let knowledge;
+    let providerSettings = null;
     try {
-      [spaceData, knowledge] = await Promise.all([
+      [spaceData, knowledge, providerSettings] = await Promise.all([
         window.API.get("/platform/ai/spaces"),
         window.API.get("/platform/ai/knowledge"),
+        // Its own catch: a provider-configuration hiccup must never take the
+        // knowledge table down with it.
+        window.API.get("/platform/ai/settings").catch(() => null),
       ]);
     } catch (err) {
       content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Platform</div><h2>AI Assistant</h2></div></div>
@@ -536,6 +540,99 @@
     const entries = knowledge.entries || [];
     const live = spaceData.live !== undefined ? spaceData.live : knowledge.live;
 
+    /* ---- Platform → AI Assistant: the provider card ----------------------
+       The values below come from GET /platform/ai/settings. The API key is
+       never part of that payload — only key_set + key_last4 — so nothing here
+       can put a secret into the DOM. `resolved` is the server's answer after
+       applying the env-over-DB precedence, which is what the status strip
+       reports. */
+    const prov = providerSettings || null;
+    const provStored = (prov && prov.settings) || { provider: "none", base_url: "", model: "", enabled: true };
+    const provResolved = (prov && prov.resolved) || {
+      enabled: Boolean(live), model: spaceData.model || "", source: live ? "settings" : "none", key_set: false, key_last4: "",
+    };
+    const provPresets = (prov && prov.presets) || {};
+    const provProviderKeys = Object.keys(provPresets).length
+      ? Object.keys(provPresets)
+      : ["openai", "groq", "openrouter", "custom", "none"];
+    const provEnv = (prov && prov.env) || { locked: {} };
+    const provMask = (prov && prov.mask) || "••••";
+    const waLine = (prov && prov.whatsapp) || spaceData.whatsapp || null;
+    const whatsappSettingsHref = "#/app/" + encodeURIComponent("platform/settings");
+    const keyPlaceholder = provResolved.key_set
+      ? `${provMask}${provResolved.key_last4 || ""}`
+      : "Paste the key from your provider";
+    const providerStatus = provResolved.enabled
+      ? `Live · ${provResolved.model || "model"} · from ${provResolved.source === "env" ? "environment" : "dashboard"}`
+      : provResolved.key_set
+        ? "Knowledge-base only · model switched off"
+        : "Knowledge-base only · no key";
+    const notLiveCopy = provResolved.key_set
+      ? "A key is stored, but the model is switched off below, so every space answers from the knowledge base plus live data."
+      : provResolved.source === "env"
+        ? "The server environment sets part of this configuration but not a usable key + base URL, so every space answers from the knowledge base below."
+        : "No model is connected, so every space answers from the knowledge base below plus live data. That works — it is just less conversational.";
+    const lockedEnv = ["apiKey", "baseUrl", "model"]
+      .filter((k) => provEnv.locked && provEnv.locked[k])
+      .map((k) => ({ apiKey: "AI_API_KEY", baseUrl: "AI_BASE_URL", model: "AI_MODEL" }[k]));
+    const envNote = lockedEnv.length
+      ? `<p class="hint" style="margin-top:12px">${I.info} <strong>${lockedEnv.join(", ")}</strong> ` +
+        `${lockedEnv.length === 1 ? "is" : "are"} set in the server environment, so ` +
+        `${lockedEnv.length === 1 ? "that value overrides" : "those values override"} this form. ` +
+        "Remove the variable from .env (or the host dashboard) and restart to take control here.</p>"
+      : "";
+    const whatsappCopy = waLine && waLine.available
+      ? `<strong>${e2(waLine.display || waLine.number)}</strong> · ` +
+        (waLine.api_enabled ? "assistant answers automatically" : "link only — add the Meta credentials to answer automatically")
+      : `<strong>not configured</strong> — the website hides the WhatsApp button until a number is set`;
+    const providerCard = `
+      <div class="dash-card" style="margin-bottom:18px"><div class="dash-card-pad">
+        <div style="display:flex;gap:12px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <strong>Model provider</strong>
+            <div class="sub-muted" style="margin-top:2px">Connect an OpenAI-compatible model from here — no .env edit, no restart.</div>
+          </div>
+          <span class="dash-pill ${provResolved.enabled ? "ok" : "warn"}" id="aiProviderStatus">${e2(providerStatus)}</span>
+          ${provResolved.enabled ? "" : `<div class="sub-muted" style="flex-basis:100%">${e2(notLiveCopy)}</div>`}
+        </div>
+
+        <form id="aiProviderForm" style="margin-top:14px" autocomplete="off">
+          <div class="dash-form-grid">
+            <div class="dash-field"><label for="aiProviderSelect">Provider</label>
+              <select name="provider" id="aiProviderSelect">
+                ${provProviderKeys.map((key) => `<option value="${e2(key)}" ${key === provStored.provider ? "selected" : ""}>${e2((provPresets[key] && provPresets[key].label) || key)}</option>`).join("")}
+              </select>
+              <small class="sub-muted">A preset fills the base URL and a default model. Both stay editable.</small>
+            </div>
+            <div class="dash-field"><label for="aiProviderBase">Base URL</label>
+              <input name="base_url" id="aiProviderBase" value="${e2(provStored.base_url)}" placeholder="https://api.openai.com/v1">
+            </div>
+            <div class="dash-field"><label for="aiProviderModel">Model</label>
+              <input name="model" id="aiProviderModel" value="${e2(provStored.model)}" placeholder="gpt-4o-mini">
+            </div>
+            <div class="dash-field"><label for="aiProviderKey">API key</label>
+              <input name="api_key" id="aiProviderKey" type="password" autocomplete="new-password" value="" placeholder="${e2(keyPlaceholder)}">
+              <small class="sub-muted">${provResolved.key_set
+                ? "A key is saved. Leave this blank to keep it, or paste a new one to replace it."
+                : "Stored encrypted on the server and never sent back to this page."}</small>
+            </div>
+          </div>
+          <label class="dash-checkbox-row" style="margin-top:14px"><input type="checkbox" name="enabled" ${provStored.enabled ? "checked" : ""}> Use the model (leave unticked to answer from the knowledge base only)</label>
+          <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button type="button" class="dash-btn dash-btn-ghost" id="aiProviderTest">Test connection</button>
+            <button type="submit" class="dash-btn dash-btn-primary" id="aiProviderSave">${I.check} Save &amp; apply</button>
+            <span id="aiTestResult" class="sub-muted" role="status"></span>
+          </div>
+          ${envNote}
+        </form>
+
+        <div class="sub-muted" style="margin-top:14px;border-top:1px solid var(--d-line);padding-top:10px">
+          WhatsApp line: ${whatsappCopy}
+          · <a href="${whatsappSettingsHref}">Platform → Settings → WhatsApp line</a>
+        </div>
+      </div></div>
+    `;
+
     content.innerHTML = `
       <div class="dash-page-head">
         <div><div class="dash-crumb">Platform</div><h2>AI Assistant</h2>
@@ -545,19 +642,7 @@
         </div>
       </div>
 
-      <div class="dash-card" style="margin-bottom:18px"><div class="dash-card-pad">
-        <strong>Model status:</strong>
-        <span class="dash-pill ${live ? "ok" : "warn"}">${live ? "Live" : "Knowledge base only"}</span>
-        ${live ? `<span class="sub-muted"> · ${e2(spaceData.model || "")}</span>`
-               : `<span class="sub-muted"> · No AI_API_KEY is set, so every space answers straight from the table below plus live data. That works — it is just less conversational.</span>`}
-        <div class="sub-muted" style="margin-top:6px">
-          WhatsApp line:
-          ${spaceData.whatsapp && spaceData.whatsapp.available
-            ? `<strong>${e2(spaceData.whatsapp.display || spaceData.whatsapp.number)}</strong>
-               ${spaceData.whatsapp.api_enabled ? " · assistant connected" : " · link only (add the Meta credentials to answer automatically)"}`
-            : `<strong>not configured</strong> · set it under Platform → Settings → WhatsApp line, or WHATSAPP_AI_DISPLAY_NUMBER.`}
-        </div>
-      </div></div>
+      ${providerCard}
 
       <div class="ai-space-grid">
         ${spaceList.map((sp) => `
@@ -602,6 +687,80 @@
         </tbody>
       </table></div></div>
     `;
+
+    /* ---- interactions for the provider card ------------------------------ */
+    const providerForm = content.querySelector("#aiProviderForm");
+    if (providerForm) {
+      const providerSelect = providerForm.querySelector("select[name=provider]");
+      const baseField = providerForm.querySelector("input[name=base_url]");
+      const modelField = providerForm.querySelector("input[name=model]");
+      const testResult = content.querySelector("#aiTestResult");
+      const testBtn = content.querySelector("#aiProviderTest");
+      const saveBtn = content.querySelector("#aiProviderSave");
+
+      // Picking a preset fills base URL + a sensible default model; both stay
+      // editable, which is what makes "custom" a real option.
+      providerSelect.addEventListener("change", () => {
+        const preset = provPresets[providerSelect.value];
+        if (!preset) return;
+        baseField.value = preset.baseUrl || "";
+        modelField.value = preset.model || "";
+        // "None" is an explicit "answer from the knowledge base only".
+        if (providerSelect.value === "none") {
+          const toggle = providerForm.querySelector("input[name=enabled]");
+          if (toggle) toggle.checked = false;
+        }
+      });
+
+      const readProviderForm = () => {
+        const fd = new FormData(providerForm);
+        const body = {
+          provider: fd.get("provider"),
+          base_url: String(fd.get("base_url") || "").trim(),
+          model: String(fd.get("model") || "").trim(),
+          enabled: fd.get("enabled") === "on",
+        };
+        const key = String(fd.get("api_key") || "").trim();
+        // Omitted rather than blank: the server keeps the stored key. A blank
+        // field must never be read as "delete the key".
+        if (key) body.api_key = key;
+        return body;
+      };
+
+      testBtn.addEventListener("click", async () => {
+        testBtn.disabled = true;
+        testResult.className = "sub-muted";
+        testResult.textContent = "Testing…";
+        try {
+          const out = await window.API.post("/platform/ai/test", readProviderForm());
+          if (out && out.ok) {
+            testResult.className = "dash-pill ok";
+            testResult.textContent = `Connected · ${out.model} · ${out.latencyMs} ms`;
+          } else {
+            testResult.className = "dash-pill danger";
+            testResult.textContent = `Failed · ${(out && out.error) || "the provider refused the request"}`;
+          }
+        } catch (err) {
+          testResult.className = "dash-pill danger";
+          testResult.textContent = err.message || "Could not reach the test endpoint.";
+        } finally {
+          testBtn.disabled = false;
+        }
+      });
+
+      providerForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        saveBtn.disabled = true;
+        try {
+          await window.API.put("/platform/ai/settings", readProviderForm());
+          toast("AI settings saved — the next message uses them. No restart needed.", "success");
+          render(ctx, content, route);
+        } catch (err) {
+          toast(err.message || "Could not save the AI settings.", "error");
+          saveBtn.disabled = false;
+        }
+      });
+    }
 
     const scopeFilter = content.querySelector("#aiScopeFilter");
     function applyFilter(scope) {

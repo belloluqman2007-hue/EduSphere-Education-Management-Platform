@@ -289,7 +289,21 @@ const UPLOAD_DIR = path.resolve(process.cwd(), String(process.env.UPLOAD_DIR || 
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 5);
 
 /* ---------------------------------------------------------------------------
-   OPTIONAL: AI (opt-in, disabled unless AI_API_KEY is set)
+   OPTIONAL: AI (opt-in, disabled unless a key is configured)
+   ---------------------------------------------------------------------------
+   THIS IS THE ENVIRONMENT OVERRIDE LAYER, NOT THE WHOLE CONFIGURATION.
+   The super admin can connect a model under Platform → AI Assistant; those
+   values live in `platform_settings` (ai_provider / ai_base_url / ai_model /
+   ai_enabled / ai_api_key) and are resolved at REQUEST time by
+   services/ai-config.js, which is what services/ai.js actually reads.
+
+   Precedence is per field and the environment wins:
+     AI_API_KEY   overrides the stored key
+     AI_BASE_URL  overrides the stored base URL
+     AI_MODEL     overrides the stored model
+   Anything not set here falls through to the dashboard configuration. Setting
+   AI_API_KEY here therefore gives a deploy-time operator the final say — and
+   lets them revoke a key someone saved in the dashboard without a code change.
 --------------------------------------------------------------------------- */
 const AI = {
   apiKey: String(process.env.AI_API_KEY || "").trim(),
