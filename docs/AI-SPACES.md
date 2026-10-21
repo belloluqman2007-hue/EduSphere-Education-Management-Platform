@@ -84,13 +84,114 @@ pin a key, or revoke one saved in the dashboard, without editing the database.
   hosts, link-local addresses, cloud metadata endpoints (`169.254.169.254`) or
   credentials in the URL. A rejected save is a `400` with a readable reason.
 - **Test connection** (`POST /api/platform/ai/test`) is rate-limited to about
-  5 calls per minute and uses the values in the form, saved or not. Provider
+  5 calls per minute and uses the values in the form, saved or not. It sends
+  the **realistic** payload by default (`mode: "real"`): the public system
+  prompt, a real knowledge block, the three public tool schemas, the same
+  history cap and `max_tokens: 700` — the same request a visitor's message
+  makes. `mode: "small"` keeps the old 8-token ping; it is useful for proving a
+  key is accepted, and it is *not* evidence that the assistant works. Provider
   errors come back as their own message ("invalid api key", "model not found")
-  with the key scrubbed.
+  **and their HTTP status**, with the key scrubbed.
 
 Saving, or switching the model off, applies to the **next message**. The
 knowledge-base fallback is untouched: with no usable key every space still
 answers from `ai_knowledge` and its own menu.
+
+---
+
+## Troubleshooting: "why does the assistant fall back?"
+
+**The symptom this section exists for.** The card says
+`Live · <model> · from dashboard`, "Test connection" is green with a latency,
+and yet every answer is the knowledge-base paragraph or the space menu:
+`POST /api/public/ai/chat` returns `mode: "knowledge-base"` (or `"menu"`) and
+never `"ai"`.
+
+### Every answer says why it did not use the model
+
+A provider refusal is never silent. Each chat response — `/api/ai/chat`,
+`/api/public/ai/chat`, the WhatsApp webhook — carries:
+
+| Field | Meaning |
+|---|---|
+| `mode` | `"ai"` (the model answered), `"knowledge-base"`, `"menu"`, `"empty"` |
+| `fallback_reason` | `"no_model_configured"` when no model is set up; the provider's own reason (e.g. `429 Too Many Requests: Rate limit reached…`) when a turn failed |
+| `provider_status` | the provider's HTTP status (`401`, `429`, `400`…) or `null` when the failure was not an HTTP response (timeout, DNS) |
+| `degraded` | `true` only when a provider call was attempted and failed |
+| `note` | a ready-to-render line: `Model unavailable: <reason>` |
+
+`mode: "knowledge-base"` with `fallback_reason: "no_model_configured"` is the
+healthy "no model connected" state. `mode: "knowledge-base"` with a provider
+message means the model is configured and refused **this** turn — which is the
+case that used to be invisible.
+
+### 1. Run the diagnostics endpoint
+
+`GET /api/platform/ai/diagnose` (super admin only, ≈5 calls/minute) returns the
+resolved configuration **and** the result of one realistic public turn:
+
+```jsonc
+{
+  "ok": false,
+  "resolved": {
+    "enabled": true, "provider": "groq", "model": "openai/gpt-oss-120b",
+    "base_url": "https://api.groq.com/openai/v1", "source": "settings",
+    "key_set": true, "key_last4": "abcd",
+    "origins": { "apiKey": "settings", "baseUrl": "settings", "model": "settings" }
+  },
+  "surface": "public",
+  "mode": "knowledge-base",
+  "latencyMs": 412,
+  "httpStatus": 429,
+  "error": "429 Too Many Requests: Rate limit reached for openai/gpt-oss-120b on tokens per minute (TPM): Limit 8000, Used 7900, Requested 2400…",
+  "tokens": { "in": 0, "out": 0 },
+  "request": {
+    "messages": 4, "max_tokens": 700,
+    "tools": ["list_plans", "get_contact_details", "register_interest"],
+    "knowledge_entries": 3, "bytes": 6202, "approx_prompt_tokens": 1290
+  }
+}
+```
+
+That single `httpStatus` + `error` decides which cause it is. The same data is
+what the "Test connection" button shows (`HTTP 429 · Rate limit reached…`), and
+a failed probe turns the Model provider card red with the reason and a **Run
+diagnostics** button.
+
+### 2. Match the status to the cause
+
+| What you see | Cause | Fix |
+|---|---|---|
+| `401` / `403` "invalid api key" | wrong, revoked or copy-truncated key | paste it again; check `AI_API_KEY` in the environment is not silently overriding the dashboard |
+| `404` "model not found" / "does not exist" | a model id the account cannot use (e.g. an enterprise-only id) | pick a model your key may actually call, or use the **Custom** preset |
+| `400` / `422` mentioning `tools`, `tool_choice` or `function` | the model has no tool-calling support | nothing to do — the assistant retries the turn **once without tools** automatically; if every turn still fails, choose a model that supports tools |
+| `413` / `429` "tokens per minute" | the turn is larger than the provider's per-minute ceiling (common on free tiers) | the turn is retried once with history cut to two messages and a smaller knowledge block; then move to a paid tier or a model with a higher TPM |
+| `200` with no `choices[0].message` | a provider that does not speak the OpenAI response shape | use an OpenAI-compatible endpoint |
+| timeout / `fetch failed` | wrong base URL, DNS, egress firewall | check `base_url` from the server; `AI_TIMEOUT_MS` controls the limit |
+
+### 3. What a real turn actually sends
+
+For the public website the payload is: the public system prompt (2,344
+characters), the knowledge block (3 entries), at most **4** stored messages of
+history, the three public tool schemas, `max_tokens: 700`. Measured: ~6.2 KB of
+JSON, about 1,300 prompt tokens plus 700 asked for — roughly 2,000 tokens per
+turn. A signed-in space sends up to 12 messages and 5 knowledge entries
+(~9.5 KB, ~2,400 prompt tokens). Free tiers are usually 6–8K tokens per minute
+**and** count the tool schemas — so a couple of public turns, or two signed-in
+turns, can exhaust a minute, while the 8-token ping always fits. That is how a
+green "Test connection" sat next to an assistant that never answered with
+`mode: "ai"`. WhatsApp keeps its short-reply cap.
+
+### 4. Logs
+
+A provider fallback is logged **once per distinct error** (status + message), so
+a busy assistant cannot flood the log:
+
+```
+AI provider fallback (public (answering from the knowledge base)): 429 Too Many Requests: Rate limit reached… — answering from the knowledge base; run Platform → AI Assistant → Run diagnostics to see the full payload result.
+```
+
+The API key is scrubbed from every message, response and log line.
 
 ---
 
@@ -291,7 +392,8 @@ audience, scopes, suggestions, capabilities, answer counts, WhatsApp status).
 | `GET/POST` | `/api/ai/whatsapp/webhook` | Meta (signature-verified when a secret is set) |
 | `GET` | `/api/platform/ai/spaces` | super admin |
 | `GET/PUT` | `/api/platform/ai/settings` | super admin — the provider card (no secret ever returned) |
-| `POST` | `/api/platform/ai/test` | super admin — one tiny provider call against unsaved values (≈5/min) |
+| `POST` | `/api/platform/ai/test` | super admin — a probe against unsaved values; `mode: "real"` (default) sends the live public turn, `"small"` sends an 8-token ping (≈5/min) |
+| `GET` | `/api/platform/ai/diagnose` | super admin — resolved config + one realistic public turn, with `httpStatus` and the provider's message (≈5/min) |
 | `GET/POST/PATCH/DELETE` | `/api/platform/ai/knowledge[/:id]` | super admin |
 | `GET` | `/api/platform/ai/conversations[/:id]` | super admin |
 
@@ -321,7 +423,15 @@ super admin can read/save/test it, the key never appears in a response, a key
 saved from the dashboard is used by the public assistant on the next message
 without a restart, environment overrides win field-by-field, blank/sentinel
 keys keep the stored one, SSRF-shaped base URLs are refused, and a provider
-failure is reported without echoing the secret.
+failure is reported without echoing the secret. It also pins the
+fallback-reporting behaviour with a stubbed provider: a 429 on the realistic
+payload still answers but returns `mode: "knowledge-base"` **with**
+`fallback_reason`/`provider_status` naming 429 and a single cheaper retry; a
+model that rejects `tools` is retried once without them and answers with
+`mode: "ai"`; a 200 without `choices[0]` is reported as a failure; the
+diagnostics endpoint is super-admin-only, reports the provider's verbatim
+message, and never contains the key; and the "real" connection test provably
+sends tools + `max_tokens: 700` while "small" sends an 8-token ping.
 
 The existing suites (`subscription.test.js`, `subscription-features.test.js`)
 still cover the tenant isolation, the upgrade-request-without-activation rule,

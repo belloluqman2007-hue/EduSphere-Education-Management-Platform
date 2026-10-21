@@ -48,6 +48,32 @@ const MAX_TOOL_ROUNDS = 4;
    it we prefer an honest menu to a confident wrong paragraph. */
 const CONFIDENT_SCORE = 3;
 
+/* --------------------------- context budgets ------------------------------ */
+
+/* How much conversation and how many knowledge entries a turn may send.
+   The public website is the surface an anonymous visitor drives, and the one
+   that hit provider token ceilings first: a stranger gets a short memory and a
+   narrow slice of the knowledge base, while a signed-in workspace keeps the
+   full 12-message thread. Counted in MESSAGES (the unit `messages.slice(-12)`
+   always used), not question/answer pairs. */
+const TURN_LIMITS = {
+  public: { history: 4, knowledge: 3 },
+  whatsapp: { history: 12, knowledge: 5 },
+};
+const DEFAULT_TURN_LIMITS = { history: 12, knowledge: 5 };
+function turnLimits(surface) {
+  return TURN_LIMITS[surface] || DEFAULT_TURN_LIMITS;
+}
+/* The single retry after a 413/429 sends this little: two messages of history
+   and a knowledge block small enough that a free-tier per-minute ceiling is
+   usually cleared. */
+const RETRY_HISTORY = 2;
+function retryKnowledgeLimit(surface, current) {
+  // The public turn already sends three entries; the retry must be smaller
+  // than the first attempt or it is not a cheaper request at all.
+  return surface === "public" ? Math.min(current, 2) : Math.min(current, 3);
+}
+
 /* ------------------------------ knowledge -------------------------------- */
 
 const STOPWORDS = new Set([
@@ -249,6 +275,86 @@ async function chatCompletion(payload, options = {}) {
   }
 }
 
+/* ---------------------------- failure reporting --------------------------- */
+
+/* Why a turn that was supposed to use the model answered from the knowledge
+   base instead. Before this, the route's catch block turned every provider
+   refusal into an ordinary knowledge-base answer, so a 429 and "no key
+   configured" were byte-identical in the response — which is exactly how a
+   green "Test connection" could sit next to an assistant that never used the
+   model. */
+
+const STATUS_TEXT = {
+  400: "Bad Request",
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  408: "Request Timeout",
+  413: "Payload Too Large",
+  422: "Unprocessable Entity",
+  429: "Too Many Requests",
+  500: "Internal Server Error",
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
+
+/** The provider's own HTTP status and message, never the key. */
+function providerFailure(e) {
+  const raw = Number(e && (e.providerStatus || e.provider_status));
+  const status = Number.isFinite(raw) && raw > 0 ? raw : null;
+  const message = String((e && e.message) || "The provider refused the request.")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+  return { status, message };
+}
+
+/** One line a human can act on: "429 Too Many Requests: Rate limit reached…". */
+function describeFailure(failure) {
+  const f = failure || {};
+  const message = String(f.message || "The provider refused the request.").slice(0, 300);
+  if (!f.status) return message;
+  return `${f.status} ${STATUS_TEXT[f.status] || "Provider error"}: ${message}`;
+}
+
+/** A 400/422 that complains about tools or function calling. The usual cause is
+    a model that does not implement the OpenAI tool-call shape at all, which a
+    plain one-message probe can never reveal because it sends no tools. */
+function toolsRejected(failure) {
+  if (!failure || (failure.status !== 400 && failure.status !== 422)) return false;
+  return /tool|function[\s_-]?call|tool_choice/i.test(failure.message);
+}
+
+/* One warning per DISTINCT provider error: a busy assistant must not fill the
+   log with the same 429 on every message, and a new error must still surface. */
+const loggedFailures = new Set();
+function logFailureOnce(where, failure) {
+  const key = `${where}|${failure.status}|${failure.message}`;
+  if (loggedFailures.has(key)) return;
+  if (loggedFailures.size >= 50) loggedFailures.clear();
+  loggedFailures.add(key);
+  console.warn(
+    `AI provider fallback (${where}): ${describeFailure(failure)} — ` +
+    "answering from the knowledge base; run Platform → AI Assistant → Run diagnostics to see the full payload result."
+  );
+}
+
+/* The last REALISTIC probe result, so the dashboard can show a red pill without
+   spending a provider call on every page load. In-process on purpose: it is a
+   diagnostic breadcrumb, not configuration. */
+let lastProbeResult = null;
+function recordProbe(result) {
+  const safe = Object.assign({}, result, { at: new Date().toISOString() });
+  delete safe.apiKey;
+  delete safe.key;
+  lastProbeResult = safe;
+  return safe;
+}
+function lastProbe() {
+  return lastProbeResult;
+}
+
 /* ------------------------------ turns ------------------------------------ */
 
 const ROLE_LABEL = {
@@ -286,8 +392,34 @@ function knowledgeBlock(hits) {
     hits.map((h, i) => `[${i + 1}] ${h.topic ? h.topic + " — " : ""}${h.question}\n${h.answer}`).join("\n\n");
 }
 
+/** OpenAI-style tool schemas, from the route's tool definitions. */
+function toolSchemas(tools) {
+  return (tools || []).map((t) => ({
+    type: "function",
+    function: { name: t.name, description: t.description, parameters: t.parameters || { type: "object", properties: {} } },
+  }));
+}
+
+/** Conversation history, capped. `limit` counts MESSAGES, the unit the old
+    `messages.slice(-12)` used. */
+function turnMessages(messages, limit) {
+  return (messages || [])
+    .slice(-limit)
+    .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content || "").slice(0, 4000) }));
+}
+
 /**
  * Runs one assistant turn.
+ *
+ * A provider refusal is NEVER silent. The answer still comes from the
+ * knowledge base — "never a dead end" is unchanged — but the result now says
+ * WHY (`fallback_reason`, `provider_status`, `degraded`, `note`), so a caller
+ * can tell "no key configured" from "the model exists and refused this turn".
+ *
+ * Two cheap self-healing retries happen before falling back:
+ *   • the provider rejects `tools`/`tool_choice` (400/422) → same turn, no tools;
+ *   • the provider says 413/429 (too large / rate limited) → same turn with two
+ *     messages of history and a smaller knowledge block.
  *
  * @param {object} o
  * @param {"public"|"super_admin"|"admin"|"teacher"|"student"|"parent"|"whatsapp"} o.surface
@@ -304,81 +436,226 @@ async function ask({ surface = "public", messages = [], tools = [], context = {}
     return { content: space.emptyQuery || space.greeting, sources: [], mode: "empty", toolCalls: [] };
   }
 
-  const hits = await retrieve(surface, query, 5);
+  const limits = turnLimits(surface);
+  const hits = await retrieve(surface, query, limits.knowledge);
 
   // Resolved per request: a key saved from the dashboard applies immediately,
   // and an environment override still wins. No model configured (or the
   // dashboard switched it off) → answer from the knowledge base, or from the
-  // space's own menu. Both are real answers; there is no dead end.
+  // space's own menu. Both are real answers; there is no dead end. The reason
+  // is reported too, because "no model" and "the model failed" used to be
+  // indistinguishable in the response.
   const cfg = await aiConfig.resolve();
   if (!cfg.enabled) {
     const fb = fallbackAnswer(surface, query, hits);
-    if (fb) return Object.assign({}, fb, { toolCalls: [] });
-    return Object.assign({}, await menuAnswer(surface), { toolCalls: [] });
+    const base = fb || await menuAnswer(surface);
+    return Object.assign({}, base, {
+      toolCalls: base.toolCalls || [],
+      fallback_reason: "no_model_configured",
+      provider_status: null,
+    });
   }
 
-  const convo = [
-    { role: "system", content: systemPrompt(surface, contextBrief(surface, context)) + knowledgeBlock(hits) },
-    ...messages.slice(-12).map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content || "").slice(0, 4000) })),
-  ];
+  const systemBase = systemPrompt(surface, contextBrief(surface, context));
+  const toolDefs = toolSchemas(tools);
+  const maxTokens = surface === "whatsapp" ? 400 : 700;
 
-  const toolDefs = (tools || []).map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters || { type: "object", properties: {} } } }));
-  const toolCalls = [];
-  let usage = { in: 0, out: 0 };
+  /** One attempt, always from a clean conversation: a retry must not inherit a
+      tool result or a history slice the provider has just refused. Throws the
+      provider's own error; the caller decides what to retry. */
+  const attemptTurn = async ({ history, hitSlice, withTools }) => {
+    const convo = [
+      { role: "system", content: systemBase + knowledgeBlock(hitSlice) },
+      ...history,
+    ];
+    const defs = withTools ? toolDefs : [];
+    const calls = [];
+    const usage = { in: 0, out: 0 };
+    const sources = (hitSlice || []).map((h) => h.question).filter(Boolean);
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const payload = {
-      messages: convo,
-      temperature: 0.2,
-      max_tokens: surface === "whatsapp" ? 400 : 700,
-    };
-    if (toolDefs.length) Object.assign(payload, { tools: toolDefs, tool_choice: "auto" });
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const payload = {
+        messages: convo,
+        temperature: 0.2,
+        max_tokens: maxTokens,
+      };
+      if (defs.length) Object.assign(payload, { tools: defs, tool_choice: "auto" });
 
-    const data = await chatCompletion(payload, { config: cfg });
-    const choice = data && data.choices && data.choices[0];
-    if (!choice) throw Object.assign(new Error("The assistant returned no answer."), { status: 502 });
+      const data = await chatCompletion(payload, { config: cfg });
+      const choice = data && data.choices && data.choices[0];
+      if (!choice) throw Object.assign(new Error("The provider answered 200 but without choices[0].message."), { status: 502 });
 
-    if (data.usage) {
-      usage.in += Number(data.usage.prompt_tokens || 0);
-      usage.out += Number(data.usage.completion_tokens || 0);
-    }
-
-    const msg = choice.message || {};
-    if (msg.tool_calls && msg.tool_calls.length) {
-      convo.push(msg);
-      for (const call of msg.tool_calls) {
-        const name = call.function && call.function.name;
-        const tool = (tools || []).find((t) => t.name === name);
-        let args = {};
-        try { args = JSON.parse((call.function && call.function.arguments) || "{}"); } catch (e) { args = {}; }
-        let out;
-        try {
-          out = tool ? await tool.run(args, context) : { error: "Unknown tool." };
-        } catch (e) {
-          out = { error: String((e && e.message) || "Tool failed.") };
-        }
-        toolCalls.push({ name, args, result: out });
-        convo.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(out).slice(0, 6000) });
+      if (data.usage) {
+        usage.in += Number(data.usage.prompt_tokens || 0);
+        usage.out += Number(data.usage.completion_tokens || 0);
       }
-      continue;
+
+      const msg = choice.message || {};
+      if (msg.tool_calls && msg.tool_calls.length) {
+        convo.push(msg);
+        for (const call of msg.tool_calls) {
+          const name = call.function && call.function.name;
+          const tool = (tools || []).find((t) => t.name === name);
+          let args = {};
+          try { args = JSON.parse((call.function && call.function.arguments) || "{}"); } catch (e) { args = {}; }
+          let out;
+          try {
+            out = tool ? await tool.run(args, context) : { error: "Unknown tool." };
+          } catch (e) {
+            out = { error: String((e && e.message) || "Tool failed.") };
+          }
+          calls.push({ name, args, result: out });
+          convo.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(out).slice(0, 6000) });
+        }
+        continue;
+      }
+
+      return {
+        content: String(msg.content || "").trim() || "I could not put an answer together. Please ask again or contact the EduSphere team.",
+        sources,
+        mode: "ai",
+        toolCalls: calls,
+        tokens: usage,
+      };
     }
 
     return {
-      content: String(msg.content || "").trim() || "I could not put an answer together. Please ask again or contact the EduSphere team.",
-      sources: hits.map((h) => h.question).filter(Boolean),
+      content: "I need a moment — please try that again, or ask the EduSphere team directly through Chat & Support.",
+      sources,
       mode: "ai",
-      toolCalls,
+      toolCalls: calls,
       tokens: usage,
     };
+  };
+
+  const historyAll = turnMessages(messages, limits.history);
+  let toolsAllowed = toolDefs.length > 0;
+  let failure = null;
+
+  try {
+    return await attemptTurn({ history: historyAll, hitSlice: hits, withTools: toolsAllowed });
+  } catch (e) {
+    failure = providerFailure(e);
   }
 
-  return {
-    content: "I need a moment — please try that again, or ask the EduSphere team directly through Chat & Support.",
-    sources: hits.map((h) => h.question).filter(Boolean),
-    mode: "ai",
-    toolCalls,
-    tokens: usage,
+  // Retry 1 — the model does not implement tool calling. Drop the tools and
+  // try the same turn once: a conversational answer is still a real answer.
+  if (toolsAllowed && toolsRejected(failure)) {
+    logFailureOnce(`${surface} (tools rejected, retrying without them)`, failure);
+    toolsAllowed = false;
+    try {
+      return await attemptTurn({ history: historyAll, hitSlice: hits, withTools: false });
+    } catch (e) {
+      failure = providerFailure(e);
+    }
+  }
+
+  // Retry 2 — request too large or rate limited. Two messages of history and a
+  // smaller knowledge block are what fits under a free-tier per-minute ceiling.
+  if (failure.status === 413 || failure.status === 429) {
+    logFailureOnce(`${surface} (too large or rate limited, retrying with a trimmed context)`, failure);
+    try {
+      return await attemptTurn({
+        history: turnMessages(messages, Math.min(limits.history, RETRY_HISTORY)),
+        hitSlice: hits.slice(0, retryKnowledgeLimit(surface, limits.knowledge)),
+        withTools: toolsAllowed,
+      });
+    } catch (e) {
+      failure = providerFailure(e);
+    }
+  }
+
+  logFailureOnce(`${surface} (answering from the knowledge base)`, failure);
+  const base = fallbackAnswer(surface, query, hits) || await menuAnswer(surface);
+  const reason = describeFailure(failure);
+  return Object.assign({}, base, {
+    toolCalls: base.toolCalls || [],
+    fallback_reason: reason,
+    provider_status: failure.status,
+    degraded: true,
+    note: `Model unavailable: ${reason}`,
+  });
+}
+
+/**
+ * Builds the REALISTIC turn a real visitor's message produces, sends it once,
+ * and reports exactly what happened.
+ *
+ * This is the probe "Test connection" should always have been. The old test
+ * sent one 8-token message with no system prompt, no knowledge, no history and
+ * no tools, so it could pass while every real turn failed on a token ceiling or
+ * a model that refuses `tools`. Both /api/platform/ai/test (mode "real") and
+ * /api/platform/ai/diagnose call THIS function, so a green result means the
+ * actual chat path works.
+ *
+ * @returns {Promise<{ok:boolean, latencyMs:number, httpStatus:number|null,
+ *   error:string|null, mode:string, tokens:{in:number,out:number}, request:object}>}
+ */
+async function probe({ surface = "public", tools = [], hits = [], history = [], context = {}, config = null, timeoutMs = TIMEOUT_MS, record = true } = {}) {
+  const limits = turnLimits(surface);
+  const cfg = config || await aiConfig.resolve();
+  // `record: false` keeps a test of unsaved form values out of the dashboard's
+  // "last real probe" state: that breadcrumb describes the LIVE configuration.
+  const finish = (result) => (record ? recordProbe(result) : result);
+  const systemBase = systemPrompt(surface, contextBrief(surface, context));
+  const toolDefs = toolSchemas(tools);
+  const hitSlice = (hits || []).slice(0, limits.knowledge);
+  const convo = [
+    { role: "system", content: systemBase + knowledgeBlock(hitSlice) },
+    ...turnMessages(history, limits.history),
+  ];
+  const maxTokens = surface === "whatsapp" ? 400 : 700;
+  const payload = { messages: convo, temperature: 0.2, max_tokens: maxTokens };
+  if (toolDefs.length) Object.assign(payload, { tools: toolDefs, tool_choice: "auto" });
+
+  const body = JSON.stringify(payload);
+  const request = {
+    messages: convo.length,
+    max_tokens: maxTokens,
+    tools: toolDefs.map((t) => t.function.name),
+    knowledge_entries: hitSlice.length,
+    bytes: Buffer.byteLength(body),
+    approx_prompt_tokens: Math.ceil(Buffer.byteLength(JSON.stringify(convo)) / 4),
   };
+
+  if (!cfg || !cfg.enabled) {
+    return finish({
+      ok: false, httpStatus: null, latencyMs: 0, mode: "knowledge-base",
+      error: "No model is configured, so every space answers from the knowledge base.",
+      tokens: { in: 0, out: 0 }, request,
+    });
+  }
+
+  const started = Date.now();
+  try {
+    const data = await chatCompletion(payload, { config: cfg, timeoutMs });
+    const choice = data && data.choices && data.choices[0];
+    const msg = choice && choice.message;
+    if (!choice || !msg) {
+      // Suspect 5: a 200 whose shape the parser does not recognise.
+      return finish({
+        ok: false, httpStatus: 200, latencyMs: Date.now() - started, mode: "knowledge-base",
+        error: "The provider answered 200 but without choices[0].message, so there is no answer to read.",
+        tokens: { in: 0, out: 0 }, request,
+      });
+    }
+    const usedTools = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+    const usage = data.usage || {};
+    return finish({
+      ok: true, httpStatus: 200, latencyMs: Date.now() - started,
+      error: null, mode: usedTools ? "tool-call" : "ai",
+      model: (data && data.model) || cfg.model || "",
+      tokens: { in: Number(usage.prompt_tokens || 0), out: Number(usage.completion_tokens || 0) },
+      request,
+    });
+  } catch (e) {
+    const failure = providerFailure(e);
+    return finish({
+      ok: false, httpStatus: failure.status, latencyMs: Date.now() - started,
+      mode: "knowledge-base", error: describeFailure(failure),
+      tokens: { in: 0, out: 0 }, request,
+    });
+  }
 }
 
 /* ------------------------------ persistence ------------------------------ */
@@ -467,6 +744,9 @@ async function knowledgeStats() {
 module.exports = {
   ask, retrieve, fallbackAnswer, menuAnswer, welcome, topQuestions, seedKnowledge, knowledgeStats,
   conversation, history, saveMessage, chatCompletion,
+  // Diagnostics: the realistic probe both "Test connection" (mode "real") and
+  // GET /api/platform/ai/diagnose run, plus the last result for the card.
+  probe, lastProbe, turnLimits,
   surfaceForRole: spaces.surfaceForRole,
   scopesFor: spaces.scopesFor,
   publicSpace: spaces.publicSpace,

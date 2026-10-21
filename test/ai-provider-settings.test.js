@@ -21,8 +21,10 @@ const assert = require("node:assert/strict");
 const { initEnv, setup, Client, PASSWORD, SA_PASSWORD } = require("./helpers");
 
 initEnv();
-// Keep the "test connection" bucket out of the way — production stays at 5/min.
+// Keep the assistant's own buckets out of the way — production stays at 10/min
+// for the public chat and 5/min for "Test connection".
 process.env.AI_TEST_RATE_LIMIT = "100";
+process.env.PUBLIC_AI_RATE_LIMIT = "1000";
 // No environment override for the database tests (each field is exercised
 // explicitly further down).
 process.env.AI_API_KEY = "";
@@ -44,28 +46,62 @@ let ctx, superAdmin, admin;
    provider be faked without touching the HTTP client that talks to the app. */
 const REAL_FETCH = globalThis.fetch;
 let providerCalls = [];
-let providerMode = "ok"; // "ok" | "error"
+/* Scenarios below all start from the SAME tiny ping, which is why the old
+   "Test connection" could be green while a real turn failed:
+     ok            — everything works
+     error         — 401 for every request (bad key)
+     rate-limited  — 429 as soon as the request carries tools or >8 tokens
+     reject-tools  — 400 whenever `tools` is present (model does not do tools)
+     no-choices    — 200 with an empty `choices` array (shape the parser rejects) */
+let providerMode = "ok";
+
+function jsonResponse(status, body) {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function providerOkResponse() {
+  return jsonResponse(200, {
+    model: "fake-provider-model",
+    choices: [{ index: 0, message: { role: "assistant", content: "ok" } }],
+    usage: { prompt_tokens: 3, completion_tokens: 1 },
+  });
+}
 
 function installProviderStub() {
   globalThis.fetch = async (url, opts) => {
     const href = String(url && url.href ? url.href : url);
     if (!href.includes("ai.example-provider.test")) return REAL_FETCH(url, opts);
+    const body = JSON.parse((opts && opts.body) || "{}");
     providerCalls.push({
       url: href,
       authorization: (opts && opts.headers && opts.headers.Authorization) || "",
-      body: JSON.parse((opts && opts.body) || "{}"),
+      body,
     });
+
     if (providerMode === "error") {
-      return new Response(JSON.stringify({ error: { message: "invalid api key provided" } }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      });
+      return jsonResponse(401, { error: { message: "invalid api key provided" } });
     }
-    return new Response(JSON.stringify({
-      model: "fake-provider-model",
-      choices: [{ index: 0, message: { role: "assistant", content: "ok" } }],
-      usage: { prompt_tokens: 3, completion_tokens: 1 },
-    }), { status: 200, headers: { "content-type": "application/json" } });
+    if (providerMode === "rate-limited") {
+      const heavy = (Array.isArray(body.tools) && body.tools.length > 0) || Number(body.max_tokens || 0) > 8;
+      if (heavy) {
+        return jsonResponse(429, {
+          error: {
+            message: "Rate limit reached for openai/gpt-oss-120b on tokens per minute (TPM): Limit 8000, Used 7900, Requested 2400. Please try again in 6.2s.",
+          },
+        });
+      }
+      return providerOkResponse();
+    }
+    if (providerMode === "reject-tools") {
+      if (Array.isArray(body.tools) && body.tools.length > 0) {
+        return jsonResponse(400, { error: { message: "tools is not supported by this model: llama-3.3-70b-versatile" } });
+      }
+      return providerOkResponse();
+    }
+    if (providerMode === "no-choices") {
+      return jsonResponse(200, { model: "broken-shape-model", choices: [] });
+    }
+    return providerOkResponse();
   };
 }
 
@@ -445,7 +481,204 @@ test("choosing provider \"none\" switches the model off but keeps the key", asyn
 });
 
 /* ------------------------------------------------------------------------ */
-/* 9. the card itself, in a real DOM                                        */
+/* 9. why it fell back — the silent-fallback bug                            */
+/* ------------------------------------------------------------------------ */
+/* The symptom: "Test connection" green, but every public turn answered from
+   the knowledge base with no explanation. These tests pin down the fix: the
+   reason travels with the answer, the model is retried cheaply twice, and the
+   realistic probe reports what the real path would do. */
+
+/** Turns the model on for the LIVE configuration (the same key as the tests
+    above saved), which is what the public chat then resolves. */
+async function useLiveProvider() {
+  const save = await superAdmin.api("PUT", "/api/platform/ai/settings", {
+    provider: "custom", base_url: FAKE_BASE, model: "gpt-test", enabled: true,
+  });
+  assert.equal(save.status, 200, JSON.stringify(save.data));
+  return save.data;
+}
+
+test("a 429 on the real payload still answers, and says exactly why", async () => {
+  await useLiveProvider();
+  const anon = new Client(ctx.base);
+  // Build a real conversation first (history is what makes the request big).
+  for (const message of ["Hello", "What does EduSphere do?", "Tell me about the plans"]) {
+    await anon.api("POST", "/api/public/ai/chat", { message, session_id: "fallback-429" });
+  }
+
+  providerMode = "rate-limited";
+  providerCalls = [];
+  try {
+    const chat = await anon.api("POST", "/api/public/ai/chat", {
+      message: "How do I register my school?", session_id: "fallback-429",
+    });
+    assert.equal(chat.status, 200, JSON.stringify(chat.data));
+    assert.equal(chat.data.mode, "knowledge-base", "the visitor still gets a real answer");
+    assert.ok(chat.data.reply.length > 20);
+    assert.match(String(chat.data.fallback_reason), /429/, "the reason names the provider status");
+    assert.equal(chat.data.provider_status, 429, "the provider's HTTP status is reported");
+    assert.equal(chat.data.degraded, true);
+    assert.match(String(chat.data.note), /^Model unavailable: 429/);
+    assert.ok(!JSON.stringify(chat.data).includes(DASHBOARD_KEY), "no key in the response");
+
+    // Two attempts: the turn, then ONE cheaper retry (two messages of history,
+    // a smaller knowledge block) before falling back.
+    assert.equal(providerCalls.length, 2, "one retry, not a retry loop");
+    const first = providerCalls[0].body;
+    const retry = providerCalls[1].body;
+    assert.equal(first.messages.length, 5, "the public turn caps history at 4 messages");
+    assert.match(first.messages[0].content, /\[1\]/, "a real knowledge block is sent");
+    assert.doesNotMatch(first.messages[0].content, /\[4\]/, "and the public block is capped at 3 entries");
+    assert.ok(first.messages.length > retry.messages.length, "the retry sends less history");
+    assert.equal(retry.messages.length, 3, "system + the last two messages only");
+    assert.ok(retry.messages[0].content.length < first.messages[0].content.length,
+      "and a smaller knowledge block");
+    assert.equal(retry.max_tokens, 700);
+  } finally {
+    providerMode = "ok";
+  }
+});
+
+test("a model that rejects tools is retried once without them and still answers", async () => {
+  await useLiveProvider();
+  providerMode = "reject-tools";
+  providerCalls = [];
+  try {
+    const anon = new Client(ctx.base);
+    const chat = await anon.api("POST", "/api/public/ai/chat", {
+      message: "What does EduSphere do?", session_id: "retry-without-tools",
+    });
+    assert.equal(chat.status, 200, JSON.stringify(chat.data));
+    assert.equal(chat.data.mode, "ai", "the model answers once the tools are dropped");
+    assert.equal(chat.data.fallback_reason, null);
+    assert.equal(chat.data.degraded, false);
+    assert.equal(providerCalls.length, 2, "exactly one retry");
+    assert.equal(providerCalls[0].body.tools.length, 3, "the first attempt offered the public tools");
+    assert.equal(providerCalls[1].body.tools, undefined, "the retry offers no tools");
+    assert.equal(providerCalls[1].body.tool_choice, undefined);
+  } finally {
+    providerMode = "ok";
+  }
+});
+
+test("a 200 without choices[0] is a reported failure, not a silent success", async () => {
+  await useLiveProvider();
+  providerMode = "no-choices";
+  try {
+    const anon = new Client(ctx.base);
+    const chat = await anon.api("POST", "/api/public/ai/chat", {
+      message: "How do I register my school?", session_id: "bad-shape",
+    });
+    assert.equal(chat.status, 200);
+    assert.notEqual(chat.data.mode, "ai");
+    assert.match(String(chat.data.fallback_reason), /choices/i);
+    assert.equal(chat.data.degraded, true);
+  } finally {
+    providerMode = "ok";
+  }
+});
+
+test("switched off and provider-broken are now distinguishable", async () => {
+  await superAdmin.api("PUT", "/api/platform/ai/settings", {
+    provider: "custom", base_url: FAKE_BASE, model: "gpt-test", enabled: false,
+  });
+  const anon = new Client(ctx.base);
+  const off = await anon.api("POST", "/api/public/ai/chat", { message: "How do I register my school?" });
+  assert.equal(off.data.mode, "knowledge-base");
+  assert.equal(off.data.fallback_reason, "no_model_configured");
+  assert.equal(off.data.provider_status, null);
+  assert.equal(off.data.degraded, false);
+});
+
+test("diagnostics: super-admin only, and a bad key is reported verbatim", async () => {
+  const denied = await admin.req("GET", "/api/platform/ai/diagnose");
+  assert.equal(denied.status, 403, JSON.stringify(denied.data));
+
+  await useLiveProvider();
+  providerMode = "ok";
+  const good = await superAdmin.req("GET", "/api/platform/ai/diagnose");
+  assert.equal(good.status, 200, JSON.stringify(good.data));
+  assert.equal(good.data.ok, true);
+  assert.equal(good.data.httpStatus, 200);
+  assert.equal(good.data.mode, "ai");
+  assert.equal(good.data.resolved.enabled, true);
+  assert.equal(good.data.resolved.key_last4, "abcd");
+  assert.equal(good.data.resolved.key_set, true);
+  assert.ok(Array.isArray(good.data.request.tools) && good.data.request.tools.length === 3);
+  assert.equal(good.data.request.max_tokens, 700);
+  assert.ok(good.data.request.approx_prompt_tokens > 0);
+  assert.ok(!JSON.stringify(good.data).includes(DASHBOARD_KEY), "the key never appears");
+
+  providerMode = "error";
+  try {
+    const bad = await superAdmin.req("GET", "/api/platform/ai/diagnose");
+    assert.equal(bad.status, 200, "a broken provider is diagnosed, not a 500");
+    assert.equal(bad.data.ok, false);
+    assert.equal(bad.data.httpStatus, 401);
+    assert.match(String(bad.data.error), /invalid api key provided/i, "verbatim provider message");
+    assert.equal(bad.data.mode, "knowledge-base");
+    assert.ok(!JSON.stringify(bad.data).includes(DASHBOARD_KEY));
+    assert.ok(!JSON.stringify(bad.data).includes(TEST_KEY));
+
+    // The card reads this without spending another provider call.
+    const card = await savedSettings();
+    assert.equal(card.data.last_probe.ok, false);
+    assert.equal(card.data.last_probe.httpStatus, 401);
+    assert.ok(!JSON.stringify(card.data).includes(DASHBOARD_KEY));
+  } finally {
+    providerMode = "ok";
+  }
+});
+
+test("the \"real\" connection test sends the actual turn; \"small\" is only a ping", async () => {
+  await useLiveProvider();
+
+  providerCalls = [];
+  const real = await superAdmin.api("POST", "/api/platform/ai/test", {
+    provider: "custom", base_url: FAKE_BASE, model: "gpt-test", api_key: TEST_KEY,
+  });
+  assert.equal(real.status, 200, JSON.stringify(real.data));
+  assert.equal(real.data.mode, "real", "real is the default");
+  assert.equal(real.data.ok, true);
+  assert.equal(real.data.httpStatus, 200);
+
+  const realBody = providerCalls[providerCalls.length - 1].body;
+  assert.equal(realBody.max_tokens, 700, "a real turn's budget");
+  assert.equal(Array.isArray(realBody.tools), true);
+  assert.equal(realBody.tools.length, 3, "the three public tools");
+  assert.equal(realBody.tool_choice, "auto");
+  assert.equal(realBody.messages[0].role, "system");
+  assert.ok(realBody.messages[0].content.length > 2000, "the real system prompt");
+  assert.match(realBody.messages[0].content, /KNOWLEDGE BASE/, "a real knowledge block");
+
+  providerCalls = [];
+  const small = await superAdmin.api("POST", "/api/platform/ai/test", {
+    provider: "custom", base_url: FAKE_BASE, model: "gpt-test", api_key: TEST_KEY, mode: "small",
+  });
+  assert.equal(small.data.ok, true);
+  assert.equal(small.data.mode, "small");
+  const smallBody = providerCalls[0].body;
+  assert.equal(smallBody.max_tokens, 8);
+  assert.equal(smallBody.tools, undefined);
+  assert.ok(realBody.messages[0].content.length > (smallBody.messages[0].content || "").length,
+    "the two probes are provably different payloads");
+
+  providerMode = "error";
+  try {
+    const failed = await superAdmin.api("POST", "/api/platform/ai/test", {
+      provider: "custom", base_url: FAKE_BASE, model: "gpt-test", api_key: TEST_KEY,
+    });
+    assert.equal(failed.data.ok, false);
+    assert.equal(failed.data.httpStatus, 401, "the HTTP status travels with the failure");
+    assert.match(String(failed.data.error), /invalid api key/i);
+    assert.ok(!JSON.stringify(failed.data).includes(TEST_KEY));
+  } finally {
+    providerMode = "ok";
+  }
+});
+
+/* ------------------------------------------------------------------------ */
+/* 10. the card itself, in a real DOM                                       */
 /* ------------------------------------------------------------------------ */
 /* The API tests prove the server; this proves the browser actually presents
    the provider card, fills the presets, keeps the key out of the form and
@@ -567,6 +800,111 @@ test("the provider card renders the form, the status strip and the key placehold
   assert.equal(tested.path, "/platform/ai/test");
   assert.equal(tested.body.base_url, "https://api.groq.com/openai/v1");
   assert.match(content.querySelector("#aiTestResult").textContent, /Connected · llama-3\.3-70b-versatile · 42 ms/);
+});
+
+test("a failed real probe turns the card red, with the reason and a diagnostics button", { skip: UI_SKIP }, async () => {
+  const dom = makeAiDom();
+  const doc = dom.window.document;
+  dom.window.API = {
+    get: async (p) => {
+      if (p === "/platform/ai/spaces") return { spaces: [], everywhere: {}, live: true, source: "settings", model: "gpt-4o-mini", whatsapp: {} };
+      if (p === "/platform/ai/knowledge") return { entries: [], live: true };
+      if (p === "/platform/ai/settings") {
+        return settingsPayload({
+          // The model is on, but the last REALISTIC probe failed — the exact
+          // state that used to look identical to a healthy configuration.
+          last_probe: {
+            ok: false, httpStatus: 429, latencyMs: 14, mode: "knowledge-base",
+            error: "429 Too Many Requests: Rate limit reached for openai/gpt-oss-120b on tokens per minute (TPM)",
+            tokens: { in: 0, out: 0 },
+          },
+        });
+      }
+      throw new Error("unexpected " + p);
+    },
+    put: async () => ({}),
+    post: async () => ({}),
+  };
+  const content = doc.getElementById("content");
+  const ctx = {
+    I: new Proxy({}, { get: () => "" }),
+    esc: (v) => String(v == null ? "" : v),
+    toast: () => {}, openModal: () => {}, closeModal: () => {}, bindRouteButtons: () => {},
+  };
+  await dom.window.EduSphereAI.render(ctx, content, "platform/ai");
+
+  // The Live pill stays (the model IS configured) — and the red pill says the
+  // last real turn did not use it.
+  assert.match(content.querySelector("#aiProviderStatus").textContent, /Live/);
+  const red = content.querySelector("#aiProviderFailure");
+  assert.ok(red, "a failed probe renders a red pill");
+  assert.match(red.textContent, /Model unavailable:/);
+  assert.match(red.textContent, /429/);
+  assert.ok(content.querySelector("[data-ai-diagnose]"), "Run diagnostics is reachable");
+
+  // Run diagnostics: one call, rendered verbatim, key never involved.
+  let called = null;
+  dom.window.API.get = async (p) => {
+    if (p === "/platform/ai/diagnose") {
+      called = p;
+      return {
+        ok: false, httpStatus: 400, latencyMs: 9, mode: "knowledge-base",
+        error: "400 Bad Request: tools is not supported by this model: llama-3.3-70b-versatile",
+        tokens: { in: 0, out: 0 },
+        resolved: { enabled: true, model: "llama-3.3-70b-versatile", key_set: true, key_last4: "1234" },
+      };
+    }
+    throw new Error("unexpected " + p);
+  };
+  content.querySelector("#aiProviderDiagnoseAgain").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(called, "/platform/ai/diagnose");
+  const result = content.querySelector("#aiDiagnoseResult").textContent;
+  assert.match(result, /Model unavailable/);
+  assert.match(result, /400 Bad Request/);
+  assert.match(result, /tools is not supported/);
+});
+
+test("Test connection sends the real probe and shows the HTTP status and provider message", { skip: UI_SKIP }, async () => {
+  const dom = makeAiDom();
+  const doc = dom.window.document;
+  dom.window.API = {
+    get: async (p) => {
+      if (p === "/platform/ai/spaces") return { spaces: [], everywhere: {}, live: true, model: "gpt-4o-mini", whatsapp: {} };
+      if (p === "/platform/ai/knowledge") return { entries: [], live: true };
+      if (p === "/platform/ai/settings") return settingsPayload();
+      throw new Error("unexpected " + p);
+    },
+    put: async () => ({}),
+    post: async () => ({}),
+  };
+  const content = doc.getElementById("content");
+  const ctx = {
+    I: new Proxy({}, { get: () => "" }),
+    esc: (v) => String(v == null ? "" : v),
+    toast: () => {}, openModal: () => {}, closeModal: () => {}, bindRouteButtons: () => {},
+  };
+  await dom.window.EduSphereAI.render(ctx, content, "platform/ai");
+
+  let body = null;
+  dom.window.API.post = async (p, payload) => {
+    body = payload;
+    return { ok: false, mode: "real", httpStatus: 429, latencyMs: 18, error: "429 Too Many Requests: Rate limit reached for gpt-oss-120b on tokens per minute (TPM)" };
+  };
+  content.querySelector("#aiProviderTest").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(body.mode, "real", "the browser asks for the realistic probe by default");
+  const shown = content.querySelector("#aiTestResult").textContent;
+  assert.match(shown, /Failed/);
+  assert.match(shown, /HTTP 429/, "the status the provider returned is visible");
+  assert.match(shown, /Rate limit reached/, "the provider's own message is visible");
+
+  // A green real probe shows the status too.
+  dom.window.API.post = async () => ({ ok: true, mode: "real", httpStatus: 200, latencyMs: 64, model: "gpt-4o-mini" });
+  content.querySelector("#aiProviderTest").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(content.querySelector("#aiTestResult").textContent, /Connected · gpt-4o-mini · 64 ms · HTTP 200/);
 });
 
 test("saving without typing a key omits it (so the stored key survives)", { skip: UI_SKIP }, async () => {

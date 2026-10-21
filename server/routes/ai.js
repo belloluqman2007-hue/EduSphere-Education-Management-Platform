@@ -56,12 +56,75 @@ function rateLimit({ windowMs, max }) {
     next();
   };
 }
-const appLimiter = rateLimit({ windowMs: 60 * 1000, max: 20 });
-const publicLimiter = rateLimit({ windowMs: 60 * 1000, max: 10 });
+const appLimiter = rateLimit({ windowMs: 60 * 1000, max: Math.max(1, Number(process.env.APP_AI_RATE_LIMIT || 20)) });
+// The public assistant is the surface a stranger drives from one IP, so it is
+// the tightest bucket. Tunable for the test suite and for a busy launch day.
+const publicLimiter = rateLimit({ windowMs: 60 * 1000, max: Math.max(1, Number(process.env.PUBLIC_AI_RATE_LIMIT || 10)) });
 /* "Test connection" spends a real (tiny) provider call, so it gets its own
    bucket. 5/minute is enough to fix a typo, useless for probing a key. */
 const AI_TEST_RATE_LIMIT = Math.max(1, Number(process.env.AI_TEST_RATE_LIMIT || 5));
 const aiTestLimiter = rateLimit({ windowMs: 60 * 1000, max: AI_TEST_RATE_LIMIT });
+
+/* ============================================================================
+   FALLBACK REPORTING AND THE REALISTIC PROBE
+   ----------------------------------------------------------------------------
+   A provider refusal used to be indistinguishable from "no key configured":
+   both produced mode "knowledge-base" with no explanation. These helpers are
+   what make the difference visible to the caller and to the dashboard.
+   ========================================================================== */
+
+/** The provider's HTTP status, when the failure had one. Never the key: the
+    message text is scrubbed in services/ai.js before it reaches us. */
+function providerHttpStatus(e) {
+  const raw = Number(e && (e.providerStatus || e.provider_status));
+  return Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+/** Attached to EVERY chat response, so "knowledge-base" is never again read as
+    "the model worked". */
+function fallbackFields(out) {
+  return {
+    fallback_reason: (out && out.fallback_reason) || null,
+    provider_status: out && out.provider_status != null ? out.provider_status : null,
+    degraded: Boolean(out && out.degraded),
+    note: (out && out.note) || null,
+  };
+}
+
+/** The route's safety net. ai.ask() already turns provider failures into a
+    reported fallback; this covers an unexpected throw (a database error while
+    saving, a bug) with the same promise: a real answer, plus the reason. */
+async function degradedTurn(surface, message, e) {
+  const hits = await ai.retrieve(surface, message, 3);
+  const base = ai.fallbackAnswer(surface, message, hits) || await ai.menuAnswer(surface);
+  const raw = Number(e && (e.providerStatus || e.provider_status));
+  const reason = String((e && e.message) || "The assistant hit an unexpected error.")
+    .replace(/\s+/g, " ").trim().slice(0, 300);
+  return Object.assign({}, base, {
+    toolCalls: base.toolCalls || [],
+    fallback_reason: reason,
+    provider_status: Number.isFinite(raw) && raw > 0 ? raw : null,
+    degraded: true,
+    note: `Model unavailable: ${reason}`,
+  });
+}
+
+/* The realistic probe. It is built by services/ai.js `probe()` from the SAME
+   system prompt, knowledge block, tool schemas and max_tokens a live public
+   turn uses — only here the question is fixed, so a green result is evidence
+   that the real chat path works rather than that a tiny request was accepted. */
+const PROBE_QUESTION = "How do I register my school, and how much does the Basic plan cost?";
+const PROBE_HISTORY = [
+  { role: "user", content: "Hello, I run a small Islamic school in Ijebu-Ode." },
+  { role: "assistant", content: "Welcome. I can explain registration, the plans and the prices. What would you like to know?" },
+  { role: "user", content: PROBE_QUESTION },
+];
+
+/** A REAL knowledge block from the live table (the public space's own scopes),
+    so the probe sends what a visitor's turn actually sends. */
+async function probeKnowledge() {
+  try { return await ai.retrieve("public", PROBE_QUESTION, 3); } catch (e) { return []; }
+}
 
 /* ============================================================================
    SHARED HELPERS FOR THE TOOLS
@@ -1068,21 +1131,21 @@ appRouter.post("/chat", appLimiter, asyncHandler(async (req, res) => {
     out = await ai.ask({ surface, messages, tools: toolsFor(surface, context), context });
   } catch (e) {
     // The model is down; the knowledge base (or the space's own menu) may
-    // still answer, and it is still scoped to this space.
-    const hits = await ai.retrieve(surface, message, 3);
-    out = ai.fallbackAnswer(surface, message, hits) || await ai.menuAnswer(surface);
+    // still answer, and it is still scoped to this space. The reason travels
+    // with it, so the caller can tell a refusal from "no model configured".
+    out = await degradedTurn(surface, message, e);
   }
 
   await ai.saveMessage(conv.id, "user", message);
   await ai.saveMessage(conv.id, "assistant", out.content, { sources: out.sources, tokens: out.tokens });
-  ok(res, {
+  ok(res, Object.assign({
     reply: out.content,
     sources: out.sources || [],
     mode: out.mode,
     surface,
     conversation_id: conv.id,
     actions: (out.toolCalls || []).map((t) => t.name),
-  });
+  }, fallbackFields(out)));
 }));
 
 appRouter.get("/history", asyncHandler(async (req, res) => {
@@ -1758,13 +1821,12 @@ publicRouter.post("/chat", publicLimiter, asyncHandler(async (req, res) => {
   try {
     out = await ai.ask({ surface: "public", messages, tools: publicTools(), context: { today: todayIso() } });
   } catch (e) {
-    const hits = await ai.retrieve("public", message, 3);
-    out = ai.fallbackAnswer("public", message, hits) || await ai.menuAnswer("public");
+    out = await degradedTurn("public", message, e);
   }
 
   await ai.saveMessage(conv.id, "user", message);
   await ai.saveMessage(conv.id, "assistant", out.content, { sources: out.sources, tokens: out.tokens });
-  ok(res, {
+  ok(res, Object.assign({
     reply: out.content,
     sources: out.sources || [],
     mode: out.mode,
@@ -1772,7 +1834,7 @@ publicRouter.post("/chat", publicLimiter, asyncHandler(async (req, res) => {
     surface: "public",
     whatsapp: await whatsappLine.line(),
     suggestions: spaces.publicSpace("public").suggestions,
-  });
+  }, fallbackFields(out)));
 }));
 
 /* ============================================================================
@@ -1901,14 +1963,16 @@ whatsappRouter.post("/webhook", express.json({ verify: (req, _res, buf) => { req
   try {
     out = await ai.ask({ surface: "whatsapp", messages, tools: whatsappTools(ctx), context: ctx });
   } catch (e) {
-    const hits = await ai.retrieve("whatsapp", incoming, 3);
-    out = ai.fallbackAnswer("whatsapp", incoming, hits) || await ai.menuAnswer("whatsapp");
+    out = await degradedTurn("whatsapp", incoming, e);
   }
 
   await ai.saveMessage(conv.id, "user", incoming);
   await ai.saveMessage(conv.id, "assistant", out.content, { sources: out.sources, tokens: out.tokens });
   const delivery = await sendWhatsApp(from, out.content);
-  res.json({ received: true, delivered: delivery.ok, provider: delivery.provider, mode: out.mode });
+  res.json(Object.assign({
+    received: true, delivered: delivery.ok, provider: delivery.provider, mode: out.mode,
+    surface: "whatsapp",
+  }, fallbackFields(out)));
 }));
 
 /* ============================================================================
@@ -1923,7 +1987,10 @@ platformRouter.use(requireSuperAdmin);
 
      GET  /api/platform/ai/settings   stored values + the RESOLVED answer
      PUT  /api/platform/ai/settings   save (blank/sentinel key = keep existing)
-     POST /api/platform/ai/test       one tiny call against UNSAVED values
+     POST /api/platform/ai/test       a probe against UNSAVED values
+                                      (mode "real" by default; "small" = 8 tokens)
+     GET  /api/platform/ai/diagnose   resolved config + one REALISTIC probe
+                                      that mirrors a live public turn
 
    The environment wins per field (services/ai-config.js), so the payload says
    exactly which layer supplied each value. The API key is NEVER returned —
@@ -1962,6 +2029,9 @@ async function aiSettingsPayload() {
     },
     presets: aiConfig.PRESETS,
     mask: aiConfig.SECRET_MASK,
+    // The last realistic probe, if one has run in this process. A failed one
+    // is what turns the card's pill red; the result never carries the key.
+    last_probe: ai.lastProbe(),
     whatsapp: await whatsappLine.line(),
   };
 }
@@ -2021,18 +2091,28 @@ platformRouter.put("/settings", asyncHandler(async (req, res) => {
 }));
 
 /**
- * POST /api/platform/ai/test — one tiny chat/completions call against the
- * values currently in the form, saved or not. Rate-limited because it spends a
- * real provider call. Returns `{ ok, latencyMs, model, error }`; a provider
- * refusal is a 200 with ok:false and the provider's own message, so
- * "invalid api key" / "model not found" is diagnosable. The key is scrubbed
- * from every error path by services/ai.js.
+ * POST /api/platform/ai/test — a probe against the values currently in the
+ * form, saved or not. Rate-limited because it spends a real provider call.
+ *
+ * `mode`:
+ *   "real" (default) — the same payload a live public turn sends: the public
+ *      system prompt, a real knowledge block, the three public tool schemas,
+ *      the same history cap and max_tokens 700. A green result HERE is
+ *      evidence that /api/public/ai/chat will use the model.
+ *   "small" — the historical 8-token one-liner. Kept because it is the fastest
+ *      way to prove a key is accepted at all, but it can pass while a real turn
+ *      fails, so it is no longer the default and must never be presented as
+ *      "the assistant works".
+ *
+ * A provider refusal is a 200 with ok:false, the provider's own scrubbed
+ * message and its HTTP status, so "invalid key" / "429" is diagnosable.
  */
 platformRouter.post("/test", aiTestLimiter, asyncHandler(async (req, res) => {
   const b = req.body || {};
   const current = await aiConfig.resolve();
   const provider = aiConfig.normalizeProvider(b.provider) || current.provider || "custom";
   const preset = aiConfig.PRESETS[provider] || aiConfig.PRESETS.custom;
+  const mode = String(b.mode || "real").trim().toLowerCase() === "small" ? "small" : "real";
 
   const submittedBase = String(b.base_url !== undefined ? b.base_url : (b.baseUrl || "")).trim();
   let baseUrl = current.baseUrl || preset.baseUrl || "";
@@ -2050,6 +2130,40 @@ platformRouter.post("/test", aiTestLimiter, asyncHandler(async (req, res) => {
   if (!apiKey) return err(res, 400, "Add an API key before testing.");
   if (!model) return err(res, 400, "Add a model name before testing.");
 
+  // The values typed into the form, exercised without saving them.
+  const config = { enabled: true, apiKey, baseUrl, model, provider };
+  // Only a probe of the LIVE configuration updates the card's "last real
+  // probe". Testing an unsaved key or URL must not claim the saved one failed.
+  const testsLiveConfig = apiKey === current.apiKey &&
+    baseUrl === (current.baseUrl || "") &&
+    model === (current.model || "") &&
+    provider === current.provider;
+
+  if (mode === "real") {
+    const out = await ai.probe({
+      surface: "public",
+      tools: publicTools(),
+      hits: await probeKnowledge(),
+      history: PROBE_HISTORY,
+      context: { today: todayIso() },
+      config,
+      timeoutMs: 20000,
+      record: testsLiveConfig,
+    });
+    return ok(res, {
+      ok: out.ok,
+      mode: "real",
+      latencyMs: out.latencyMs,
+      // The model the provider reports when it answers, otherwise the one asked
+      // for — the same contract the tiny probe always had.
+      model: out.model || model,
+      httpStatus: out.httpStatus,
+      error: out.error,
+      tokens: out.tokens,
+      request: out.request,
+    });
+  }
+
   const started = Date.now();
   try {
     const data = await ai.chatCompletion(
@@ -2058,22 +2172,77 @@ platformRouter.post("/test", aiTestLimiter, asyncHandler(async (req, res) => {
         max_tokens: 8,
         temperature: 0,
       },
-      { config: { enabled: true, apiKey, baseUrl, model }, timeoutMs: 15000 }
+      { config, timeoutMs: 15000 }
     );
     ok(res, {
       ok: true,
+      mode: "small",
       latencyMs: Date.now() - started,
       model: (data && data.model) || model,
+      httpStatus: 200,
       error: null,
     });
   } catch (e) {
     ok(res, {
       ok: false,
+      mode: "small",
       latencyMs: Date.now() - started,
       model,
+      httpStatus: providerHttpStatus(e),
       error: String((e && e.message) || "The provider refused the request."),
     });
   }
+}));
+
+/**
+ * GET /api/platform/ai/diagnose — why does the assistant fall back?
+ *
+ * Reads the resolved configuration (which layer supplied each field), then
+ * sends the REALISTIC public turn once and reports the provider's answer
+ * verbatim: `{ ok, latencyMs, httpStatus, error, mode, tokens }` plus the size
+ * of what was sent. Behind requireSuperAdmin (the whole platformRouter is).
+ * The API key is never returned, in any field.
+ */
+platformRouter.get("/diagnose", aiTestLimiter, asyncHandler(async (req, res) => {
+  const resolved = await aiConfig.resolve();
+  const summary = {
+    enabled: resolved.enabled,
+    provider: resolved.provider,
+    model: resolved.model,
+    base_url: resolved.baseUrl,
+    source: resolved.source,
+    key_set: resolved.keySet,
+    key_last4: resolved.keyLast4,
+    origins: resolved.origins,
+    locked: resolved.locked,
+  };
+
+  const hits = await probeKnowledge();
+  const out = await ai.probe({
+    surface: "public",
+    tools: publicTools(),
+    hits,
+    history: PROBE_HISTORY,
+    context: { today: todayIso() },
+    config: resolved,
+    timeoutMs: 20000,
+  });
+
+  ok(res, {
+    ok: out.ok,
+    resolved: summary,
+    surface: "public",
+    mode: out.mode,
+    latencyMs: out.latencyMs,
+    httpStatus: out.httpStatus,
+    error: out.error,
+    tokens: out.tokens,
+    request: out.request,
+    knowledge_entries: hits.length,
+    // The last result any real probe produced, so the dashboard can explain a
+    // failure without spending another provider call.
+    last_probe: ai.lastProbe(),
+  });
 }));
 
 /** The spaces, in the operator's language, with real counts. This is what the
