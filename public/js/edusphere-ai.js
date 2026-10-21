@@ -2,21 +2,32 @@
 /* ============================================================================
    EDUSPHERE AI — chat widget + knowledge base manager
    ----------------------------------------------------------------------------
-   Two things live here:
+   1. THE WIDGET. One floating launcher, but SEVEN different assistants:
 
-   1. THE WIDGET. One floating launcher/panel that adapts to who is looking at
-      it. A signed-in administrator talks to the assistant that can see their
-      own institution (usage, plan, invoices). Anybody else — a visitor on the
-      public website — gets the anonymous assistant, which can answer questions
-      about plans and pricing but has access to NO institution data at all.
-      The surface is chosen by the SERVER, from the session; the browser only
-      ever picks which endpoint to call, never what it is allowed to see.
+        public       the website — registration, plans, guides
+        super_admin  the platform console
+        admin        a school administrator's dashboard
+        teacher      the teacher workspace
+        student      the student portal
+        parent       the parent portal
 
-   2. THE KNOWLEDGE BASE MANAGER (route: platform/ai). Where the EduSphere team
-      writes the answers the assistant is allowed to give. Editing this is how
-      the assistant learns — no deployment required.
+      The space is decided by the SERVER from the signed-in role (`/api/ai/status`)
+      and never by this file. The browser only chooses between the anonymous
+      endpoint and the authenticated one; it cannot claim to be the operator.
+      The header, greeting, suggested questions, capabilities and the hand-off
+      button all come from the server's own description of that space, so the
+      widget can never drift from the prompt behind it.
 
-   Embedding elsewhere (a marketing site, a school's public page) is one line:
+   2. WHATSAPP. On the public website the panel offers "Chat on WhatsApp", and
+      a second green launcher opens the same conversation directly in WhatsApp.
+      Both use the number the server reports; if no number is configured the
+      buttons are simply not rendered — the site never opens a dead link.
+
+   3. THE KNOWLEDGE BASE MANAGER (route: platform/ai). Where the EduSphere team
+      writes what the assistant is allowed to say, per space. The space cards
+      and the scope picker come from `/api/platform/ai/spaces`.
+
+   Embedding elsewhere is one line (CSP-safe, no inline script handler):
      <script src="/js/edusphere-ai.js"></script>
      <script>EduSphereAI.mount({ surface: "public" })</script>
    ========================================================================== */
@@ -29,20 +40,48 @@
     plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
     edit: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
+    check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.2 4.2L19.5 6.5"/></svg>`,
+    whatsapp: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.5 14.4c-.3-.2-1.8-.9-2-1-.3-.1-.5-.2-.7.1-.2.3-.7 1-.9 1.2-.2.2-.4.2-.7.1-.3-.1-1.2-.5-2.3-1.4-.9-.8-1.4-1.7-1.6-2-.2-.3 0-.5.1-.6l.5-.6c.1-.2.2-.3.3-.5.1-.2 0-.4 0-.5 0-.2-.7-1.6-.9-2.2-.2-.5-.5-.5-.7-.5h-.6c-.2 0-.5.1-.8.4-.3.3-1 1-1 2.4s1 2.8 1.2 3c.1.2 1.7 2.7 4.2 3.7 2.5 1 2.5.7 3 .6.5 0 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2-.1-.2-.3-.2-.6-.3z"/><path d="M12 2a10 10 0 0 0-8.6 15L2 22l5.1-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2z"/></svg>`,
+    external: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></svg>`,
+    info: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.01"/></svg>`,
   };
 
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  const SUGGESTIONS = {
-    app: ["What plan am I on?", "How much of my student limit have I used?", "How do I upgrade?", "When does my subscription expire?"],
-    public: ["How much does EduSphere cost?", "What is the difference between Free, Basic and Premium?", "What can EduSphere do?", "How do I get started?"],
+  /* The server is authoritative; these are only the fallbacks used if the
+     status endpoint cannot be reached (offline, or a very old deployment). */
+  const FALLBACK_SPACE = {
+    public: {
+      key: "public",
+      label: "EduSphere AI",
+      subtitle: "Registration, plans & getting started",
+      greeting: "Hello! I am EduSphere AI. Ask me about registering your school, our plans and prices, or how the platform works.",
+      suggestions: ["How do I register my school?", "How much does EduSphere cost?", "What does EduSphere do?", "What happens after I apply?"],
+      capabilities: [],
+      handoff: { kind: "whatsapp", label: "Chat on WhatsApp" },
+    },
+    admin: {
+      key: "admin",
+      label: "EduSphere AI · Admin",
+      subtitle: "Your institution's assistant",
+      greeting: "Hello! I am EduSphere AI for your institution. Ask me about your plan, usage, students, attendance, fees — or how to do something in the dashboard.",
+      suggestions: ["How is my institution doing this term?", "How much of my student limit have I used?", "How do I upgrade?", "Where do I add a student?"],
+      capabilities: [],
+      handoff: { kind: "support", label: "Chat & Support" },
+    },
   };
 
-  /* The AI copilot is the Premium offer made usable: four capabilities, each
-     behind its own feature key. The widget asks the server what this
-     institution may use, renders a chip per capability, and a locked chip opens
-     the SAME upsell dialog a gated button anywhere else in the app opens. */
-  const COPILOT_ORDER = ["risk_alerts", "report_comments", "questions", "analytics_qa"];
+  function fallbackSpace(surface) {
+    if (FALLBACK_SPACE[surface]) return FALLBACK_SPACE[surface];
+    return Object.assign({}, FALLBACK_SPACE.admin, {
+      key: surface,
+      label: surface === "super_admin" ? "EduSphere AI · Platform" : `EduSphere AI · ${surface}`,
+      subtitle: "Ask me how to do something",
+    });
+  }
+
+  const IS_PUBLIC = (surface) => surface === "public";
+  const HAS_COPILOT = (surface) => surface === "admin" || surface === "super_admin";
 
   /* ======================================================================
      WIDGET
@@ -59,33 +98,66 @@
     return id;
   }
 
-  function build(surface, opts) {
+  function roleSurface(role) {
+    const r = String(role || "").toLowerCase();
+    if (r === "super_admin") return "super_admin";
+    if (r === "madrasa_admin" || r === "admin") return "admin";
+    if (r === "teacher" || r === "student" || r === "parent") return r;
+    return "public";
+  }
+
+  function build(opts) {
+    const surface = opts.surface;
+    const info = opts.info || {};
+    const space = info.space || fallbackSpace(surface);
+    const wa = info.whatsapp || {};
+    const suggestions = (space.suggestions && space.suggestions.length) ? space.suggestions : fallbackSpace(surface).suggestions;
+    const links = info.links || {};
+
     const el = document.createElement("div");
-    el.className = "ai-root";
+    el.className = `ai-root ai-root--${surface}`;
     el.innerHTML = `
+      ${IS_PUBLIC(surface) && wa.available ? `
+        <a class="ai-wa-launcher" href="${esc(wa.link)}" target="_blank" rel="noopener"
+           aria-label="Chat with EduSphere on WhatsApp" title="Chat with EduSphere on WhatsApp">
+          ${ICON.whatsapp}<span>WhatsApp</span>
+        </a>` : ""}
       <button class="ai-launcher" type="button" aria-expanded="false" aria-controls="aiPanel">
-        ${ICON.spark}<span>Ask EduSphere AI</span>
+        ${ICON.spark}<span>${IS_PUBLIC(surface) ? "Ask EduSphere" : "Ask EduSphere AI"}</span>
         <span class="ai-launcher-badge" aria-hidden="true"></span>
       </button>
-      <section class="ai-panel" id="aiPanel" hidden role="dialog" aria-label="EduSphere AI assistant" aria-modal="false">
+      <section class="ai-panel" id="aiPanel" hidden role="dialog" aria-label="${esc(space.label)}" aria-modal="false">
         <header class="ai-panel-head">
           <div class="ai-panel-avatar">${ICON.spark}</div>
-          <div>
-            <div class="ai-panel-title">EduSphere AI</div>
-            <div class="ai-panel-sub">${surface === "app" ? "Knows your institution" : "Ask about EduSphere"}</div>
+          <div class="ai-panel-heading">
+            <div class="ai-panel-title">${esc(space.label)}</div>
+            <div class="ai-panel-sub">${esc(space.subtitle)}</div>
           </div>
           <button class="ai-panel-refresh" type="button" title="Start a new conversation" aria-label="Start a new conversation">${ICON.refresh}</button>
           <button class="ai-panel-close" type="button" aria-label="Close assistant">${ICON.close}</button>
         </header>
+        ${IS_PUBLIC(surface) && wa.available ? `
+          <a class="ai-wa-cta" href="${esc(wa.link)}" target="_blank" rel="noopener">
+            <span class="ai-wa-cta-icon">${ICON.whatsapp}</span>
+            <span><strong>Chat on WhatsApp</strong><small>Continue with the same assistant, and a person whenever you ask.</small></span>
+            ${ICON.external}
+          </a>` : ""}
         <div class="ai-messages" role="log" aria-live="polite" aria-atomic="false"></div>
         <div class="ai-suggestions"></div>
+        ${IS_PUBLIC(surface) ? `
+          <div class="ai-action-links">
+            <a href="${esc(links.register_islamic_school || "/register-madrasa")}" data-route="/register-madrasa">Register an Islamic school</a>
+            <a href="${esc(links.register_western_academy || "/register-academy")}" data-route="/register-academy">Register a Western academy</a>
+          </div>` : ""}
         <div class="ai-copilot" hidden></div>
         <form class="ai-form" autocomplete="off">
           <label class="ai-sr" for="aiInput">Message EduSphere AI</label>
           <input class="ai-input" id="aiInput" type="text" placeholder="Ask anything…" maxlength="2000">
           <button class="ai-send" type="submit" aria-label="Send">${ICON.send}</button>
         </form>
-        <div class="ai-foot">EduSphere AI can be wrong about details — confirm anything important with our team.</div>
+        <div class="ai-foot">${IS_PUBLIC(surface)
+          ? "EduSphere AI answers from our own help content. Confirm anything important with our team."
+          : "EduSphere AI can be wrong about details — check the screen or confirm with support before acting on a number."}</div>
       </section>`;
     document.body.appendChild(el);
 
@@ -102,10 +174,20 @@
     el.querySelector(".ai-panel-close").addEventListener("click", close);
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) close(); });
 
+    /** The knowledge base uses **bold** for the important phrase. The bubble
+        is textContent by default, which would print the asterisks — so escape
+        first, then promote the bold. Nothing else is interpreted: a URL or a
+        path in an answer stays literal, and no HTML from the server or the
+        model can ever be executed. */
+    function format(text) {
+      return esc(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    }
+
     function bubble(role, text, sources) {
       const d = document.createElement("div");
       d.className = "ai-msg " + (role === "user" ? "ai-msg-user" : "ai-msg-bot");
-      d.textContent = text;
+      if (role === "user") d.textContent = text;
+      else d.innerHTML = format(text);
       if (sources && sources.length) {
         const s = document.createElement("div");
         s.className = "ai-msg-sources";
@@ -145,16 +227,14 @@
 
     el.querySelector(".ai-panel-refresh").addEventListener("click", async () => {
       messages.innerHTML = "";
-      if (surface === "app") { try { await window.API.post("/ai/reset", {}); } catch (e) { /* non-fatal */ } }
+      if (!IS_PUBLIC(surface)) { try { await window.API.post("/ai/reset", {}); } catch (e) { /* non-fatal */ } }
       greet();
     });
 
     function greet() {
-      chips(SUGGESTIONS[surface] || SUGGESTIONS.public);
-      bubble("bot", surface === "app"
-        ? "Hello! I am EduSphere AI. I can see your plan, usage and invoices — ask me anything about your subscription, or how to do something in the platform."
-        : "Hello! I am EduSphere AI. Ask me about EduSphere, our plans and pricing, or how to get your institution set up.");
-      if (surface === "app") copilotRow();
+      chips(suggestions);
+      bubble("bot", space.greeting || fallbackSpace(surface).greeting);
+      if (HAS_COPILOT(surface)) copilotRow();
     }
 
     /* --------------------------- AI copilot row -------------------------- */
@@ -171,11 +251,12 @@
       if (!copilotCaps.length) return;
       const box = el.querySelector(".ai-copilot");
       if (!box) return;
+      const order = ["risk_alerts", "report_comments", "questions", "analytics_qa"];
       box.hidden = false;
       box.innerHTML = `<span class="ai-copilot-label">AI copilot</span>` +
         copilotCaps
           .slice()
-          .sort((a, b) => COPILOT_ORDER.indexOf(a.capability) - COPILOT_ORDER.indexOf(b.capability))
+          .sort((a, b) => order.indexOf(a.capability) - order.indexOf(b.capability))
           .map((cap) => `
             <button type="button" class="ai-chip ai-copilot-chip ${cap.entitled ? "" : "is-locked"}"
                     data-copilot="${esc(cap.capability)}" aria-label="${esc(cap.label)}${cap.entitled ? "" : " (Premium feature)"}"
@@ -355,13 +436,14 @@
       send.disabled = true;
       typing(true);
       try {
-        const body = { message: text };
-        if (surface !== "app") body.session_id = sessionId();
-        const res = surface === "app"
-          ? await window.API.post("/ai/chat", body)
-          : await window.API.public.post("/ai/chat", body);
+        let res;
+        if (IS_PUBLIC(surface)) {
+          res = await window.API.public.post("/ai/chat", { message: text, session_id: sessionId() });
+        } else {
+          res = await window.API.post("/ai/chat", { message: text });
+        }
         typing(false);
-        bubble("bot", res.reply || "I could not answer that. Please ask the EduSphere team through Chat & Support.", res.sources);
+        bubble("bot", res.reply || fallbackReply(), res.sources);
       } catch (e) {
         typing(false);
         bubble("bot", (e && e.message) ? e.message : "Sorry — I could not reach the assistant. Please try again in a moment.");
@@ -369,6 +451,12 @@
         send.disabled = false;
         input.focus();
       }
+    }
+
+    function fallbackReply() {
+      return IS_PUBLIC(surface)
+        ? "I could not answer that here. Try asking about registration, plans or how EduSphere works — or use Chat on WhatsApp to reach our team."
+        : "I could not answer that. Try rephrasing, or use Chat & Support so the EduSphere team can help.";
     }
 
     form.addEventListener("submit", (e) => {
@@ -379,30 +467,33 @@
     });
 
     greet();
-    if (opts && opts.open) open();
-    widget = { el, open, close, sendMessage };
+    if (opts.open) open();
+    widget = { el, open, close, sendMessage, surface, space };
     return widget;
   }
 
   /**
    * Mount the assistant.
-   * @param {{surface?: "app"|"public", open?: boolean}} [options]
-   *   Leave `surface` unset to auto-detect: a valid session uses the in-app
-   *   assistant, otherwise the anonymous public one.
+   * @param {{surface?: string, open?: boolean}} [options]
+   *   Leave `surface` unset to let the SERVER decide from the session.
    */
   async function mount(options) {
-    const opts = options || {};
+    const opts = Object.assign({}, options || {});
     if (widget) return widget;
-    let surface = opts.surface;
-    if (!surface) {
-      surface = "public";
-      try {
-        const me = await window.API.me();
-        // /api/auth/me answers { loggedIn: false } for an anonymous visitor.
-        if (me && me.loggedIn !== false && me.user) surface = "app";
-      } catch (e) { /* not signed in → public assistant */ }
-    }
-    return build(surface, opts);
+
+    let me = null;
+    try { me = await window.API.me(); } catch (e) { me = null; }
+    const loggedIn = Boolean(me && me.loggedIn !== false && me.user);
+    let surface = opts.surface || (loggedIn ? roleSurface(me.role || (me.user && me.user.role)) : "public");
+
+    let info = null;
+    try {
+      info = loggedIn ? await window.API.get("/ai/status") : await window.API.public.get("/ai/info");
+    } catch (e) { info = null; }
+    // The server's answer wins: it read the role from the session.
+    if (info && info.surface) surface = info.surface;
+
+    return build({ surface, info: info || {}, open: opts.open });
   }
 
   function unmount() {
@@ -416,40 +507,87 @@
   const ADMIN_ROUTES = new Set(["platform/ai"]);
   function handles(route) { return ADMIN_ROUTES.has(route); }
 
-  const SCOPES = ["public", "app", "whatsapp", "all"];
+  const FALLBACK_SPACES = [
+    { key: "public", label: "Public website", audience: "Visitors — no account", scopes: ["public", "all"] },
+    { key: "super_admin", label: "Platform console", audience: "EduSphere operator", scopes: ["super_admin", "all"] },
+    { key: "admin", label: "School dashboard", audience: "Institution administrator", scopes: ["admin", "all"] },
+    { key: "teacher", label: "Teacher workspace", audience: "Teachers and staff accounts", scopes: ["teacher", "all"] },
+    { key: "student", label: "Student portal", audience: "Students", scopes: ["student", "all"] },
+    { key: "parent", label: "Parent portal", audience: "Parents and guardians", scopes: ["parent", "all"] },
+    { key: "whatsapp", label: "WhatsApp", audience: "Anyone messaging the line", scopes: ["whatsapp", "all"] },
+  ];
 
   async function render(ctx, content, route) {
-    const { I, esc: e2, toast, openModal, closeModal, bindRouteButtons } = ctx;
-    let data;
+    const { I, esc: e2, toast } = ctx;
+    let spaceData;
+    let knowledge;
     try {
-      data = await window.API.get("/platform/ai/knowledge");
+      [spaceData, knowledge] = await Promise.all([
+        window.API.get("/platform/ai/spaces"),
+        window.API.get("/platform/ai/knowledge"),
+      ]);
     } catch (err) {
       content.innerHTML = `<div class="dash-page-head"><div><div class="dash-crumb">Platform</div><h2>AI Assistant</h2></div></div>
         <div class="dash-card"><div class="dash-card-pad"><p>${e2(err.message || "Could not load the knowledge base.")}</p></div></div>`;
       return;
     }
-    const entries = data.entries || [];
-    const live = data.live;
+    const spaceList = (spaceData.spaces || []).length ? spaceData.spaces : FALLBACK_SPACES;
+    const everywhere = spaceData.everywhere || { scope: "all", label: "Everywhere", answers: 0 };
+    const entries = knowledge.entries || [];
+    const live = spaceData.live !== undefined ? spaceData.live : knowledge.live;
 
     content.innerHTML = `
       <div class="dash-page-head">
         <div><div class="dash-crumb">Platform</div><h2>AI Assistant</h2>
-          <p>The answers EduSphere AI is allowed to give, on the website, in the dashboard and on WhatsApp.</p></div>
+          <p>One assistant, a different job in every space. Each space reads only its own answers — a student can never be shown the administrator's instructions.</p></div>
         <div class="dash-actions">
           <button class="dash-btn dash-btn-primary" id="aiAdd">${I.plus} New answer</button>
         </div>
       </div>
+
       <div class="dash-card" style="margin-bottom:18px"><div class="dash-card-pad">
         <strong>Model status:</strong>
         <span class="dash-pill ${live ? "ok" : "warn"}">${live ? "Live" : "Knowledge base only"}</span>
-        ${live ? `<span class="sub-muted"> · ${e2(data.model || "")}</span>`
-               : `<span class="sub-muted"> · No AI_API_KEY is set, so the assistant answers straight from the table below. That works — it is just less conversational.</span>`}
+        ${live ? `<span class="sub-muted"> · ${e2(spaceData.model || "")}</span>`
+               : `<span class="sub-muted"> · No AI_API_KEY is set, so every space answers straight from the table below plus live data. That works — it is just less conversational.</span>`}
+        <div class="sub-muted" style="margin-top:6px">
+          WhatsApp line:
+          ${spaceData.whatsapp && spaceData.whatsapp.available
+            ? `<strong>${e2(spaceData.whatsapp.display || spaceData.whatsapp.number)}</strong>
+               ${spaceData.whatsapp.api_enabled ? " · assistant connected" : " · link only (add the Meta credentials to answer automatically)"}`
+            : `<strong>not configured</strong> · set it under Platform → Settings → WhatsApp line, or WHATSAPP_AI_DISPLAY_NUMBER.`}
+        </div>
       </div></div>
-      <div class="dash-card"><div class="dash-table-wrap"><table class="dash-table">
-        <thead><tr><th>Scope</th><th>Topic</th><th>Question</th><th>Answer</th><th>Status</th><th style="text-align:right"></th></tr></thead>
-        <tbody>
+
+      <div class="ai-space-grid">
+        ${spaceList.map((sp) => `
+          <button type="button" class="ai-space-card" data-space="${e2(sp.key)}">
+            <span class="ai-space-card-head"><strong>${e2(sp.label)}</strong><span class="dash-pill info">${Number(sp.answers || 0)}</span></span>
+            <span class="ai-space-card-sub">${e2(sp.subtitle || "")}</span>
+            <span class="ai-space-card-aud">${e2(sp.audience || "")}</span>
+          </button>`).join("")}
+        <button type="button" class="ai-space-card ai-space-card--all" data-space="all">
+          <span class="ai-space-card-head"><strong>${e2(everywhere.label || "Everywhere")}</strong><span class="dash-pill info">${Number(everywhere.answers || 0)}</span></span>
+          <span class="ai-space-card-sub">Read by every space</span>
+          <span class="ai-space-card-aud">About the platform itself</span>
+        </button>
+      </div>
+
+      <div class="dash-card" style="margin-top:18px"><div class="dash-card-pad ai-filter-bar">
+        <label for="aiScopeFilter">Show</label>
+        <select id="aiScopeFilter">
+          <option value="">All spaces</option>
+          ${spaceList.map((sp) => `<option value="${e2(sp.key)}">${e2(sp.label)}</option>`).join("")}
+          <option value="all">Everywhere</option>
+        </select>
+        <span class="sub-muted">${entries.length} answer${entries.length === 1 ? "" : "s"} in total</span>
+      </div></div>
+
+      <div class="dash-card" style="margin-top:14px"><div class="dash-table-wrap"><table class="dash-table">
+        <thead><tr><th>Space</th><th>Topic</th><th>Question</th><th>Answer</th><th>Status</th><th style="text-align:right"></th></tr></thead>
+        <tbody id="aiKbRows">
           ${entries.length ? entries.map((k) => `
-            <tr>
+            <tr data-scope="${e2(k.scope)}">
               <td><span class="dash-pill info">${e2(k.scope)}</span></td>
               <td>${e2(k.topic || "—")}</td>
               <td><strong>${e2(k.question)}</strong></td>
@@ -465,33 +603,50 @@
       </table></div></div>
     `;
 
-    content.querySelector("#aiAdd").addEventListener("click", () => openEntryModal(null, content, ctx));
+    const scopeFilter = content.querySelector("#aiScopeFilter");
+    function applyFilter(scope) {
+      content.querySelectorAll("#aiKbRows tr[data-scope]").forEach((tr) => {
+        tr.hidden = Boolean(scope) && tr.getAttribute("data-scope") !== scope;
+      });
+      if (scopeFilter && scopeFilter.value !== scope && scope !== undefined) scopeFilter.value = scope;
+    }
+    scopeFilter.addEventListener("change", () => applyFilter(scopeFilter.value));
+
+    content.querySelector("#aiAdd").addEventListener("click", () => openEntryModal(null, content, ctx, spaceList));
+    content.querySelectorAll("[data-space]").forEach((b) => b.addEventListener("click", () => {
+      const scope = b.getAttribute("data-space");
+      applyFilter(scope);
+      content.querySelector("#aiKbRows").scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
     content.querySelectorAll("[data-ai-edit]").forEach((b) => b.addEventListener("click", () => {
       const k = entries.find((x) => String(x.id) === b.getAttribute("data-ai-edit"));
-      openEntryModal(k, content, ctx);
+      openEntryModal(k, content, ctx, spaceList);
     }));
     content.querySelectorAll("[data-ai-del]").forEach((b) => b.addEventListener("click", async () => {
       if (!window.confirm("Delete this answer? The assistant will stop using it immediately.")) return;
       try { await window.API.del("/platform/ai/knowledge/" + b.getAttribute("data-ai-del")); toast("Deleted.", "success"); render(ctx, content, route); }
       catch (err) { toast(err.message || "Could not delete.", "error"); }
     }));
-    if (bindRouteButtons) bindRouteButtons(content);
+    if (ctx.bindRouteButtons) ctx.bindRouteButtons(content);
   }
 
-  function openEntryModal(entry, content, ctx) {
+  function openEntryModal(entry, content, ctx, spaceList) {
     const { esc: e2, toast, openModal, closeModal } = ctx;
     const isNew = !entry;
+    const list = (spaceList || FALLBACK_SPACES).slice();
+    const scopes = list.map((s) => ({ key: s.key, label: s.label })).concat([{ key: "all", label: "Everywhere" }]);
     const wrap = openModal(isNew ? "New answer" : "Edit answer", `
       <form id="aiKbForm">
         <div class="dash-form-grid">
           <div class="dash-field">
             <label>Where it applies</label>
-            <select name="scope">${SCOPES.map((s) => `<option value="${s}" ${entry && entry.scope === s ? "selected" : ""}>${e2(s === "all" ? "Everywhere" : s)}</option>`).join("")}</select>
+            <select name="scope">${scopes.map((s) => `<option value="${s.key}" ${entry && entry.scope === s.key ? "selected" : (!entry && s.key === "public" ? "selected" : "")}>${e2(s.label)}</option>`).join("")}</select>
+            <small class="sub-muted">The assistant only reads answers in the space it is in, plus "Everywhere".</small>
           </div>
           <div class="dash-field"><label>Topic</label><input name="topic" value="${e2(entry ? entry.topic : "")}" placeholder="Pricing, Limits, Setup…"></div>
-          <div class="dash-field" style="grid-column:1/-1"><label>Question <span class="req">*</span></label><input name="question" required value="${e2(entry ? entry.question : "")}" placeholder="How much does EduSphere cost?"></div>
+          <div class="dash-field" style="grid-column:1/-1"><label>Question <span class="req">*</span></label><input name="question" required value="${e2(entry ? entry.question : "")}" placeholder="How do I register my school?"></div>
           <div class="dash-field" style="grid-column:1/-1"><label>Answer <span class="req">*</span></label><textarea name="answer" rows="6" required placeholder="The exact wording the assistant should use.">${e2(entry ? entry.answer : "")}</textarea></div>
-          <div class="dash-field" style="grid-column:1/-1"><label>Keywords</label><input name="keywords" value="${e2(entry ? entry.keywords : "")}" placeholder="price cost how much naira plan"></div>
+          <div class="dash-field" style="grid-column:1/-1"><label>Keywords</label><input name="keywords" value="${e2(entry ? entry.keywords : "")}" placeholder="register signup application form steps"></div>
           <div class="dash-field"><label>Status</label>
             <select name="is_active">
               <option value="1" ${!entry || entry.is_active ? "selected" : ""}>Active</option>
@@ -502,7 +657,7 @@
         </div>
         <div class="dash-modal-foot" style="margin:18px -22px -20px;border-top:1px solid var(--d-line);">
           <button class="dash-btn dash-btn-ghost" type="button" id="aiKbCancel">Cancel</button>
-          <button class="dash-btn dash-btn-primary" type="submit">${ICON.check || ""} ${isNew ? "Add answer" : "Save"}</button>
+          <button class="dash-btn dash-btn-primary" type="submit">${ICON.check} ${isNew ? "Add answer" : "Save"}</button>
         </div>
       </form>`);
     wrap.querySelector("#aiKbCancel").addEventListener("click", closeModal);
@@ -524,5 +679,5 @@
     });
   }
 
-  window.EduSphereAI = { mount, unmount, handles, render, ADMIN_ROUTES };
+  window.EduSphereAI = { mount, unmount, handles, render, ADMIN_ROUTES, roleSurface };
 })();

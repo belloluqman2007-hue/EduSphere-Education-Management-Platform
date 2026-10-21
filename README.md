@@ -448,6 +448,18 @@ render.yaml        NEW Render service definition (production)
   `madrasa_id`. A separate platform-wide view for the super admin covers tenant
   growth, plan mix, largest madaris and activity volume.
 
+- **EduSphere AI — one assistant, seven spaces** — the assistant on the
+  public website answers registration, plans and guide questions and hands a
+  visitor straight to WhatsApp (`wa.me`) where the same assistant continues; the
+  platform console gets a read-only operator assistant (totals, registrations,
+  payment requests, tickets); the school dashboard gets plan, usage, people,
+  attendance and fee data with an upgrade *request*; and the teacher, student
+  and parent workspaces each get their own space that knows only that person's
+  own class / record / children. The space is chosen by the **server** from the
+  signed-in role and each space reads only its own knowledge scope, so a student
+  is never answered with the school's billing instructions. Every space works
+  with no `AI_API_KEY`: a confident knowledge match, otherwise a real menu of
+  what it can help with. See [`docs/AI-SPACES.md`](docs/AI-SPACES.md).
 - **Per-school share links** — every registered madrasa gets its own link
   (`/s/<slug>`, with `/school/<slug>` and `/m/<slug>` aliases) that opens
   that school's own public page directly instead of the platform landing.

@@ -44,6 +44,8 @@ const SETTING_DEFAULTS = {
   billing_grace_days: "14",
   billing_warn_percent: "80",
   billing_enabled: "1",
+  whatsapp_ai_number: "",
+  whatsapp_ai_message: "",
 };
 
 /* ------------------------------ date helpers ----------------------------- */
