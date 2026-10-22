@@ -36,6 +36,7 @@ const myInstitution = require("../services/my-institution");
 const subscription = require("../services/subscription");
 const catalogue = require("../services/plan-catalogue");
 const cardCreds = require("../services/card-credentials");
+const ngLocations = require("../services/ng-locations");
 
 const router = express.Router();
 const REPORT_TTL_SECONDS = 15 * 60;
@@ -80,7 +81,7 @@ const CARD_SELECT = `
          m.accreditation_details, m.country, m.alt_phone, m.admissions_email, m.emergency_contact,
          m.opening_time, m.closing_time, m.school_days, m.levels_offered,
          m.islamic_education_info, m.western_education_info, m.languages_of_instruction,
-         m.student_capacity, m.boarding_status, m.admission_status,
+         m.student_capacity, m.boarding_status, m.admission_status, m.town,
          m.secondary_color, m.background_color, m.text_color, m.islamic_color, m.western_color,
          m.font_family, m.header_style, m.footer_style, m.button_style, m.card_style,
          m.homepage_layout, m.website_theme, m.website_published,
@@ -123,6 +124,10 @@ function cardOut(m, req) {
     sharePath: "/s/" + m.slug,
     legacySharePath: "/s/" + m.slug,
     publicPath: publicPath(m),
+    // Real, aggregate only: how many students and teachers the school has on
+    // roll. Counts, never names — this is the public directory.
+    studentCount: Number(m.student_count || 0),
+    teacherCount: Number(m.teacher_count || 0),
     websiteUrl: publicUrl(req, m),
     customDomain: m.custom_domain || "",
     nameEn: m.name_en,
@@ -141,6 +146,7 @@ function cardOut(m, req) {
     address: ifShown(m.show_address, m.address),
     city: m.city || "",
     state: m.state_name || "",
+    town: m.town || "",
     country: m.country || "",
     descriptionEn: m.description_en || "",
     descriptionAr: m.description_ar || "",
@@ -296,10 +302,61 @@ router.get("/madaris", publicLimiter, asyncHandler(async (req, res) => {
   if (!site.directoryEnabled) return ok(res, { madaris: [], cities: [], directoryEnabled: false });
   const q = cleanStr(req.query.q, 80).toLowerCase();
   const city = cleanStr(req.query.city, 80).toLowerCase();
+  // The directory search is State -> City -> Town. State and city are matched
+  // exactly (the selects offer only real values), the town loosely enough to
+  // also match institutions recorded before the town column existed — their
+  // town is usually the first thing in the address.
+  const state = cleanStr(req.query.state, 80).toLowerCase();
+  const town = cleanStr(req.query.town, 80).toLowerCase();
+  const category = cleanStr(req.query.category, 40).toLowerCase();
   let rows = await db.all(CARD_SELECT + " WHERE m.status = 'active' AND m.public_listing = 1 ORDER BY m.name_en");
-  if (q) rows = rows.filter((m) => [m.name_en, m.name_ar, m.slug, m.city, m.description_en, m.motto_en].filter(Boolean).join(" ").toLowerCase().includes(q));
-  if (city) rows = rows.filter((m) => String(m.city || "").toLowerCase() === city);
+  if (category) rows = rows.filter((m) => String(m.category || "islamic").toLowerCase() === category);
+  if (q) rows = rows.filter((m) => [m.name_en, m.name_ar, m.slug, m.city, m.town, m.description_en, m.motto_en].filter(Boolean).join(" ").toLowerCase().includes(q));
+  if (state) rows = rows.filter((m) => String(m.state_name || "").toLowerCase() === state || ngLocations.canonicalState(m.state_name) === ngLocations.canonicalState(state));
+  if (city) {
+    // A city has one canonical spelling and possibly an alias ("Ijebu-Ode" is
+    // stored both ways by older records), so a filter never silently misses one.
+    const spellings = (ngLocations.citySpellings(state, city) || []).map((v) => v.toLowerCase());
+    rows = rows.filter((m) => spellings.length
+      ? spellings.includes(String(m.city || "").toLowerCase())
+      : String(m.city || "").toLowerCase() === city);
+  }
+  if (town) rows = rows.filter((m) => String(m.town || "").toLowerCase() === town || String(m.address || "").toLowerCase().includes(town));
   ok(res, { madaris: rows.map((row) => cardOut(row, req)), cities: [...new Set(rows.map((m) => m.city).filter(Boolean))].sort() });
+}));
+
+/* ------------------------------ locations ------------------------------
+   The cascading State -> City -> Town pickers used by the public directory
+   search and by both registration forms. One dataset (services/ng-locations),
+   three consumers — no free-text spelling to filter on later:
+
+     GET /api/public/locations                    every state
+     GET /api/public/locations?state=Lagos        that state's cities (LGAs)
+     GET /api/public/locations?state=Lagos&city=Agege   that city's towns
+   ------------------------------------------------------------------------ */
+router.get("/locations", publicLimiter, asyncHandler(async (req, res) => {
+  const state = cleanStr(req.query.state, 80);
+  const city = cleanStr(req.query.city, 80);
+  if (state && city) {
+    const towns = ngLocations.towns(state, city);
+    return ok(res, {
+      state: ngLocations.canonicalState(state) || state,
+      city: ngLocations.canonicalCityName(city),
+      towns,
+    });
+  }
+  if (state) {
+    const key = ngLocations.canonicalState(state);
+    return ok(res, { state: key || state, cities: key ? ngLocations.cities(key) : [] });
+  }
+  if (cleanStr(req.query.cities, 4)) {
+    // One request for the whole state → city index: the registration forms can
+    // then fill the city select the moment a state is picked, with no waiting.
+    const byState = {};
+    for (const name of ngLocations.states()) byState[name] = ngLocations.cities(name);
+    return ok(res, { states: Object.keys(byState), citiesByState: byState });
+  }
+  ok(res, { states: ngLocations.states() });
 }));
 
 router.get(["/madaris/:slug", "/schools/:slug", "/institutions/:slug"], publicLimiter, asyncHandler(async (req, res) => {
@@ -828,6 +885,7 @@ const registerHandler = asyncHandler(async (req, res) => {
   const country = cleanStr(madrasaData.country, 80) || "Nigeria";
   const state = cleanStr(madrasaData.state, 80);
   const city = cleanStr(madrasaData.city, 80);
+  const town = cleanStr(madrasaData.town, 120);
   const address = cleanStr(madrasaData.address, 255);
   const phone = cleanStr(madrasaData.phone, 60);
 
@@ -907,14 +965,14 @@ const registerHandler = asyncHandler(async (req, res) => {
     await db.run(
       `INSERT INTO madrasa_registrations
         (registration_id, madrasa_id, status, name, official_name, logo_data, description,
-         year_established, institution_type, category, country, state_name, city, address, maps_link,
+         year_established, institution_type, category, country, state_name, city, town, address, maps_link,
          phone, whatsapp, email, website, facebook, instagram, subjects_json, student_count,
          teacher_count, class_count, age_groups_json, admin_full_name, admin_position,
          admin_email, admin_phone, admin_username, admin_password_hash, ip, submitted_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         registrationId, madrasaId, "Pending", name, officialName, logo ? logo.slice(0, 500000) : "", description,
-        yearEstablished, institutionType, category, country, state, city, address, mapsLink,
+        yearEstablished, institutionType, category, country, state, city, town, address, mapsLink,
         phone, whatsapp, madrasaEmail, website, facebook, instagram, JSON.stringify(subjects),
         studentCount, teacherCount, classCount, JSON.stringify(ageGroups), adminFullName,
         adminPosition, adminEmail, adminPhone, adminUsername, adminPasswordHash, cleanStr(req.ip, 64), databaseSubmittedAt,
@@ -1014,6 +1072,7 @@ router.get("/registration-status/:id", publicLimiter, asyncHandler(async (req, r
     madrasaName: row.name,
     officialName: row.official_name,
     city: row.city,
+    town: row.town,
     state: row.state_name,
     adminFullName: row.admin_full_name,
     adminPosition: row.admin_position,
@@ -1054,6 +1113,7 @@ router.get("/registration-status", publicLimiter, asyncHandler(async (req, res) 
     madrasaName: row.name,
     officialName: row.official_name,
     city: row.city,
+    town: row.town,
     state: row.state_name,
     adminFullName: row.admin_full_name,
     adminPosition: row.admin_position,

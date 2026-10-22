@@ -335,23 +335,6 @@
   }
 
 
-  /* Western Academy is intentionally rendered as a dedicated public experience.
-     The directory data below is presentation-only until the academy API is ready. */
-  const westernAcademies = [
-    {
-      name: "Northbridge Academy", mark: "N", tone: "northbridge", location: "Lekki, Lagos", state: "Lagos", city: "Lekki", type: "Independent School", level: "Secondary", verified: true,
-      description: "A future-focused secondary school where strong academics meet creativity, technology and leadership.", programs: ["STEAM", "Arts", "Leadership"]
-    },
-    {
-      name: "Crestfield College", mark: "C", tone: "crestfield", location: "Ibadan, Oyo", state: "Oyo", city: "Ibadan", type: "College / Sixth Form", level: "College / Sixth Form", verified: true,
-      description: "Helping ambitious learners prepare for university, professional study and life beyond the classroom.", programs: ["A-Level", "Business", "Sciences"]
-    },
-    {
-      name: "Brighton Gate School", mark: "B", tone: "brighton", location: "Wuse, Abuja", state: "FCT", city: "Abuja", type: "Private School", level: "Primary", verified: false,
-      description: "A warm, curious learning community built around confident foundations and whole-child development.", programs: ["Primary", "Digital Skills", "Creative Arts"]
-    }
-  ];
-
   const westernWhyCards = [
     ["Academic Excellence", "Rigorous learning pathways that help students think deeply, achieve strongly and keep progressing.", "graduation"],
     ["Qualified Teachers", "Discover academies led by knowledgeable educators who bring subjects to life.", "users"],
@@ -433,19 +416,161 @@
       </article>`).join("");
   }
 
-  function westernAcademyCard(academy) {
-    const searchTerms = [academy.name, academy.location, academy.type, academy.level, ...academy.programs].join(" ").toLowerCase();
+  /* ------------------------------------------------------------------ *
+     PUBLIC DIRECTORY — real registered institutions
+     ------------------------------------------------------------------ *
+     The demo academies that used to fill this page are gone. The directory
+     lists institutions that actually registered on EduSphere and chose to be
+     publicly listed, straight from /api/public/madaris — nothing on this page
+     is invented. Search is name + the Nigerian State -> City -> Town cascade
+     (services/ng-locations.js), and a search that matches nothing offers the
+     other registered institutions as choices instead of a dead end.        */
+  function directoryCardMarkup(m) {
+    const name = String(m.nameEn || "Institution");
+    const location = [m.town, m.city, m.state].filter(Boolean).join(", ");
+    const type = m.institutionType || (m.category === "western" ? "Academy" : "Islamic school");
+    const blurb = m.shortDescription || m.mottoEn || m.tagline ||
+      (m.category === "western" ? "A registered academy on EduSphere." : "A registered Islamic school on EduSphere.");
+    const students = Number(m.studentCount || 0);
     return `
-      <article class="academy-card reveal" data-academy-card data-search="${searchTerms}" data-state="${academy.state}" data-city="${academy.city}" data-type="${academy.type}" data-level="${academy.level}" data-programs="${academy.programs.join("|")}">
+      <article class="academy-card reveal" data-directory-card>
         <div class="academy-card-top">
-          <span class="academy-logo academy-logo--${academy.tone}" aria-label="${academy.name} logo">${academy.mark}</span>
-          <div class="academy-card-top-copy"><span class="academy-location">${icons.pin}${academy.location}</span>${academy.verified ? `<span class="academy-verified">${icons.shieldCheck} Verified Academy</span>` : `<span class="academy-type">${academy.type}</span>`}</div>
+          <span class="academy-logo academy-logo--directory" aria-hidden="true">${safe(name.trim().charAt(0).toUpperCase() || "E")}</span>
+          <div class="academy-card-top-copy">
+            <span class="academy-location">${icons.pin}${safe(location || "Nigeria")}</span>
+            <span class="academy-type">${safe(type)}</span>
+          </div>
         </div>
-        <h3>${academy.name}</h3>
-        <p>${academy.description}</p>
-        <div class="academy-programs"><span>Programs</span><div>${academy.programs.map((program) => `<b>${program}</b>`).join("")}</div></div>
-        <a class="academy-view-link" href="#find-academy">View Academy <span>${icons.arrow}</span></a>
+        <h3>${safe(name)}</h3>
+        <p>${safe(blurb)}</p>
+        <div class="academy-programs"><span>Students on roll</span><div><b>${students}</b></div></div>
+        <a class="academy-view-link" href="${safe(m.publicPath || "/")}" data-route="${safe(m.publicPath || "/")}">View school <span>${icons.arrow}</span></a>
       </article>`;
+  }
+
+  function directorySectionMarkup(kind) {
+    const western = kind === "western";
+    return `
+        <section class="western-section western-featured" id="academies" aria-labelledby="directory-title">
+          <div class="western-container">
+            <div class="western-section-heading western-heading-row reveal">
+              <div><p class="western-kicker">Registered institutions</p><h2 id="directory-title">${western ? "Registered Academies" : "Registered Islamic Schools"}</h2></div>
+              <a class="western-inline-link" href="#directory-search">Find an institution <span>${icons.arrow}</span></a>
+            </div>
+            <form class="western-search-form" id="directory-search" novalidate>
+              <div class="western-search-grid">
+                <label><span>Institution name</span><span class="western-input-wrap">${icons.search}<input id="directory-name" type="search" placeholder="Search by name" autocomplete="off"></span></label>
+                <label><span>State</span><span class="western-select-wrap"><select id="directory-state"><option value="">All states</option></select></span></label>
+                <label><span>City</span><span class="western-select-wrap"><select id="directory-city" disabled><option value="">All cities</option></select></span></label>
+                <label><span>Town</span><span class="western-select-wrap"><select id="directory-town" disabled><option value="">All towns</option></select></span></label>
+              </div>
+              <div class="western-search-actions">
+                <button class="western-button western-button--sky" type="submit">Search institutions ${icons.search}</button>
+                <button class="western-clear-search" type="button" id="directory-reset">Clear filters</button>
+                <p id="directory-status" aria-live="polite">Loading registered institutions…</p>
+              </div>
+            </form>
+            <div class="academy-grid" id="directory-grid"></div>
+          </div>
+        </section>`;
+  }
+
+  /** Loads the directory, wires the cascade and the search for one category. */
+  function initDirectoryEvents(kind) {
+    const form = document.getElementById("directory-search");
+    const grid = document.getElementById("directory-grid");
+    if (!form || !grid) return;
+    const status = document.getElementById("directory-status");
+    const nameInput = document.getElementById("directory-name");
+    const stateSel = document.getElementById("directory-state");
+    const citySel = document.getElementById("directory-city");
+    const townSel = document.getElementById("directory-town");
+    const resetBtn = document.getElementById("directory-reset");
+
+    const load = async (path) => {
+      try { return await window.API.public.get(path); } catch (e) { return {}; }
+    };
+    const fill = (sel, values, allLabel) => {
+      if (!sel) return;
+      const current = sel.value;
+      sel.innerHTML = `<option value="">${allLabel}</option>` +
+        values.map((v) => `<option value="${safe(v)}">${safe(v)}</option>`).join("");
+      sel.value = values.includes(current) ? current : "";
+    };
+
+    /* Every Nigerian state, then the cities (LGAs) under the chosen state,
+       then the towns under the chosen city — one request per step. */
+    load("/locations").then((data) => fill(stateSel, data.states || [], "All states"));
+
+    if (stateSel) stateSel.addEventListener("change", async () => {
+      if (citySel) { citySel.innerHTML = `<option value="">All cities</option>`; citySel.disabled = true; }
+      if (townSel) { townSel.innerHTML = `<option value="">All towns</option>`; townSel.disabled = true; }
+      if (!stateSel.value) return;
+      const data = await load("/locations?state=" + encodeURIComponent(stateSel.value));
+      const cities = data.cities || [];
+      fill(citySel, cities, "All cities");
+      citySel.disabled = !cities.length;
+    });
+
+    if (citySel) citySel.addEventListener("change", async () => {
+      if (townSel) { townSel.innerHTML = `<option value="">All towns</option>`; townSel.disabled = true; }
+      if (!citySel.value || !stateSel || !stateSel.value) return;
+      const data = await load(`/locations?state=${encodeURIComponent(stateSel.value)}&city=${encodeURIComponent(citySel.value)}`);
+      const towns = data.towns || [];
+      fill(townSel, towns, "All towns");
+      townSel.disabled = !towns.length;
+    });
+
+    const params = () => {
+      const p = new URLSearchParams();
+      p.set("category", kind);
+      const q = String((nameInput || {}).value || "").trim();
+      if (q) p.set("q", q);
+      if (stateSel && stateSel.value) p.set("state", stateSel.value);
+      if (citySel && citySel.value) p.set("city", citySel.value);
+      if (townSel && townSel.value) p.set("town", townSel.value);
+      return p.toString();
+    };
+
+    const renderCards = (list, heading) => {
+      grid.innerHTML = (heading ? `<p class="directory-alt-heading">${safe(heading)}</p>` : "") +
+        list.map(directoryCardMarkup).join("");
+      bindRouteLinks(grid);
+      revealIn(grid);
+    };
+
+    const search = async () => {
+      if (status) status.textContent = "Searching…";
+      const data = await load("/madaris?" + params());
+      const list = data.madaris || [];
+      if (list.length) {
+        if (status) status.textContent = `${list.length} registered institution${list.length === 1 ? "" : "s"} found.`;
+        renderCards(list, "");
+        return;
+      }
+      // Nothing matches: offer the other registered institutions as choices
+      // rather than an empty page. Same category first, then any category.
+      if (status) status.textContent = "No institution matches that search.";
+      let alt = await load("/madaris?category=" + kind);
+      let others = alt.madaris || [];
+      if (!others.length) {
+        alt = await load("/madaris");
+        others = alt.madaris || [];
+      }
+      if (others.length) {
+        renderCards(others, "That search found nothing — here are other registered institutions you can explore:");
+      } else {
+        grid.innerHTML = `<p class="directory-empty">No institutions are listed in this directory yet. Registered institutions appear here as soon as they choose to be listed publicly.</p>`;
+      }
+    };
+
+    form.addEventListener("submit", (event) => { event.preventDefault(); search(); });
+    if (resetBtn) resetBtn.addEventListener("click", () => {
+      if (nameInput) nameInput.value = "";
+      if (stateSel) { stateSel.value = ""; stateSel.dispatchEvent(new Event("change")); }
+      search();
+    });
+    search();
   }
 
   function renderWesternAcademy() {
@@ -482,35 +607,12 @@
           </div>
         </section>
 
-        <section class="western-section western-featured" id="academies" aria-labelledby="featured-academies-title">
-          <div class="western-container">
-            <div class="western-section-heading western-heading-row reveal"><div><p class="western-kicker">Discover your next school</p><h2 id="featured-academies-title">Featured Academies</h2></div><a class="western-inline-link" href="#find-academy">Find an Academy <span>${icons.arrow}</span></a></div>
-            <div class="academy-grid">${westernAcademies.map(westernAcademyCard).join("")}</div>
-            <p class="western-demo-note">Featured academies are demo content for this public directory design.</p>
-          </div>
-        </section>
-
-        <section class="western-find-section" id="find-academy" aria-labelledby="find-academy-title">
-          <div class="western-container">
-            <div class="western-find-shell reveal">
-              <div class="western-find-heading"><p class="western-kicker western-kicker--light">Find a school</p><h2 id="find-academy-title">Find an Academy</h2><p>Search by what matters to your family, then narrow the directory to the right fit.</p></div>
-              <form class="western-search-form" id="academy-search-form" novalidate>
-                <div class="western-search-grid">
-                  <label><span>School name</span><span class="western-input-wrap">${icons.search}<input id="academy-name-search" type="search" placeholder="e.g. Northbridge Academy" autocomplete="off"></span></label>
-                  <label><span>Location</span><span class="western-input-wrap">${icons.pin}<input id="academy-location-search" type="search" placeholder="City or area" autocomplete="off"></span></label>
-                  <label><span>Program</span><span class="western-select-wrap"><select id="academy-program-search"><option value="">Any program</option><option>STEAM</option><option>Arts</option><option>Leadership</option><option>A-Level</option><option>Business</option><option>Sciences</option><option>Primary</option><option>Digital Skills</option></select></span></label>
-                </div>
-                <div class="western-filter-row"><span class="western-filter-title">${icons.filter} Filters</span><label><span class="sr-only">State</span><select id="academy-state-filter"><option value="">State</option><option>Lagos</option><option>Oyo</option><option>FCT</option></select></label><label><span class="sr-only">City</span><select id="academy-city-filter"><option value="">City</option><option>Lekki</option><option>Ibadan</option><option>Abuja</option></select></label><label><span class="sr-only">School Type</span><select id="academy-type-filter"><option value="">School Type</option><option>Independent School</option><option>College / Sixth Form</option><option>Private School</option></select></label><label><span class="sr-only">Education Level</span><select id="academy-level-filter"><option value="">Education Level</option><option>Primary</option><option>Secondary</option><option>College / Sixth Form</option></select></label><label><span class="sr-only">Programs</span><select id="academy-program-filter"><option value="">Programs</option><option>STEAM</option><option>A-Level</option><option>Primary</option><option>Digital Skills</option></select></label></div>
-                <div class="western-search-actions"><button class="western-button western-button--sky" type="submit">Search Academies ${icons.search}</button><button class="western-clear-search" type="button" id="academy-search-reset">Clear filters</button><p id="academy-search-result" aria-live="polite">Showing 3 featured academies</p></div>
-              </form>
-            </div>
-          </div>
-        </section>
+        ${directorySectionMarkup("western")}
 
         <section class="western-section western-levels" id="education-levels" aria-labelledby="education-levels-title">
           <div class="western-container">
             <div class="western-section-heading centered reveal"><p class="western-kicker">Explore by stage</p><h2 id="education-levels-title">Education Levels</h2><p>Find a school at the stage that is right for your learner now.</p></div>
-            <div class="western-level-grid">${westernLevels.map(([title, copy, num, icon]) => `<a class="western-level-card reveal" href="#find-academy"><span class="western-level-number">${num}</span><span class="western-level-icon">${icons[icon]}</span><h3>${title}</h3><p>${copy}</p><span class="western-level-arrow">${icons.arrow}</span></a>`).join("")}</div>
+            <div class="western-level-grid">${westernLevels.map(([title, copy, num, icon]) => `<a class="western-level-card reveal" href="#directory-search"><span class="western-level-number">${num}</span><span class="western-level-icon">${icons[icon]}</span><h3>${title}</h3><p>${copy}</p><span class="western-level-arrow">${icons.arrow}</span></a>`).join("")}</div>
           </div>
         </section>
 
@@ -545,27 +647,8 @@
       menu.querySelectorAll("a").forEach((link) => link.addEventListener("click", closeMenu));
     }
 
-    const form = document.getElementById("academy-search-form");
-    const cards = Array.from(document.querySelectorAll("[data-academy-card]"));
-    const result = document.getElementById("academy-search-result");
-    const input = (id) => document.getElementById(id);
-    const values = ["academy-name-search", "academy-location-search", "academy-program-search", "academy-state-filter", "academy-city-filter", "academy-type-filter", "academy-level-filter", "academy-program-filter"].map(input).filter(Boolean);
-    const value = (id) => String((input(id) || {}).value || "").trim().toLowerCase();
-    const applySearch = () => {
-      const name = value("academy-name-search"); const location = value("academy-location-search"); const program = value("academy-program-search");
-      const state = value("academy-state-filter"); const city = value("academy-city-filter"); const type = value("academy-type-filter"); const level = value("academy-level-filter"); const programs = value("academy-program-filter");
-      let visible = 0;
-      cards.forEach((card) => {
-        const matches = (!name || card.dataset.search.includes(name)) && (!location || card.dataset.search.includes(location)) && (!program || card.dataset.programs.toLowerCase().includes(program)) && (!state || card.dataset.state.toLowerCase() === state) && (!city || card.dataset.city.toLowerCase() === city) && (!type || card.dataset.type.toLowerCase() === type) && (!level || card.dataset.level.toLowerCase() === level) && (!programs || card.dataset.programs.toLowerCase().includes(programs));
-        card.hidden = !matches;
-        if (matches) visible += 1;
-      });
-      if (result) result.textContent = visible ? `Showing ${visible} featured ${visible === 1 ? "academy" : "academies"}` : "No featured academies match those filters yet.";
-    };
-    if (form) form.addEventListener("submit", (event) => { event.preventDefault(); applySearch(); });
-    values.forEach((control) => control.addEventListener(control.tagName === "SELECT" ? "change" : "input", applySearch));
-    const reset = document.getElementById("academy-search-reset");
-    if (reset) reset.addEventListener("click", () => { if (form) form.reset(); applySearch(); });
+    // Real registered academies + the State -> City -> Town search.
+    initDirectoryEvents("western");
   }
 
 
@@ -580,11 +663,9 @@
       eyebrow: "EduSphere / Islamic Schools",
       theme: "islamic",
       audienceTitle: "A home for every Islamic learning path.",
-      audienceCopy: "We are preparing a thoughtful public directory that makes it easier for learners and families to discover the institutions and programmes that meet their needs.",
+      audienceCopy: "A public directory of the Islamic schools and learning institutions on EduSphere — searchable by name, state, city and town, so learners and families can discover the institutions and programmes that meet their needs.",
       types: ["Madrasa", "Arabic School", "Qur'an School", "Islamic Learning Centre"],
       typeIcon: "book",
-      listingTitle: "The Islamic school directory is taking shape.",
-      listingCopy: "Search, location, featured institutions and school registration will live here as the EduSphere Islamic Schools network grows.",
       registerTitle: "Bring your Islamic school to EduSphere.",
       registerCopy: "Create your institution profile today and join the foundation of a connected Islamic education community.",
       registerLabel: "Register an Islamic School",
@@ -602,11 +683,9 @@
       eyebrow: "EduSphere / Western Academies",
       theme: "western",
       audienceTitle: "A home for every academic journey.",
-      audienceCopy: "We are preparing a clear public directory that will help families find modern schools and discover the classes and programmes that suit their goals.",
+      audienceCopy: "A clear public directory of the academies on EduSphere — searchable by name, state, city and town — that helps families find modern schools and discover the classes and programmes that suit their goals.",
       types: ["Primary School", "Secondary School", "College", "Other Academy"],
       typeIcon: "school",
-      listingTitle: "The Western Academy directory is taking shape.",
-      listingCopy: "Search, location, featured schools and academy registration will live here as the EduSphere Western Academies network grows.",
       registerTitle: "Bring your academy to EduSphere.",
       registerCopy: "Create your academy profile today, publish your programs and education levels, and manage your school from one dashboard.",
       registerLabel: "Register a Western Academy",
@@ -673,13 +752,7 @@
           </div>
         </section>
 
-        <section class="directory-preview-section" id="directory-preview" aria-labelledby="directory-title">
-          <div class="container directory-preview-card reveal">
-            <div class="directory-preview-icon">${icons.search}</div>
-            <div><p class="section-kicker">Coming next</p><h2 id="directory-title">${data.listingTitle}</h2><p>${data.listingCopy}</p></div>
-            <a class="text-link directory-home-link" href="/" data-route="/">Return to EduSphere <span>${icons.arrow}</span></a>
-          </div>
-        </section>
+        ${directorySectionMarkup("islamic")}
 
         <section class="category-register-section" id="${kind === "western" ? "western-registration" : "register-islamic-school"}" aria-labelledby="register-title">
           <div class="container category-register-card reveal">
@@ -690,6 +763,7 @@
       </main>
       ${footerMarkup()}`;
     initPageEvents();
+    initDirectoryEvents("islamic");
   }
 
   function initPageEvents() {
@@ -724,6 +798,14 @@
     const year = document.getElementById("year");
     if (year) year.textContent = new Date().getFullYear();
 
+    revealIn(document);
+    bindRouteLinks(document);
+  }
+
+  /* Scroll-reveal for elements added after the first paint (the directory
+     cards are fetched, so they arrive later than the page). */
+  function revealIn(scope) {
+    const root = scope || document;
     if ("IntersectionObserver" in window && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
         if (entry.isIntersecting) {
@@ -731,12 +813,18 @@
           observer.unobserve(entry.target);
         }
       }), { threshold: 0.12 });
-      document.querySelectorAll(".reveal").forEach((element) => observer.observe(element));
+      root.querySelectorAll(".reveal:not(.is-visible)").forEach((element) => observer.observe(element));
     } else {
-      document.querySelectorAll(".reveal").forEach((element) => element.classList.add("is-visible"));
+      root.querySelectorAll(".reveal:not(.is-visible)").forEach((element) => element.classList.add("is-visible"));
     }
+  }
 
-    document.querySelectorAll("[data-route]").forEach((link) => {
+  /* Client-side routing for links added after boot. */
+  function bindRouteLinks(scope) {
+    const root = scope || document;
+    root.querySelectorAll("a[data-route]").forEach((link) => {
+      if (link.dataset.routeBound) return;
+      link.dataset.routeBound = "1";
       link.addEventListener("click", (event) => {
         const route = link.getAttribute("data-route");
         if (!route) return;
@@ -1013,6 +1101,13 @@
   async function renderSchoolPublic(slug) {
     document.body.classList.remove("western-experience", "western-menu-open", "islamic-experience", "menu-open");
     document.body.classList.add("school-site-active");
+    /* This page belongs to ONE institution, so the assistant mounted here is
+       that school's own: it answers only from what this school published and
+       knows nothing about any other school. Set before the fetch so the boot
+       script swaps the assistant as the route changes. */
+    document.body.dataset.aiSurface = "school";
+    document.body.dataset.aiSchool = String(slug || "");
+    try { window.dispatchEvent(new Event("edusphere:ai-surface")); } catch (e) { /* no event support */ }
     app.innerHTML = `<main id="main-content" class="school-public"><div class="school-public-loading">Loading the school website…</div></main>`;
     try {
       const data = await window.API.public.get(`/schools/${encodeURIComponent(slug)}`);
@@ -1996,6 +2091,10 @@
     // scroll-lock class) behind on the platform pages.
     document.body.classList.remove("school-site-active", "school-nav-open");
     document.body.style.backgroundColor = "";
+    // Every page starts as "not a school page"; a school route sets the
+    // school surface below, and the assistant swaps accordingly.
+    document.body.dataset.aiSurface = "";
+    document.body.dataset.aiSchool = "";
 
     if (hash.startsWith("#/app") || hash === "#/login" || hash.startsWith("#/login") ||
         // The admin section has real addresses of its own — /login is the
@@ -2039,6 +2138,10 @@
     } else {
       renderHomepage();
     }
+
+    // The assistant follows the page: public site, one school's own website,
+    // or the signed-in workspace for this session.
+    try { window.dispatchEvent(new Event("edusphere:route")); } catch (e) { /* no event support */ }
   }
 
   window.BelloRouter = {

@@ -3935,6 +3935,7 @@
               <td style="white-space:nowrap;text-align:right;">
                 <button class="dash-btn dash-btn-ghost dash-btn-sm" data-view="${m.id}">${I.external} View</button>
                 <button class="dash-btn dash-btn-sm ${m.status === "active" ? "dash-btn-danger" : "dash-btn-primary"}" data-status="${m.id}" data-to="${m.status === "active" ? "suspended" : "active"}">${m.status === "active" ? "Suspend" : "Activate"}</button>
+                <button class="dash-btn dash-btn-danger dash-btn-sm" data-delete="${m.id}" data-delete-name="${esc(m.name_en)}" title="Permanently delete this institution and all of its data">${I.trash} Delete</button>
               </td>
             </tr>`).join("")
             : `<tr class="dash-empty-row"><td colspan="7">No institutions yet — add the first one.</td></tr>`}
@@ -3961,6 +3962,57 @@
         toast("Plan updated.", "success");
       } catch (err) { toast(err.message || "Could not update plan.", "error"); pageSuperMadaris(content); }
     }));
+    content.querySelectorAll("[data-delete]").forEach((b) => b.addEventListener("click", () => {
+      confirmDeleteInstitution(b.getAttribute("data-delete"), b.getAttribute("data-delete-name"), () => pageSuperMadaris(content));
+    }));
+  }
+
+  /* ---------------------- delete an institution ------------------------- *
+     Permanent, irreversible, and confirmed the honest way: the operator has
+     to type the institution's name. Everything the school owns — students,
+     teachers, classes, results, fees, files — goes with it, so the copy says
+     exactly that and the button stays disabled until the name matches.      */
+  function confirmDeleteInstitution(id, name, onDone) {
+    const wrap = openModal("Delete institution permanently", `
+      <div class="dash-danger-zone">
+        <p><strong>This cannot be undone.</strong> Deleting <strong>${esc(name || "this institution")}</strong> removes the
+        institution and <em>everything</em> it owns — its administrator and staff accounts, students, classes,
+        subjects, attendance, results and report cards, fees and payments, library, payroll, leave, messages,
+        uploaded files and its public website. Its public listing disappears from the directory immediately.</p>
+        <p class="hint">If you only need to stop the school using the platform, suspend it instead — that is reversible.</p>
+        <form id="saDeleteForm" autocomplete="off">
+          <div class="dash-field">
+            <label for="saDeleteConfirm">Type the institution name to confirm</label>
+            <input id="saDeleteConfirm" name="confirm" placeholder="${esc(name || "")}" autocomplete="off">
+          </div>
+          <div class="dash-modal-foot" style="margin:18px -22px -20px;border-top:1px solid var(--d-line);">
+            <button class="dash-btn dash-btn-ghost" type="button" id="saDeleteCancel">Cancel</button>
+            <button class="dash-btn dash-btn-danger" type="submit" id="saDeleteGo" disabled>${I.trash} Delete permanently</button>
+          </div>
+        </form>
+      </div>`);
+    const input = wrap.querySelector("#saDeleteConfirm");
+    const go = wrap.querySelector("#saDeleteGo");
+    const wanted = String(name || "").trim().toLowerCase();
+    input.addEventListener("input", () => { go.disabled = input.value.trim().toLowerCase() !== wanted; });
+    wrap.querySelector("#saDeleteCancel").addEventListener("click", closeModal);
+    wrap.querySelector("#saDeleteForm").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (go.disabled) return;
+      go.disabled = true;
+      go.textContent = "Deleting…";
+      try {
+        const r = await window.API.del("/platform/madaris/" + id);
+        toast(`Institution deleted${r && r.rowsRemoved ? ` — ${r.rowsRemoved} record(s) removed` : ""}.`, "success");
+        closeModal();
+        if (onDone) onDone();
+      } catch (err) {
+        toast(err.message || "Could not delete the institution.", "error");
+        go.disabled = false;
+        go.textContent = "Delete permanently";
+      }
+    });
+    input.focus();
   }
 
   function renderAddMadrasaModal(plans, content) {
@@ -4033,6 +4085,7 @@
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
           <button class="dash-btn dash-btn-ghost" data-nav-route="platform/madaris">${I.chev} Back</button>
           <button class="dash-btn ${m.status === "active" ? "dash-btn-danger" : "dash-btn-primary"}" id="saToggleStatus">${m.status === "active" ? "Suspend" : "Activate"}</button>
+          <button class="dash-btn dash-btn-danger" id="saDeleteMadrasa" title="Permanently delete this institution and all of its data">${I.trash} Delete institution</button>
         </div>
       </div>
 
@@ -4098,6 +4151,10 @@
         toast("Status updated.", "success");
         pageSuperMadarisDetail(content, id);
       } catch (err) { toast(err.message || "Could not update status.", "error"); }
+    });
+    const deleteBtn = content.querySelector("#saDeleteMadrasa");
+    if (deleteBtn) deleteBtn.addEventListener("click", () => {
+      confirmDeleteInstitution(num, m.name_en, () => go("platform/madaris"));
     });
     content.querySelectorAll("[data-nav-route]").forEach((el) => el.addEventListener("click", (e) => { e.preventDefault(); go(el.getAttribute("data-nav-route")); }));
     content.querySelector("#saEditForm").addEventListener("submit", async (e) => {

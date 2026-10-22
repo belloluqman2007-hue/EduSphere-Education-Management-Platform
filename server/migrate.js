@@ -3020,6 +3020,35 @@ const MIGRATIONS = [
       await ensureIndex("ai_knowledge", "idx_ai_kb_scope", ["scope", "is_active", "sort_order"]);
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  {
+    // PUBLIC DIRECTORY LOCATION — the town under the city.
+    // The public directory search filters State -> City (LGA) -> Town, so an
+    // institution's town has to be stored rather than buried in the free-text
+    // address. Added to both the registration queue and the tenant table so an
+    // approved registration keeps the town the applicant picked.
+    id: "044_institution_town",
+    up: async (api, dialect) => {
+      const hasColumn = async (table, column) => {
+        if (dialect === "mysql") {
+          const rows = await api.all(
+            "SELECT COLUMN_NAME AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+            [table, column]
+          );
+          return rows.length > 0;
+        }
+        const rows = await api.all(`PRAGMA table_info(${table})`);
+        return rows.some((r) => String(r.name) === column);
+      };
+      const addColumn = async (table, column, ddl) => {
+        if (await hasColumn(table, column)) return; // re-runnable on a half-applied database
+        await api.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+      };
+      await addColumn("madaris", "town", "VARCHAR(120) NOT NULL DEFAULT ''");
+      await addColumn("madrasa_registrations", "town", "VARCHAR(120) NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 async function migrate(options = {}) {

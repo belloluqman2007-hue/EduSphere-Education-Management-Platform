@@ -448,9 +448,13 @@ render.yaml        NEW Render service definition (production)
   `madrasa_id`. A separate platform-wide view for the super admin covers tenant
   growth, plan mix, largest madaris and activity volume.
 
-- **EduSphere AI — one assistant, seven spaces** — the assistant on the
+- **EduSphere AI — one assistant, eight spaces** — the assistant on the
   public website answers registration, plans and guide questions and hands a
-  visitor straight to WhatsApp (`wa.me`) where the same assistant continues; the
+  visitor straight to WhatsApp (`wa.me`) where the same assistant continues;
+  every institution's own public website gets its **own confidential
+  assistant** that answers only from what that school published (who it is,
+  its programmes, admissions, news and events) and can never see another
+  school's data or any private record; the
   platform console gets a read-only operator assistant (totals, registrations,
   payment requests, tickets); the school dashboard gets plan, usage, people,
   attendance and fee data with an upgrade *request*; and the teacher, student
@@ -459,7 +463,26 @@ render.yaml        NEW Render service definition (production)
   signed-in role and each space reads only its own knowledge scope, so a student
   is never answered with the school's billing instructions. Every space works
   with no `AI_API_KEY`: a confident knowledge match, otherwise a real menu of
-  what it can help with. See [`docs/AI-SPACES.md`](docs/AI-SPACES.md).
+  what it can help with. The WhatsApp line is answered by the same assistant
+  and hands the conversation to a person whenever the visitor asks for one
+  (or the assistant cannot help). Pressing the AI icon opens a full-screen
+  chat with a minimize control, on every surface.
+  See [`docs/AI-SPACES.md`](docs/AI-SPACES.md).
+
+- **Public institution directory — real schools only** — the Islamic Schools
+  and Western Academies pages list institutions that actually registered and
+  chose to be publicly listed (no demo content). Search by name, or through
+  the complete Nigerian **State → City → Town** cascade (37 states, 774
+  cities/LGAs, the towns under each) served by `/api/public/locations`; a
+  search that matches nothing offers the other registered institutions as
+  choices instead of a dead end. Both registration forms capture the same
+  cascade, so the directory can filter on it.
+
+- **Delete an institution completely** — the platform console can permanently
+  remove an institution and **everything** it owns (accounts, students,
+  classes, results, fees, files, its public website) in one transaction, with
+  a type-the-name confirmation. The purge discovers every table carrying a
+  `madrasa_id` column from the live schema, so nothing is orphaned.
 - **Per-school share links** — every registered madrasa gets its own link
   (`/s/<slug>`, with `/school/<slug>` and `/m/<slug>` aliases) that opens
   that school's own public page directly instead of the platform landing.

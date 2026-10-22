@@ -1081,3 +1081,10 @@ body.dash-western .rc-stat .rc-stat-value { color: var(--rc-brand); }
   .rc-toolbar-group + .rc-toolbar-group::before { display: none; }
   .rc-rowactions { justify-content: flex-start; }
 }
+
+/* Platform console — the permanent institution-delete confirmation. */
+.dash-danger-zone p { margin: 0 0 10px; font-size: .86rem; line-height: 1.6; }
+.dash-danger-zone p.hint { color: var(--d-muted, #5f5b6b); font-size: .78rem; }
+.dash-danger-zone strong { color: #a52d20; }
+.dash-danger-zone em { font-style: normal; text-decoration: underline; }
+.dash-btn-danger:disabled { opacity: .5; cursor: not-allowed; }

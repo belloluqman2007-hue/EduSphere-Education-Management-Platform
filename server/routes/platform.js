@@ -3,7 +3,7 @@
    MULTI-MADRASA PLATFORM — Super Admin (platform-level) routes
    ----------------------------------------------------------------------------
    Everything here is protected by requireSuperAdmin. A super admin can:
-     • manage madaris (create, suspend/activate, plan, profile)
+     • manage madaris (create, suspend/activate, plan, profile, DELETE)
      • manage each madrasa's admin account
      • manage subscription plans
      • view platform statistics & activity
@@ -16,6 +16,7 @@ const { requireSuperAdmin } = require("../middleware/auth");
 const analytics = require("../services/analytics");
 const catalogue = require("../services/plan-catalogue");
 const institution = require("../services/institution");
+const mediaStore = require("../services/media-store");
 
 const router = express.Router();
 router.use(requireSuperAdmin);
@@ -295,6 +296,88 @@ router.post("/madaris/:id/admin", asyncHandler(async (req, res) => {
   ok(res, { ok: true, username });
 }));
 
+/* --------------------------- delete an institution --------------------- */
+/**
+ * DELETE /api/platform/madaris/:id
+ *
+ * Permanently removes an institution and EVERY row that belongs to it —
+ * students, teachers, classes, results, fees, files, the lot. This is the
+ * "delete completely" an operator needs for a test tenant, a duplicate or a
+ * school that asked for its data to be erased; suspending is NOT the same
+ * thing and is still the right tool for a school that is merely behind on
+ * payment.
+ *
+ * Safety:
+ *   • the tenant's tables are discovered from the LIVE schema (every table
+ *     with a madrasa_id column), so a table added by a later migration is
+ *     purged too instead of being orphaned;
+ *   • everything runs in ONE transaction — a failure removes nothing;
+ *   • a tenant holding a platform operator account is refused;
+ *   • the uploads this tenant stored are unlinked after the commit, and a
+ *     failed unlink never fails the request (the database is the source of
+ *     truth for media, and it is already gone).
+ */
+router.delete("/madaris/:id", asyncHandler(async (req, res) => {
+  const m = await loadMadrasa(req, res, req.params.id);
+  if (!m) return;
+
+  const operator = await db.get("SELECT id FROM users WHERE madrasa_id = ? AND role = 'super_admin' LIMIT 1", [m.id]);
+  if (operator) {
+    return err(res, 400, "This institution holds a platform operator account and cannot be deleted.");
+  }
+
+  const dialect = await db.dialect();
+  let tenantTables = [];
+  if (dialect === "mysql") {
+    const rows = await db.all(
+      "SELECT TABLE_NAME AS t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'madrasa_id'"
+    );
+    tenantTables = rows.map((r) => String(r.t || r.TABLE_NAME));
+  } else {
+    const rows = await db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+    for (const r of rows) {
+      const cols = await db.all(`PRAGMA table_info(${r.name})`);
+      if (cols.some((c) => String(c.name) === "madrasa_id")) tenantTables.push(String(r.name));
+    }
+  }
+  tenantTables = tenantTables.filter((t) => t && t !== "madaris");
+
+  // Uploads this tenant stored — collected before the rows disappear, removed
+  // after the commit (best effort: the DB row is the source of truth).
+  let mediaPaths = [];
+  try {
+    const media = await db.all("SELECT web_path FROM media_files WHERE madrasa_id = ? LIMIT 5000", [m.id]);
+    mediaPaths = media.map((r) => r.web_path).filter(Boolean);
+  } catch (e) { /* a database without the media table simply has nothing to unlink */ }
+
+  let rowsRemoved = 0;
+  try {
+    await db.transaction(async (tx) => {
+      if (dialect === "mysql") await tx.run("SET FOREIGN_KEY_CHECKS = 0");
+      else await tx.run("PRAGMA defer_foreign_keys = TRUE");
+      for (const t of tenantTables) {
+        const r = await tx.run(`DELETE FROM ${t} WHERE madrasa_id = ?`, [m.id]);
+        rowsRemoved += Number(r.changes || 0);
+      }
+      // A registration that was promoted into this institution keeps its audit
+      // row; only the now-dead link is cleared.
+      await tx.run("UPDATE madrasa_registrations SET promoted_madrasa_id = NULL WHERE promoted_madrasa_id = ?", [m.id]);
+      await tx.run("DELETE FROM madaris WHERE id = ?", [m.id]);
+      if (dialect === "mysql") await tx.run("SET FOREIGN_KEY_CHECKS = 1");
+    });
+  } catch (e) {
+    console.error("Failed to delete madrasa " + m.id + " (rolled back):", e);
+    return err(res, 500, "Could not delete the institution. Nothing was removed — please try again.");
+  }
+
+  for (const webPath of mediaPaths) {
+    try { await mediaStore.remove(webPath); } catch (e) { /* the disk copy is optional */ }
+  }
+
+  logActivity(db, { userId: req.user.id, action: "madrasa.delete", entity: "madrasa", entityId: String(m.id), meta: { slug: m.slug, name: m.name_en, rows: rowsRemoved }, ip: req.ip });
+  ok(res, { ok: true, deleted: m.id, slug: m.slug, rowsRemoved });
+}));
+
 /* ------------------------------ registrations ---------------------------
    Public institution registrations land in `madrasa_registrations` as
    'Pending'. A super admin reviews them here; approving PROMOTES the
@@ -319,6 +402,7 @@ router.get("/registrations", asyncHandler(async (req, res) => {
       category: r.category || institution.normalizeCategory(null, r.institution_type),
       institutionType: r.institution_type,
       city: r.city,
+      town: r.town,
       stateName: r.state_name,
       adminFullName: r.admin_full_name,
       adminEmail: r.admin_email,
@@ -385,13 +469,13 @@ router.post("/registrations/:id/approve", asyncHandler(async (req, res) => {
     const created = await db.transaction(async (tx) => {
       const r = await tx.run(
         `INSERT INTO madaris
-          (slug, name_en, address, city, state_name, phone, email, plan_id, status,
+          (slug, name_en, address, city, town, state_name, phone, email, plan_id, status,
            description_en, founded_year, website, category, institution_type, verified, brand_color,
            tagline, whatsapp, facebook, instagram, maps_link, admin_full_name, admin_position,
            public_listing)
-         VALUES (?,?,?,?,?,?,?,?, 'active', ?,?,?,?,?,1, ?, ?,?,?,?,?,?,?, 1)`,
+         VALUES (?,?,?,?,?,?,?,?,?, 'active', ?,?,?,?,?,1, ?, ?,?,?,?,?,?,?, 1)`,
         [
-          slug, reg.name, reg.address, reg.city, reg.state_name, reg.phone, reg.email, plan.id,
+          slug, reg.name, reg.address, reg.city, reg.town || "", reg.state_name, reg.phone, reg.email, plan.id,
           reg.description, reg.year_established, reg.website, category, reg.institution_type,
           institution.categoryConfig(category).primaryColor,
           reg.official_name, reg.whatsapp, reg.facebook, reg.instagram, reg.maps_link,

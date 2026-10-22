@@ -5,13 +5,71 @@
    ============================================================================ */
 
 window.BelloRegister = (function () {
+  /* Kept as the offline fallback: the live list (37 entries, the FCT
+     included under its own name) comes from the platform's own dataset at
+     /api/public/locations, which also serves the cities and towns. */
   const NIGERIAN_STATES = [
     "Abia", "Adamawa", "Akwa Ibom", "Anambra", "Bauchi", "Bayelsa", "Benue",
     "Borno", "Cross River", "Delta", "Ebonyi", "Edo", "Ekiti", "Enugu",
-    "FCT - Abuja", "Gombe", "Imo", "Jigawa", "Kaduna", "Kano", "Katsina",
-    "Kebbi", "Kogi", "Kwara", "Lagos", "Nasarawa", "Niger", "Ogun", "Ondo",
-    "Osun", "Oyo", "Plateau", "Rivers", "Sokoto", "Taraba", "Yobe", "Zamfara"
+    "Federal Capital Territory", "Gombe", "Imo", "Jigawa", "Kaduna", "Kano",
+    "Katsina", "Kebbi", "Kogi", "Kwara", "Lagos", "Nasarawa", "Niger", "Ogun",
+    "Ondo", "Osun", "Oyo", "Plateau", "Rivers", "Sokoto", "Taraba", "Yobe", "Zamfara"
   ];
+
+  /* The State -> City -> Town cascade. Options are fetched from the platform
+     dataset so the location an applicant picks is exactly what the public
+     directory can filter on. */
+  const locationOptions = { states: [], cities: [], towns: [], citiesByState: {} };
+
+  /* The shared API client already falls back to XMLHttpRequest where `fetch`
+     is unavailable, so the cascade keeps working on any engine. A failed
+     request resolves to an empty object and the fallback list stays. */
+  function fetchLocations(query) {
+    return window.API.public.locations(query);
+  }
+
+  async function loadLocationStates() {
+    const data = await fetchLocations("?cities=1");
+    if (data.states && data.states.length) locationOptions.states = data.states.slice();
+    if (data.citiesByState) locationOptions.citiesByState = data.citiesByState;
+  }
+
+  function fillLocationSelect(sel, values, placeholder) {
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = `<option value="">${placeholder}</option>` +
+      values.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    sel.value = values.includes(current) ? current : "";
+    sel.disabled = !values.length;
+  }
+
+  /* The whole state → city index is loaded with the page, so picking a state
+     fills the city select instantly — no request, no flicker. Towns still come
+     from the server, one request per city, and are filled in place so the page
+     never re-renders or jumps while the visitor is choosing. */
+  function onLocationStateChange(sel) {
+    const m = state.formData.madrasa;
+    m.state = sel.value;
+    m.city = "";
+    m.town = "";
+    locationOptions.towns = [];
+    locationOptions.cities = m.state ? (locationOptions.citiesByState[m.state] || []) : [];
+    const citySelect = document.getElementById("f_city");
+    fillLocationSelect(citySelect, locationOptions.cities, m.state ? "Select City" : "Select a state first");
+    if (citySelect) citySelect.value = "";
+    fillLocationSelect(document.getElementById("f_town"), [], "Select a city first");
+  }
+
+  async function onLocationCityChange(sel) {
+    const m = state.formData.madrasa;
+    m.city = sel.value;
+    m.town = "";
+    fillLocationSelect(document.getElementById("f_town"), [], "Select a city first");
+    if (!m.city || !m.state) return;
+    const data = await fetchLocations(`?state=${encodeURIComponent(m.state)}&city=${encodeURIComponent(m.city)}`);
+    locationOptions.towns = data.towns || [];
+    fillLocationSelect(document.getElementById("f_town"), locationOptions.towns, "Select Town");
+  }
 
   const INSTITUTION_TYPES = [
     "Madrasa",
@@ -224,6 +282,7 @@ window.BelloRegister = (function () {
           country: "Nigeria",
           state: "Ogun",
           city: "",
+          town: "",
           address: "",
           mapsLink: "",
           phone: "",
@@ -498,6 +557,7 @@ window.BelloRegister = (function () {
         country: m.country.trim() || "Nigeria",
         state: m.state,
         city: m.city.trim(),
+        town: m.town.trim(),
         address: m.address.trim(),
         mapsLink: m.mapsLink.trim(),
         phone: m.phone.trim(),
@@ -639,7 +699,7 @@ window.BelloRegister = (function () {
           <a href="/" data-route="/">Home</a>
           <a href="/islamic-schools" data-route="/islamic-schools">Islamic Schools</a>
           <a href="/western-schools" data-route="/western-schools">Western Academies</a>
-          <a class="button button-secondary" href="/" data-route="/">Back to Home</a>
+          <a class="button button-secondary" href="/islamic-schools" data-route="/islamic-schools"><span>${icons.arrowLeft}</span> Back to Islamic Schools</a>
         </nav>
       </header>
     `;
@@ -671,6 +731,9 @@ window.BelloRegister = (function () {
     const hero = HERO_COPY[step] || HERO_COPY[1];
 
     return `
+      <a class="reg-back-link" href="/islamic-schools" data-route="/islamic-schools">
+        <span>${icons.arrowLeft}</span> Back to the public website
+      </a>
       <section class="reg-hero section-pattern">
         <div class="container">
           <div class="reg-hero-content">
@@ -954,19 +1017,34 @@ window.BelloRegister = (function () {
               <div class="select-wrap">
                 <select id="f_state" name="state" required>
                   <option value="">Select State</option>
-                  ${NIGERIAN_STATES.map(st => `<option value="${st}" ${m.state === st ? 'selected' : ''}>${st}</option>`).join('')}
+                  ${(locationOptions.states.length ? locationOptions.states : NIGERIAN_STATES).map(st => `<option value="${st}" ${m.state === st ? 'selected' : ''}>${st}</option>`).join('')}
                 </select>
               </div>
               ${err.state ? `<p class="field-error-text">${err.state}</p>` : ''}
             </div>
 
-            <!-- City / Town -->
+            <!-- City (LGA / area council) -->
             <div class="form-field col-6 ${err.city ? 'has-error' : ''}">
-              <label for="f_city">City / Town <span class="req">*</span></label>
-              <div class="input-wrap">
-                <input type="text" id="f_city" name="city" value="${escapeHtml(m.city)}" placeholder="Enter city or town" required>
+              <label for="f_city">City <span class="req">*</span></label>
+              <div class="select-wrap">
+                <select id="f_city" name="city" required ${locationOptions.cities.length ? '' : 'disabled'}>
+                  <option value="">${m.state ? 'Select City' : 'Select a state first'}</option>
+                  ${locationOptions.cities.map(c => `<option value="${c}" ${m.city === c ? 'selected' : ''}>${c}</option>`).join('')}
+                </select>
               </div>
               ${err.city ? `<p class="field-error-text">${err.city}</p>` : ''}
+            </div>
+
+            <!-- Town / district -->
+            <div class="form-field col-6">
+              <label for="f_town">Town <span class="opt">(optional)</span></label>
+              <div class="select-wrap">
+                <select id="f_town" name="town" ${locationOptions.towns.length ? '' : 'disabled'}>
+                  <option value="">${m.city ? 'Select Town' : 'Select a city first'}</option>
+                  ${locationOptions.towns.map(t => `<option value="${t}" ${m.town === t ? 'selected' : ''}>${t}</option>`).join('')}
+                </select>
+              </div>
+              <p class="field-helper-text">${icons.info} Every Nigerian state, its cities and their towns — pick the ones that apply.</p>
             </div>
 
             <!-- Address -->
@@ -1165,7 +1243,7 @@ window.BelloRegister = (function () {
     const a = state.formData.administrator;
     const err = state.errors;
     const strength = getPasswordStrength(a.password);
-    const place = [m.city, m.state].filter(Boolean).join(", ");
+    const place = [m.town, m.city, m.state].filter(Boolean).join(", ");
 
     return `
       <div class="reg-form-step reveal is-visible" id="administrator-account">
@@ -1397,9 +1475,14 @@ window.BelloRegister = (function () {
                     <strong>${escapeHtml(m.state)}</strong>
                   </div>
                   <div class="rev-item">
-                    <small>City / Town</small>
+                    <small>City</small>
                     <strong>${escapeHtml(m.city)}</strong>
                   </div>
+                  ${m.town ? `
+                  <div class="rev-item">
+                    <small>Town</small>
+                    <strong>${escapeHtml(m.town)}</strong>
+                  </div>` : ''}
                   <div class="rev-item">
                     <small>Address</small>
                     <strong>${escapeHtml(m.address)}</strong>
@@ -1881,7 +1964,6 @@ window.BelloRegister = (function () {
     bindInput("f_description", v => { m.description = v; });
     bindInput("f_year", v => { m.yearEstablished = v; });
     bindInput("f_country", v => { m.country = v; });
-    bindInput("f_city", v => { m.city = v; });
     bindInput("f_address", v => { m.address = v; });
     bindInput("f_maps", v => { m.mapsLink = v; });
     bindInput("f_phone", v => { m.phone = v; });
@@ -1899,7 +1981,13 @@ window.BelloRegister = (function () {
     if (typeSelect) typeSelect.addEventListener("change", e => { m.institutionType = e.target.value; });
 
     const stateSelect = document.getElementById("f_state");
-    if (stateSelect) stateSelect.addEventListener("change", e => { m.state = e.target.value; });
+    if (stateSelect) stateSelect.addEventListener("change", e => onLocationStateChange(e.target));
+
+    const citySelect = document.getElementById("f_city");
+    if (citySelect) citySelect.addEventListener("change", e => onLocationCityChange(e.target));
+
+    const townSelect = document.getElementById("f_town");
+    if (townSelect) townSelect.addEventListener("change", e => { m.town = e.target.value; });
 
     // Step 2 Fields
     bindInput("f_admin_name", v => { a.fullName = v; });
@@ -2125,6 +2213,27 @@ window.BelloRegister = (function () {
       const pristine = state.currentStep === 1 && !state.formData.madrasa.name.trim();
       if (pristine && stepFromPath(window.location.pathname) > 1) restoreDraft();
       syncFromUrl();
+      // The live state list, then a re-render only if the select was still on
+      // the offline fallback and the stored state is not in it.
+      loadLocationStates().then(async () => {
+        const m = state.formData.madrasa;
+        if (m.state && !locationOptions.states.includes(m.state)) {
+          m.state = locationOptions.states.includes("Ogun") ? "Ogun" : (locationOptions.states[0] || "");
+          m.city = ""; m.town = "";
+        }
+        if (m.state) {
+          locationOptions.cities = locationOptions.citiesByState[m.state] || [];
+          if (!locationOptions.cities.includes(m.city)) { m.city = ""; m.town = ""; }
+        }
+        // A restored draft keeps its town: fetch that one list so the select
+        // shows what was already chosen.
+        if (m.state && m.city) {
+          const data = await fetchLocations(`?state=${encodeURIComponent(m.state)}&city=${encodeURIComponent(m.city)}`);
+          locationOptions.towns = data.towns || [];
+          if (!locationOptions.towns.includes(m.town)) m.town = "";
+        }
+        if (locationOptions.states.length) render();
+      });
     },
     goToStep,
     submitRegistration,

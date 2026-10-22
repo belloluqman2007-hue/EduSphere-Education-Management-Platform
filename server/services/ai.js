@@ -58,6 +58,10 @@ const CONFIDENT_SCORE = 3;
    always used), not question/answer pairs. */
 const TURN_LIMITS = {
   public: { history: 4, knowledge: 3 },
+  // A school's own assistant: a visitor asks two or three questions about the
+  // school, so a slightly longer memory than the marketing page and the same
+  // narrow knowledge slice (this space's only scope is "all").
+  school: { history: 6, knowledge: 3 },
   whatsapp: { history: 12, knowledge: 5 },
 };
 const DEFAULT_TURN_LIMITS = { history: 12, knowledge: 5 };
@@ -371,6 +375,7 @@ function contextBrief(surface, context) {
   const bits = [];
   if (context.role) bits.push(`You are speaking to ${ROLE_LABEL[context.role] || context.role}.`);
   if (context.userName) bits.push(`Their name is ${context.userName}.`);
+  if (context.schoolName) bits.push(`You are the assistant on the public website of ${context.schoolName}. You speak for that school and know nothing about any other institution.`);
   if (context.institutionName) bits.push(`Their institution is ${context.institutionName}.`);
   if (context.category) bits.push(`The institution is registered as ${context.category === "western" ? "a Western academy" : "an Islamic school"}.`);
   if (context.plan) bits.push(`Current plan: ${context.plan}.`);

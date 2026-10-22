@@ -18,13 +18,68 @@
    ========================================================================== */
 
 window.BelloAcademyRegister = (function () {
+  /* Offline fallback only: the live list (37 entries, the FCT under its own
+     name) comes from the platform dataset at /api/public/locations, which
+     also serves the cities and the towns under each city. */
   const NIGERIAN_STATES = [
     "Abia", "Adamawa", "Akwa Ibom", "Anambra", "Bauchi", "Bayelsa", "Benue",
     "Borno", "Cross River", "Delta", "Ebonyi", "Edo", "Ekiti", "Enugu",
-    "FCT - Abuja", "Gombe", "Imo", "Jigawa", "Kaduna", "Kano", "Katsina",
-    "Kebbi", "Kogi", "Kwara", "Lagos", "Nasarawa", "Niger", "Ogun", "Ondo",
-    "Osun", "Oyo", "Plateau", "Rivers", "Sokoto", "Taraba", "Yobe", "Zamfara"
+    "Federal Capital Territory", "Gombe", "Imo", "Jigawa", "Kaduna", "Kano",
+    "Katsina", "Kebbi", "Kogi", "Kwara", "Lagos", "Nasarawa", "Niger", "Ogun",
+    "Ondo", "Osun", "Oyo", "Plateau", "Rivers", "Sokoto", "Taraba", "Yobe", "Zamfara"
   ];
+
+  const locationOptions = { states: [], cities: [], towns: [], citiesByState: {} };
+
+  /* The shared API client already falls back to XMLHttpRequest where `fetch`
+     is unavailable, so the cascade keeps working on any engine. A failed
+     request resolves to an empty object and the fallback list stays. */
+  function fetchLocations(query) {
+    return window.API.public.locations(query);
+  }
+
+  async function loadLocationStates() {
+    const data = await fetchLocations("?cities=1");
+    if (data.states && data.states.length) locationOptions.states = data.states.slice();
+    if (data.citiesByState) locationOptions.citiesByState = data.citiesByState;
+  }
+
+  function fillLocationSelect(sel, values, placeholder) {
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = `<option value="">${placeholder}</option>` +
+      values.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    sel.value = values.includes(current) ? current : "";
+    sel.disabled = !values.length;
+  }
+
+  /* The whole state → city index is loaded with the page, so picking a state
+     fills the city select instantly — no request, no flicker. Towns still come
+     from the server, one request per city, and are filled in place so the page
+     never re-renders or jumps while the visitor is choosing. */
+  function onLocationStateChange(sel) {
+    const m = state.formData.academy;
+    m.state = sel.value;
+    m.city = "";
+    m.town = "";
+    locationOptions.towns = [];
+    locationOptions.cities = m.state ? (locationOptions.citiesByState[m.state] || []) : [];
+    const citySelect = document.getElementById("a_city");
+    fillLocationSelect(citySelect, locationOptions.cities, m.state ? "Select City" : "Select a state first");
+    if (citySelect) citySelect.value = "";
+    fillLocationSelect(document.getElementById("a_town"), [], "Select a city first");
+  }
+
+  async function onLocationCityChange(sel) {
+    const m = state.formData.academy;
+    m.city = sel.value;
+    m.town = "";
+    fillLocationSelect(document.getElementById("a_town"), [], "Select a city first");
+    if (!m.city || !m.state) return;
+    const data = await fetchLocations(`?state=${encodeURIComponent(m.state)}&city=${encodeURIComponent(m.city)}`);
+    locationOptions.towns = data.towns || [];
+    fillLocationSelect(document.getElementById("a_town"), locationOptions.towns, "Select Town");
+  }
 
   /* Must stay in sync with server/services/institution.js WESTERN_TYPES so the
      submission is classified into the Western admin experience. */
@@ -242,6 +297,7 @@ window.BelloAcademyRegister = (function () {
           country: "Nigeria",
           state: "Lagos",
           city: "",
+          town: "",
           address: "",
           mapsLink: "",
           phone: "",
@@ -490,6 +546,7 @@ window.BelloAcademyRegister = (function () {
         country: m.country.trim() || "Nigeria",
         state: m.state,
         city: m.city.trim(),
+        town: m.town.trim(),
         address: m.address.trim(),
         mapsLink: m.mapsLink.trim(),
         phone: m.phone.trim(),
@@ -527,6 +584,7 @@ window.BelloAcademyRegister = (function () {
       adminEmail: payload.administrator.email,
       adminPhone: payload.administrator.phone,
       city: payload.academy.city,
+      town: payload.academy.town,
       state: payload.academy.state
     });
 
@@ -848,14 +906,20 @@ window.BelloAcademyRegister = (function () {
 
             <div class="wa-field col-6 ${err.state ? "has-error" : ""}">
               <label for="a_state">State <span class="wa-req">*</span></label>
-              <div class="wa-input wa-select"><select id="a_state" required><option value="">Select State</option>${NIGERIAN_STATES.map((st) => `<option value="${st}" ${m.state === st ? "selected" : ""}>${st}</option>`).join("")}</select></div>
+              <div class="wa-input wa-select"><select id="a_state" required><option value="">Select State</option>${(locationOptions.states.length ? locationOptions.states : NIGERIAN_STATES).map((st) => `<option value="${st}" ${m.state === st ? "selected" : ""}>${st}</option>`).join("")}</select></div>
               ${err.state ? `<p class="wa-field-error">${err.state}</p>` : ""}
             </div>
 
             <div class="wa-field col-6 ${err.city ? "has-error" : ""}">
-              <label for="a_city">City / Town <span class="wa-req">*</span></label>
-              <div class="wa-input"><input type="text" id="a_city" value="${escapeHtml(m.city)}" placeholder="Enter city or town" required></div>
+              <label for="a_city">City <span class="wa-req">*</span></label>
+              <div class="wa-input wa-select"><select id="a_city" required ${locationOptions.cities.length ? "" : "disabled"}><option value="">${m.state ? "Select City" : "Select a state first"}</option>${locationOptions.cities.map((c) => `<option value="${c}" ${m.city === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
               ${err.city ? `<p class="wa-field-error">${err.city}</p>` : ""}
+            </div>
+
+            <div class="wa-field col-6">
+              <label for="a_town">Town <span class="wa-opt">(optional)</span></label>
+              <div class="wa-input wa-select"><select id="a_town" ${locationOptions.towns.length ? "" : "disabled"}><option value="">${m.city ? "Select Town" : "Select a city first"}</option>${locationOptions.towns.map((t) => `<option value="${t}" ${m.town === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+              <p class="wa-field-help">${icons.info} Every Nigerian state, its cities and their towns.</p>
             </div>
 
             <div class="wa-field col-6 ${err.address ? "has-error" : ""}">
@@ -987,7 +1051,7 @@ window.BelloAcademyRegister = (function () {
     const a = state.formData.administrator;
     const err = state.errors;
     const strength = getPasswordStrength(a.password);
-    const place = [m.city, m.state].filter(Boolean).join(", ");
+    const place = [m.town, m.city, m.state].filter(Boolean).join(", ");
 
     return `
       <div class="wa-reg-step" id="administrator-account">
@@ -1130,7 +1194,8 @@ window.BelloAcademyRegister = (function () {
                 <div class="wa-review-grid">
                   ${reviewItem("Country", m.country)}
                   ${reviewItem("State", m.state)}
-                  ${reviewItem("City / Town", m.city)}
+                  ${reviewItem("City", m.city)}
+                  ${m.town ? reviewItem("Town", m.town) : ""}
                   ${reviewItem("Address", m.address)}
                   ${m.mapsLink ? `<div class="wa-rev-item col-full"><small>Google Maps Location</small><a class="wa-inline-link" href="${escapeHtml(m.mapsLink)}" target="_blank" rel="noopener noreferrer">${icons.link} View location link</a></div>` : ""}
                 </div>
@@ -1347,6 +1412,9 @@ window.BelloAcademyRegister = (function () {
     app.innerHTML = `
       ${renderHeader()}
       <main id="main-content" class="wa-reg-main">
+        <a class="wa-reg-back-top" href="/western-schools" data-route="/western-schools">
+          <span>${icons.arrowLeft}</span> Back to the public website
+        </a>
         ${renderHero()}
         <div class="western-container wa-reg-layout">
           <div class="wa-reg-column">${content}</div>
@@ -1429,7 +1497,11 @@ window.BelloAcademyRegister = (function () {
     bindInput("a_description", (v) => { m.description = v; });
     bindInput("a_year", (v) => { m.yearEstablished = v; });
     bindInput("a_country", (v) => { m.country = v; });
-    bindInput("a_city", (v) => { m.city = v; });
+    const citySelect = document.getElementById("a_city");
+    if (citySelect) citySelect.addEventListener("change", (e) => onLocationCityChange(e.target));
+
+    const townSelect = document.getElementById("a_town");
+    if (townSelect) townSelect.addEventListener("change", (e) => { m.town = e.target.value; });
     bindInput("a_address", (v) => { m.address = v; });
     bindInput("a_maps", (v) => { m.mapsLink = v; });
     bindInput("a_phone", (v) => { m.phone = v; });
@@ -1449,7 +1521,8 @@ window.BelloAcademyRegister = (function () {
     };
     bindSelect("a_type", (v) => { m.institutionType = v; });
     bindSelect("a_curriculum", (v) => { m.curriculum = v; });
-    bindSelect("a_state", (v) => { m.state = v; });
+    const stateSelect = document.getElementById("a_state");
+    if (stateSelect) stateSelect.addEventListener("change", (e) => onLocationStateChange(e.target));
     bindSelect("a_admin_position", (v) => { a.position = v; });
 
     bindInput("a_admin_name", (v) => { a.fullName = v; });
@@ -1658,6 +1731,26 @@ window.BelloAcademyRegister = (function () {
       const pristine = state.currentStep === 1 && !state.formData.academy.name.trim();
       if (pristine && stepFromPath(window.location.pathname) > 1) restoreDraft();
       syncFromUrl();
+      // The live state list; re-render only when it replaced the fallback.
+      loadLocationStates().then(async () => {
+        const m = state.formData.academy;
+        if (m.state && !locationOptions.states.includes(m.state)) {
+          m.state = locationOptions.states.includes("Lagos") ? "Lagos" : (locationOptions.states[0] || "");
+          m.city = ""; m.town = "";
+        }
+        if (m.state) {
+          locationOptions.cities = locationOptions.citiesByState[m.state] || [];
+          if (!locationOptions.cities.includes(m.city)) { m.city = ""; m.town = ""; }
+        }
+        // A restored draft keeps its town: fetch that one list so the select
+        // shows what was already chosen.
+        if (m.state && m.city) {
+          const data = await fetchLocations(`?state=${encodeURIComponent(m.state)}&city=${encodeURIComponent(m.city)}`);
+          locationOptions.towns = data.towns || [];
+          if (!locationOptions.towns.includes(m.town)) m.town = "";
+        }
+        if (locationOptions.states.length) render();
+      });
     },
     goToStep,
     submitRegistration,
