@@ -3217,3 +3217,64 @@ body.islamic-experience .socials a { border-color: #ddd3b8; }
   .promo-video-frame { border-radius: 16px; }
   .promo-ended-actions .button { width: 100%; }
 }
+
+/* ============================================================================
+   PUBLIC DIRECTORY — real registered institutions (Islamic + Western pages)
+   The demo academy cards are gone; these are the states a real listing shows:
+   loading, empty, and the "other choices" fallback when a search matches
+   nothing. The cards reuse the academy-card component above.
+   ========================================================================== */
+.academy-logo--directory { background: linear-gradient(145deg, #102e59, #2a76af); }
+.directory-loading, .directory-empty {
+  grid-column: 1 / -1; margin: 0; padding: 36px 22px;
+  border: 1px dashed var(--wa-line, #dbe5f1); border-radius: 16px;
+  background: #fff; color: var(--wa-muted, #5b6b7e);
+  font-size: .85rem; text-align: center;
+}
+.directory-alt-heading {
+  grid-column: 1 / -1; margin: 4px 0 0; color: var(--wa-navy-900, #0a2342);
+  font-size: .95rem; font-weight: 800;
+}
+#directory-search .western-search-actions p { white-space: nowrap; }
+
+/* The Islamic Schools page keeps its own identity: forest + gold instead of
+   navy + sky, on the same directory component. */
+body.islamic-experience .academy-logo--directory { background: linear-gradient(145deg, #31075e, #6b3fa0); }
+body.islamic-experience .directory-loading,
+body.islamic-experience .directory-empty { border-color: #d2cbdc; color: #5c5470; }
+body.islamic-experience .directory-alt-heading { color: #241532; }
+body.islamic-experience .western-featured { background: transparent; }
+body.islamic-experience .western-section-heading h2 { color: #241532; }
+body.islamic-experience .western-kicker { color: #8a5a12; }
+body.islamic-experience .western-section-heading > p:last-child { color: #5c5470; }
+body.islamic-experience .western-inline-link { color: #6b3fa0; }
+body.islamic-experience .academy-card { border-color: #e3dcee; }
+body.islamic-experience .academy-card h3 { color: #241532; }
+body.islamic-experience .academy-card > p { color: #5c5470; }
+body.islamic-experience .academy-type { color: #6b3fa0; }
+body.islamic-experience .academy-view-link { color: #6b3fa0; }
+body.islamic-experience .academy-view-link span { background: #f1e9fa; color: #6b3fa0; }
+body.islamic-experience .academy-programs b { background: #f1e9fa; color: #4a2a75; }
+body.islamic-experience .western-clear-search { color: #5c5470; }
+
+/* Registration pages — the always-visible back link to the public website. */
+.reg-back-link {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 18px 0 0; padding: 9px 16px 9px 12px;
+  border: 1px solid rgba(49, 7, 94, .18); border-radius: 999px;
+  background: rgba(255, 255, 255, .8); color: #31075e;
+  font-size: .8rem; font-weight: 750; text-decoration: none;
+  transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.reg-back-link svg { width: 16px; height: 16px; }
+.reg-back-link:hover { border-color: rgba(49, 7, 94, .4); box-shadow: 0 8px 18px rgba(41, 6, 78, .12); transform: translateY(-1px); }
+.wa-reg-back-top {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 18px 0 0; padding: 9px 16px 9px 12px;
+  border: 1px solid rgba(10, 35, 66, .18); border-radius: 999px;
+  background: rgba(255, 255, 255, .9); color: var(--wa-navy-900, #0a2342);
+  font-size: .8rem; font-weight: 750; text-decoration: none;
+  transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.wa-reg-back-top svg { width: 16px; height: 16px; }
+.wa-reg-back-top:hover { border-color: rgba(10, 35, 66, .4); box-shadow: 0 8px 18px rgba(10, 35, 66, .12); transform: translateY(-1px); }

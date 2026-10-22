@@ -1081,6 +1081,7 @@ function toolsFor(surface, ctx) {
     case "teacher": return teacherTools(ctx);
     case "student": return studentTools(ctx);
     case "parent": return parentTools(ctx);
+    case "school": return schoolTools(ctx);
     default: return publicTools();
   }
 }
@@ -1834,6 +1835,320 @@ publicRouter.post("/chat", publicLimiter, asyncHandler(async (req, res) => {
     surface: "public",
     whatsapp: await whatsappLine.line(),
     suggestions: spaces.publicSpace("public").suggestions,
+  }, fallbackFields(out)));
+}));
+
+/* ============================================================================
+   ONE SCHOOL'S PUBLIC WEBSITE — the per-institution assistant
+   ----------------------------------------------------------------------------
+   Every institution has its own public website at /schools/<slug>, and the
+   assistant mounted there belongs to THAT school. The slug comes from the URL
+   and is resolved to a tenant id ON THE SERVER; the browser never names a
+   tenant, and every tool below reads only that tenant's PUBLIC projections.
+
+   What it can never see: students, marks, results, fees, payments, staff
+   records, subscriptions — none of those tables is queried here at all. What
+   it can see is exactly what the school published for the public page: its
+   profile, programmes, admissions status, public news and events, and the
+   contact details the school chose to publish.
+   ========================================================================== */
+
+/** The school behind a public URL, or null. Same visibility rules as the
+    directory: active, publicly listed. */
+async function findPublicSchool(slug) {
+  const s = String(slug || "").trim().toLowerCase().slice(0, 80);
+  if (!s) return null;
+  return db.get(
+    `SELECT id, slug, name_en, name_ar, category, institution_type, motto_en, tagline,
+            description_en, short_description, city, state_name, town, address,
+            phone, email, whatsapp, website, maps_link, founded_year, levels_offered,
+            admission_status, public_admissions, logo_path
+       FROM madaris
+      WHERE slug = ? AND status = 'active' AND public_listing = 1`,
+    [s]
+  );
+}
+
+/** The widget's description of this school's assistant. The school's own name
+    leads, so a visitor never mistakes it for the platform assistant. */
+async function schoolInfo(slug) {
+  const school = await findPublicSchool(slug);
+  if (!school) return null;
+  const wa = await whatsappLine.line();
+  const space = spaces.publicSpace("school");
+  const name = school.name_en || "this school";
+  return {
+    surface: "school",
+    school: { slug: school.slug, name: school.name_en || "", category: school.category || "islamic" },
+    space: Object.assign({}, space, {
+      key: "school",
+      label: `${name} · Assistant`,
+      subtitle: `Ask about ${name}`,
+      greeting:
+        `Hello! I'm the assistant for ${name}. ` +
+        "I can tell you what the school has published — who it is, the programmes it offers, " +
+        "how admissions work, and the latest news and events. What would you like to know?",
+      suggestions: [
+        `What is happening at ${name}?`,
+        "What programmes does the school offer?",
+        "How do I apply for admission?",
+        "What are the latest news and events?",
+      ],
+    }),
+    whatsapp: wa,
+    contact: {
+      phone: school.phone || "",
+      email: school.email || "",
+      whatsapp: school.whatsapp || "",
+      website: school.website || "",
+    },
+    links: {
+      school_page: `/schools/${encodeURIComponent(school.slug)}`,
+      apply: `/schools/${encodeURIComponent(school.slug)}#admissions`,
+    },
+  };
+}
+
+/** The school's tools. Every one of them is closed over ctx.madrasaId — the
+    tenant id the SERVER resolved from the slug — so the model can never point
+    one at another school, and none of them can reach a private table. */
+function schoolTools(ctx) {
+  const tid = ctx.madrasaId;
+  const overview = async () => {
+    const m = await db.get(
+      `SELECT name_en, name_ar, institution_type, category, motto_en, tagline, description_en, short_description,
+              city, state_name, town, address, founded_year, levels_offered, phone, email, whatsapp, website, maps_link
+         FROM madaris WHERE id = ?`,
+      [tid]
+    );
+    if (!m) return { error: "This school's page is not available." };
+    return {
+      name: m.name_en,
+      name_arabic: m.name_ar || "",
+      type: m.institution_type || (m.category === "western" ? "Academy" : "Madrasa"),
+      motto: m.motto_en || m.tagline || "",
+      about: m.short_description || m.description_en || "",
+      location: [m.town, m.city, m.state_name].filter(Boolean).join(", "),
+      address: m.address || "",
+      founded: m.founded_year || "",
+      levels: m.levels_offered || "",
+      phone: m.phone || "", email: m.email || "", whatsapp: m.whatsapp || "", website: m.website || "",
+    };
+  };
+  return [
+    {
+      name: "school_overview",
+      description: "Who this school is: name, type, motto, about, location, levels offered and published contact details. Use it for any 'tell me about this school' question.",
+      parameters: { type: "object", properties: {} },
+      run: overview,
+    },
+    {
+      name: "school_programmes",
+      description: "The programmes, classes and subjects this school offers publicly, with their levels and durations.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const [programs, classes, subjects] = await Promise.all([
+          db.all(
+            "SELECT title, description, level_name, duration, category FROM public_programs WHERE madrasa_id = ? AND is_published = 1 ORDER BY sort_order, id LIMIT 30",
+            [tid]
+          ).catch(() => []),
+          db.all("SELECT name_en FROM classes WHERE madrasa_id = ? AND is_active = 1 ORDER BY sort_order, id LIMIT 60", [tid]).catch(() => []),
+          db.all("SELECT name_en, category FROM subjects WHERE madrasa_id = ? AND is_active = 1 ORDER BY name_en LIMIT 60", [tid]).catch(() => []),
+        ]);
+        return {
+          programmes: programs.map((p) => ({
+            title: p.title, level: p.level_name || "", duration: p.duration || "",
+            description: String(p.description || "").slice(0, 400),
+          })),
+          classes: classes.map((c) => c.name_en).filter(Boolean),
+          subjects: subjects.map((s) => s.name_en).filter(Boolean),
+        };
+      },
+    },
+    {
+      name: "school_admissions",
+      description: "Whether admissions are open right now, and how a family applies on this page.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const m = await db.get("SELECT admission_status, public_admissions, name_en FROM madaris WHERE id = ?", [tid]);
+        if (!m) return { error: "This school's page is not available." };
+        const open = Number(m.public_admissions) === 1 && String(m.admission_status || "open").toLowerCase() !== "closed";
+        return {
+          admissions_open: open,
+          status: m.admission_status || "open",
+          how_to_apply: open
+            ? "Use the Apply for Admission form in the Admissions section of this page — it takes a few minutes and the school office follows up."
+            : "Admissions are currently closed on this page. The school office can still be contacted directly using the details on this page.",
+          apply_section: "#admissions",
+        };
+      },
+    },
+    {
+      name: "school_news",
+      description: "The school's latest public news and notices, newest first.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const rows = await db.all(
+          `SELECT title, body, created_at, category FROM announcements
+            WHERE madrasa_id = ? AND is_active = 1 AND publish_public = 1
+              AND (publish_until IS NULL OR publish_until >= ?)
+            ORDER BY created_at DESC, id DESC LIMIT 8`,
+          [tid, todayIso()]
+        ).catch(() => []);
+        return { news: rows.map((r) => ({ title: r.title, category: r.category || "news", date: String(r.created_at || "").slice(0, 10), body: String(r.body || "").slice(0, 500) })) };
+      },
+    },
+    {
+      name: "school_events",
+      description: "Upcoming public events at this school (today onwards), soonest first.",
+      parameters: { type: "object", properties: {} },
+      run: async () => {
+        const rows = await db.all(
+          `SELECT title, body, event_date, event_location FROM announcements
+            WHERE madrasa_id = ? AND is_active = 1 AND publish_public = 1
+              AND event_date IS NOT NULL AND event_date <> '' AND event_date >= ?
+              AND (publish_until IS NULL OR publish_until >= ?)
+            ORDER BY event_date ASC, id ASC LIMIT 8`,
+          [tid, todayIso(), todayIso()]
+        ).catch(() => []);
+        return { events: rows.map((r) => ({ title: r.title, date: String(r.event_date || "").slice(0, 10), location: r.event_location || "", body: String(r.body || "").slice(0, 400) })) };
+      },
+    },
+  ];
+}
+
+/**
+ * The school assistant's answer when no model is connected — or when the
+ * provider is down. The platform promises no dead end in every other space,
+ * and this space's real content lives in its own tools, so a small rule-based
+ * router calls the SAME tools the model would call and formats the result.
+ * A visitor on a school page gets a real answer about that school either way.
+ */
+async function schoolDeterministicAnswer(message, ctx) {
+  const tools = schoolTools(ctx);
+  const run = async (name) => {
+    const tool = tools.find((t) => t.name === name);
+    if (!tool) return null;
+    try { return await tool.run({}); } catch (e) { return null; }
+  };
+  const q = String(message || "").toLowerCase();
+  const has = (...words) => words.some((w) => q.includes(w));
+  const name = ctx.schoolName || "the school";
+  const list = (items, empty) => (items && items.length ? items : [empty || "—"]);
+
+  if (has("news", "happening", "going on", "update", "notice", "announcement", "latest", "event")) {
+    const [news, events] = await Promise.all([run("school_news"), run("school_events")]);
+    const lines = [`Here is what is happening at ${name} right now:`, ""];
+    lines.push("Latest news and notices:");
+    for (const n of list(news.news, "No public notices at the moment.").slice(0, 5)) {
+      lines.push(typeof n === "string" ? `• ${n}` : `• ${n.title}${n.date ? ` (${n.date})` : ""}${n.body ? ` — ${n.body.split("\n")[0].slice(0, 180)}` : ""}`);
+    }
+    lines.push("", "Upcoming events:");
+    for (const e of list(events.events, "No upcoming public events yet.").slice(0, 5)) {
+      lines.push(typeof e === "string" ? `• ${e}` : `• ${e.title}${e.date ? ` — ${e.date}` : ""}${e.location ? `, ${e.location}` : ""}`);
+    }
+    return { content: lines.join("\n"), sources: [], mode: "school-direct", toolCalls: [] };
+  }
+
+  if (has("admission", "apply", "application", "enrol", "enroll", "join", "intake")) {
+    const adm = await run("school_admissions");
+    if (adm && adm.admissions_open) {
+      return {
+        content: `Admissions at ${name} are open. Use the **Apply for Admission** form in the Admissions section of this page — it takes a few minutes, and the school office follows up with you. You can also reach the school directly using the contact details on this page.`,
+        sources: [], mode: "school-direct", toolCalls: [],
+      };
+    }
+    return {
+      content: `Admissions at ${name} are currently closed on this page. The school office can still help — their contact details are on this page.`,
+      sources: [], mode: "school-direct", toolCalls: [],
+    };
+  }
+
+  if (has("programme", "program", "class", "subject", "curriculum", "offer", "teach", "level")) {
+    const p = await run("school_programmes");
+    const lines = [`What ${name} offers:`];
+    if (p.programmes && p.programmes.length) {
+      for (const prog of p.programmes.slice(0, 8)) {
+        lines.push(`• ${prog.title}${prog.level ? ` — ${prog.level}` : ""}${prog.duration ? ` (${prog.duration})` : ""}`);
+      }
+    } else {
+      lines.push("• The school has not published a programme list yet.");
+    }
+    if (p.subjects && p.subjects.length) lines.push("", `Subjects include: ${p.subjects.slice(0, 20).join(", ")}.`);
+    if (p.classes && p.classes.length) lines.push(`Classes: ${p.classes.slice(0, 20).join(", ")}.`);
+    return { content: lines.join("\n"), sources: [], mode: "school-direct", toolCalls: [] };
+  }
+
+  if (has("about", "who are you", "where", "location", "address", "contact", "motto", "founded", "history", "tell me")) {
+    const o = await run("school_overview");
+    if (o && !o.error) {
+      const lines = [`${o.name}${o.type ? ` is a ${o.type}` : ""}${o.location ? ` in ${o.location}` : ""}.`];
+      if (o.motto) lines.push(`Motto: ${o.motto}`);
+      if (o.about) lines.push("", o.about);
+      if (o.levels) lines.push("", `Levels offered: ${o.levels}`);
+      if (o.founded) lines.push(`Founded: ${o.founded}`);
+      const contact = [o.phone && `Phone ${o.phone}`, o.email && `Email ${o.email}`, o.whatsapp && `WhatsApp ${o.whatsapp}`].filter(Boolean);
+      if (contact.length) lines.push("", `Contact: ${contact.join(" · ")}`);
+      return { content: lines.join("\n"), sources: [], mode: "school-direct", toolCalls: [] };
+    }
+  }
+
+  // A greeting, or anything else: what this assistant can actually answer.
+  return {
+    content:
+      `Hello! I'm the assistant for ${name}. I can tell you what the school has published — ` +
+      "who it is, the programmes it offers, whether admissions are open, and the latest news and events. " +
+      "What would you like to know?",
+    sources: [], mode: "school-direct", toolCalls: [],
+  };
+}
+
+publicRouter.get("/school/:slug", publicLimiter, asyncHandler(async (req, res) => {
+  const info = await schoolInfo(req.params.slug);
+  if (!info) return err(res, 404, "That school's assistant is not available.");
+  ok(res, info);
+}));
+
+publicRouter.post("/school/:slug/chat", publicLimiter, asyncHandler(async (req, res) => {
+  const school = await findPublicSchool(req.params.slug);
+  if (!school) return err(res, 404, "That school's assistant is not available.");
+
+  const message = cleanStr(req.body && req.body.message, 2000);
+  if (!message) return err(res, 400, "Type a message.");
+  const sessionId = cleanStr(req.body && req.body.session_id, 80) || `school-${school.slug}-${req.ip || "unknown"}`;
+
+  // The tenant id comes from the slug the SERVER resolved — never from the
+  // request body — and every tool is closed over it.
+  const ctx = { madrasaId: school.id, slug: school.slug, schoolName: school.name_en || "", today: todayIso() };
+  const conv = await ai.conversation({ surface: "school", madrasaId: school.id, externalId: `school-${school.slug}-${sessionId}` });
+  const history = await ai.history(conv.id);
+  const messages = history.concat([{ role: "user", content: message }]);
+
+  let out;
+  try {
+    out = await ai.ask({ surface: "school", messages, tools: schoolTools(ctx), context: ctx });
+    // With no model connected the knowledge base can only answer platform-wide
+    // facts; this space's real content lives in its own tools, so answer from
+    // those instead of a generic menu.
+    if (out && out.fallback_reason === "no_model_configured") {
+      const local = await schoolDeterministicAnswer(message, ctx);
+      if (local) out = local;
+    }
+  } catch (e) {
+    out = (await schoolDeterministicAnswer(message, ctx)) || (await degradedTurn("school", message, e));
+  }
+
+  await ai.saveMessage(conv.id, "user", message);
+  await ai.saveMessage(conv.id, "assistant", out.content, { sources: out.sources, tokens: out.tokens });
+  const info = await schoolInfo(school.slug);
+  ok(res, Object.assign({
+    reply: out.content,
+    sources: out.sources || [],
+    mode: out.mode,
+    session_id: sessionId,
+    surface: "school",
+    school: info ? info.school : { slug: school.slug, name: school.name_en || "" },
+    suggestions: info ? info.space.suggestions : [],
   }, fallbackFields(out)));
 }));
 

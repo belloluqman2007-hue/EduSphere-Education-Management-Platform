@@ -162,7 +162,13 @@ test("a visitor gets the public assistant with a real WhatsApp link", { skip }, 
   root.querySelector(".ai-launcher").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
   assert.equal(root.querySelector(".ai-panel").hidden, false);
   const chips = Array.from(root.querySelectorAll(".ai-suggestions .ai-chip")).map((c) => c.textContent);
-  assert.deepEqual(chips, PUBLIC_SPACE.suggestions);
+  // Three suggestions at most: a menu, not a wall. And opening the icon is a
+  // full-screen chat with a minimize control back to the launcher.
+  assert.deepEqual(chips, PUBLIC_SPACE.suggestions.slice(0, 3));
+  assert.ok(root.classList.contains("ai-root--fullscreen"), "the icon opens a full-screen chat");
+  assert.ok(root.querySelector(".ai-panel-minimize"), "the full-screen chat can be minimized");
+  root.querySelector(".ai-panel-minimize").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  assert.ok(!root.classList.contains("ai-root--fullscreen"), "minimize returns to the floating launcher");
 });
 
 test("a visitor's message reaches the public endpoint and the reply is shown", { skip }, async () => {
@@ -210,7 +216,7 @@ test("a student gets the student space, and none of the admin furniture", { skip
   assert.equal(root.querySelector(".ai-copilot").hidden, true, "no school-wide copilot for a student");
 
   const chips = Array.from(root.querySelectorAll(".ai-suggestions .ai-chip")).map((c) => c.textContent);
-  assert.deepEqual(chips, STUDENT_SPACE.suggestions);
+  assert.deepEqual(chips, STUDENT_SPACE.suggestions.slice(0, 3));
   assert.ok(chips.some((c) => /results/i.test(c)), "the student's own questions");
   assert.ok(!chips.some((c) => /upgrade|invoice|limit/i.test(c)), "never the administrator's questions");
 });

@@ -292,11 +292,22 @@
 .ai-panel-avatar svg { width: 18px; height: 18px; }
 .ai-panel-title { font-weight: 700; font-size: .92rem; }
 .ai-panel-sub { font-size: .72rem; opacity: .78; }
-.ai-panel-close {
-  margin-left: auto; border: 0; background: rgba(255,255,255,.12); color: #fff; cursor: pointer;
+.ai-panel-close, .ai-panel-minimize {
+  border: 0; background: rgba(255,255,255,.12); color: #fff; cursor: pointer;
   width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none;
 }
-.ai-panel-close svg { width: 16px; height: 16px; }
+.ai-panel-minimize { margin-left: auto; }
+.ai-panel-close:hover, .ai-panel-minimize:hover { background: rgba(255,255,255,.24); }
+.ai-panel-close svg, .ai-panel-minimize svg { width: 16px; height: 16px; }
+
+/* The school office strip on a school's own assistant. */
+.ai-school-contact {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 16px; font-size: .74rem; color: var(--d-muted, #5f5b6b);
+  background: var(--d-surface, #fff); border-bottom: 1px solid var(--d-line, #dedce6);
+}
+.ai-school-contact a { color: var(--d-accent, #4b4566); font-weight: 700; text-decoration: none; }
+.ai-school-contact a:hover { text-decoration: underline; }
 .ai-panel-refresh { border: 0; background: rgba(255,255,255,.12); color: #fff; cursor: pointer; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; }
 .ai-panel-refresh svg { width: 16px; height: 16px; }
 
@@ -334,9 +345,31 @@
 .ai-send:disabled { opacity: .45; cursor: not-allowed; }
 .ai-foot { padding: 0 14px 10px; text-align: center; font-size: .68rem; color: var(--d-muted, #5f5b6b); background: var(--d-surface, #fff); }
 
+/* -------------------------- FULL-SCREEN CHAT ---------------------------- */
+/* Pressing the AI icon opens the chat over the whole viewport — a real
+   conversation surface, not a floating bubble. Minimize (the panel's own
+   button, the X, or Escape) returns to the floating launcher. Applies to
+   every surface the widget is mounted on: public site, each school's
+   website, the dashboards and the portals. */
+.ai-root--fullscreen .ai-panel {
+  position: fixed; inset: 0; right: 0; bottom: 0;
+  width: 100%; height: 100%; max-width: none;
+  border-radius: 0; border: 0; z-index: 1400;
+}
+.ai-root--fullscreen .ai-launcher,
+.ai-root--fullscreen .ai-wa-launcher { display: none; }
+.ai-root--fullscreen .ai-messages { padding: 22px; gap: 14px; }
+.ai-root--fullscreen .ai-msg { max-width: min(760px, 82%); font-size: .92rem; }
+.ai-root--fullscreen .ai-suggestions { justify-content: center; padding: 4px 22px 14px; }
+.ai-root--fullscreen .ai-form { padding: 16px 22px; }
+.ai-root--fullscreen .ai-form .ai-input { padding: 13px 18px; font-size: .95rem; }
+.ai-root--fullscreen .ai-foot { padding: 0 22px 14px; }
+body.ai-chat-open { overflow: hidden; }
+
 @media (max-width: 560px) {
   .ai-panel { right: 8px; left: 8px; bottom: 8px; width: auto; height: min(72vh, 560px); }
   .ai-launcher { right: 14px; bottom: 14px; }
+  .ai-root--fullscreen .ai-msg { max-width: 92%; }
 }
 
 /* ============================================================================

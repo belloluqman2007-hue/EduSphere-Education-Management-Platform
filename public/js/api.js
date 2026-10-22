@@ -21,6 +21,30 @@
     return csrfToken;
   }
 
+  /* A plain JSON GET. `fetch` is the normal path; the XMLHttpRequest branch
+     keeps the public location cascade working on engines without fetch. */
+  function getJson(path) {
+    const url = BASE + path;
+    if (typeof fetch === "function") {
+      return fetch(url, { headers: { Accept: "application/json" }, credentials: "same-origin" })
+        .then((r) => (r.ok ? r.json().catch(() => ({})) : {}))
+        .catch(() => ({}));
+    }
+    return new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", url);
+        xhr.onload = () => {
+          try {
+            resolve(xhr.status >= 200 && xhr.status < 300 ? JSON.parse(xhr.responseText) : {});
+          } catch (e) { resolve({}); }
+        };
+        xhr.onerror = () => resolve({});
+        xhr.send();
+      } catch (e) { resolve({}); }
+    });
+  }
+
   async function request(method, path, body, opts = {}) {
     const headers = { Accept: "application/json" };
     if (body && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
@@ -79,6 +103,8 @@
     /** Public (logged-out) endpoints — no session, no CSRF needed for GET. */
     public: {
       get: (p) => request("GET", "/public" + p),
+      /* The State → City → Town index behind the registration forms. */
+      locations: (p) => getJson("/public/locations" + (p || "")),
       post: (p, b) => fetch(BASE + "/public" + p, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

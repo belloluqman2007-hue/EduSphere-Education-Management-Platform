@@ -2,9 +2,11 @@
 /* ============================================================================
    EDUSPHERE AI — chat widget + knowledge base manager
    ----------------------------------------------------------------------------
-   1. THE WIDGET. One floating launcher, but SEVEN different assistants:
+   1. THE WIDGET. One floating launcher, but EIGHT different assistants:
 
         public       the website — registration, plans, guides
+        school       one institution's own public website (/schools/<slug>) —
+                    it knows ONLY that school's published information
         super_admin  the platform console
         admin        a school administrator's dashboard
         teacher      the teacher workspace
@@ -36,6 +38,7 @@
     spark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>`,
     send: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>`,
     close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>`,
+    minimize: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>`,
     refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>`,
     plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
     edit: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
@@ -59,6 +62,15 @@
       suggestions: ["How do I register my school?", "How much does EduSphere cost?", "What does EduSphere do?", "What happens after I apply?"],
       capabilities: [],
       handoff: { kind: "whatsapp", label: "Chat on WhatsApp" },
+    },
+    school: {
+      key: "school",
+      label: "School Assistant",
+      subtitle: "This school's public assistant",
+      greeting: "Hello! I'm the assistant for this school. Ask me about the school, its programmes, admissions, news and events.",
+      suggestions: ["What is happening at this school?", "What programmes does the school offer?", "How do I apply for admission?"],
+      capabilities: [],
+      handoff: { kind: "school", label: "Contact the school" },
     },
     admin: {
       key: "admin",
@@ -108,10 +120,14 @@
 
   function build(opts) {
     const surface = opts.surface;
+    const slug = opts.slug || "";
     const info = opts.info || {};
     const space = info.space || fallbackSpace(surface);
     const wa = info.whatsapp || {};
-    const suggestions = (space.suggestions && space.suggestions.length) ? space.suggestions : fallbackSpace(surface).suggestions;
+    const contact = info.contact || {};
+    /* "The suggestion must not be much": three is a menu, six is a wall. The
+       server still sends its full list for other clients. */
+    const suggestions = ((space.suggestions && space.suggestions.length) ? space.suggestions : fallbackSpace(surface).suggestions).slice(0, 3);
     const links = info.links || {};
 
     const el = document.createElement("div");
@@ -134,8 +150,16 @@
             <div class="ai-panel-sub">${esc(space.subtitle)}</div>
           </div>
           <button class="ai-panel-refresh" type="button" title="Start a new conversation" aria-label="Start a new conversation">${ICON.refresh}</button>
+          <button class="ai-panel-minimize" type="button" title="Minimize" aria-label="Minimize the assistant">${ICON.minimize}</button>
           <button class="ai-panel-close" type="button" aria-label="Close assistant">${ICON.close}</button>
         </header>
+        ${surface === "school" && (contact.phone || contact.email || contact.whatsapp) ? `
+          <div class="ai-school-contact">
+            <span>Talk to the school office:</span>
+            ${contact.phone ? `<a href="tel:${esc(contact.phone)}">${esc(contact.phone)}</a>` : ""}
+            ${contact.email ? `<a href="mailto:${esc(contact.email)}">${esc(contact.email)}</a>` : ""}
+            ${contact.whatsapp ? `<a href="https://wa.me/${esc(String(contact.whatsapp).replace(/\D/g, ""))}" target="_blank" rel="noopener">WhatsApp</a>` : ""}
+          </div>` : ""}
         ${IS_PUBLIC(surface) && wa.available ? `
           <a class="ai-wa-cta" href="${esc(wa.link)}" target="_blank" rel="noopener">
             <span class="ai-wa-cta-icon">${ICON.whatsapp}</span>
@@ -168,10 +192,29 @@
     const input = el.querySelector(".ai-input");
     const send = el.querySelector(".ai-send");
 
-    function open() { panel.hidden = false; launcher.setAttribute("aria-expanded", "true"); input.focus(); }
-    function close() { panel.hidden = true; launcher.setAttribute("aria-expanded", "false"); launcher.focus(); }
+    /* Pressing the AI icon opens a FULL-SCREEN chat, not a floating bubble:
+       one class on the root switches the panel to a fixed overlay that covers
+       the viewport (see subscription.css). Minimize — the button in the panel
+       head, the X, or Escape — takes it back to the floating launcher. This
+       is the widget's behaviour everywhere it is mounted: the public site,
+       every school website, the dashboards and the portals. */
+    function open() {
+      panel.hidden = false;
+      el.classList.add("ai-root--fullscreen");
+      document.body.classList.add("ai-chat-open");
+      launcher.setAttribute("aria-expanded", "true");
+      input.focus();
+    }
+    function close() {
+      panel.hidden = true;
+      el.classList.remove("ai-root--fullscreen");
+      document.body.classList.remove("ai-chat-open");
+      launcher.setAttribute("aria-expanded", "false");
+      try { launcher.focus(); } catch (e) { /* page without a launcher focus target */ }
+    }
     launcher.addEventListener("click", () => (panel.hidden ? open() : close()));
     el.querySelector(".ai-panel-close").addEventListener("click", close);
+    el.querySelector(".ai-panel-minimize").addEventListener("click", close);
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) close(); });
 
     /** The knowledge base uses **bold** for the important phrase. The bubble
@@ -212,9 +255,21 @@
       }
     }
 
+    /* Suggestions are a starting menu, not furniture: once the visitor has
+       asked their first question they all disappear and stay gone. */
+    let askedOnce = false;
+    function hideSuggestions() {
+      const box = el.querySelector(".ai-suggestions");
+      if (!box) return;
+      box.innerHTML = "";
+      box.hidden = true;
+    }
+
     function chips(list) {
       const box = el.querySelector(".ai-suggestions");
+      if (!box) return;
       box.innerHTML = "";
+      box.hidden = false;
       list.forEach((text) => {
         const b = document.createElement("button");
         b.type = "button";
@@ -432,12 +487,15 @@
 
     async function sendMessage(text) {
       bubble("user", text);
+      if (!askedOnce) { askedOnce = true; hideSuggestions(); }
       input.value = "";
       send.disabled = true;
       typing(true);
       try {
         let res;
-        if (IS_PUBLIC(surface)) {
+        if (surface === "school") {
+          res = await window.API.public.post(`/ai/school/${encodeURIComponent(slug)}/chat`, { message: text, session_id: sessionId() });
+        } else if (IS_PUBLIC(surface)) {
           res = await window.API.public.post("/ai/chat", { message: text, session_id: sessionId() });
         } else {
           res = await window.API.post("/ai/chat", { message: text });
@@ -454,6 +512,7 @@
     }
 
     function fallbackReply() {
+      if (surface === "school") return "I could not answer that from what this school has published. The school office can help — the contact details are on this page.";
       return IS_PUBLIC(surface)
         ? "I could not answer that here. Try asking about registration, plans or how EduSphere works — or use Chat on WhatsApp to reach our team."
         : "I could not answer that. Try rephrasing, or use Chat & Support so the EduSphere team can help.";
@@ -468,18 +527,31 @@
 
     greet();
     if (opts.open) open();
-    widget = { el, open, close, sendMessage, surface, space };
+    widget = { el, open, close, sendMessage, surface, slug, space };
     return widget;
   }
 
   /**
    * Mount the assistant.
-   * @param {{surface?: string, open?: boolean}} [options]
+   * @param {{surface?: string, slug?: string, open?: boolean}} [options]
    *   Leave `surface` unset to let the SERVER decide from the session.
+   *   `surface: "school"` requires the institution `slug` from the page URL —
+   *   the server resolves it to a tenant id and scopes every answer to that
+   *   school's published information.
    */
   async function mount(options) {
     const opts = Object.assign({}, options || {});
     if (widget) return widget;
+
+    if (opts.surface === "school") {
+      const slug = String(opts.slug || "").trim();
+      if (!slug) return null;
+      let info = null;
+      try { info = await window.API.public.get("/ai/school/" + encodeURIComponent(slug)); } catch (e) { info = null; }
+      // Unknown or unpublished school: no assistant rather than a wrong one.
+      if (!info || !info.space) return null;
+      return build({ surface: "school", slug, info, open: opts.open });
+    }
 
     let me = null;
     try { me = await window.API.me(); } catch (e) { me = null; }
@@ -498,7 +570,32 @@
 
   function unmount() {
     if (widget && widget.el && widget.el.parentNode) widget.el.parentNode.removeChild(widget.el);
+    document.body.classList.remove("ai-chat-open");
     widget = null;
+  }
+
+  /**
+   * Re-mount the assistant when the page's surface changed. The SPA sets
+   * `document.body.dataset.aiSurface` ("school" on an institution's own
+   * website, anything else = the page's normal surface) and
+   * `data-ai-school` with the slug. Called on every route change, so walking
+   * from a school's website back to the platform pages swaps the assistant
+   * for the right one — a visitor never keeps a school's assistant after
+   * leaving that school's page.
+   */
+  async function sync() {
+    let surface = "";
+    let slug = "";
+    try {
+      surface = String(document.body.dataset.aiSurface || "");
+      slug = String(document.body.dataset.aiSchool || "");
+    } catch (e) { /* no dataset support */ }
+    const currentSurface = widget ? widget.surface : "";
+    const currentSlug = widget ? widget.slug : "";
+    if (surface === currentSurface && slug === currentSlug) return widget;
+    if (widget) unmount();
+    if (surface === "school" && slug) return mount({ surface: "school", slug });
+    return mount({});
   }
 
   /* ======================================================================
@@ -894,5 +991,5 @@
     });
   }
 
-  window.EduSphereAI = { mount, unmount, handles, render, ADMIN_ROUTES, roleSurface };
+  window.EduSphereAI = { mount, unmount, sync, handles, render, ADMIN_ROUTES, roleSurface };
 })();

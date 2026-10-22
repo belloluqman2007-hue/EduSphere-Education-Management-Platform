@@ -1,6 +1,6 @@
-# EduSphere AI — one assistant, seven spaces
+# EduSphere AI — one assistant, eight spaces
 
-EduSphere AI is not one generic chatbot. The same assistant is mounted in seven
+EduSphere AI is not one generic chatbot. The same assistant is mounted in eight
 different places, and in each one it knows a different job, reads a different
 part of the knowledge base, and has a different set of read-only tools.
 
@@ -11,6 +11,7 @@ signed-in one; it can never claim to be the operator.
 | Space | Where | Who | Reads knowledge from | Hand-off |
 |---|---|---|---|---|
 | `public` | the marketing website | anyone, no account | `public` + `all` | WhatsApp / email |
+| `school` | one institution's own website (`/schools/<slug>`) | anyone on that page | `all` only | the school office |
 | `super_admin` | `/admin` (platform console) | EduSphere operator | `super_admin` + `admin` + `public` + `all` | Chat & Support |
 | `admin` | `/admin` (a school's dashboard) | `madrasa_admin` | `admin` + `public` + `all` | Chat & Support |
 | `teacher` | `/teacher` | `teacher` | `teacher` + `all` | the school office |
@@ -23,8 +24,53 @@ account types, security, languages. `app` is the **old** name of the
 administrator scope; boot renames any surviving `app` row to `admin`, and
 retrieval treats them as the same scope so an un-migrated database still works.
 
+The `school` space deliberately reads **no** tenant-scoped knowledge: its only
+scope is `all`, and every school-specific fact comes from its own tools, which
+are closed over the tenant id the **server** resolved from the URL slug. A
+school's assistant therefore cannot be fed another school's answers through the
+knowledge base, and it can never reach a private table — there is no tool for
+students, marks, fees, payments or staff records anywhere in that space.
+
 The order matters: an answer written for the space the person is actually in
 wins over an equally relevant answer inherited from a broader one.
+
+---
+
+## The per-school assistant (`/schools/<slug>`)
+
+Every registered institution has its own public website, and the assistant
+mounted there belongs to **that school**. It answers "what is happening at this
+school?" from what the school itself published:
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/public/ai/school/:slug` | the widget's description of that school's assistant (its own name, greeting, suggestions, published contact details) |
+| `POST /api/public/ai/school/:slug/chat` | a turn in that school's assistant |
+
+The tools behind it — `school_overview`, `school_programmes`,
+`school_admissions`, `school_news`, `school_events` — read only public
+projections of the resolved tenant: profile, published programmes/classes and
+subjects, admissions status, public notices and upcoming events, and the
+contact details the school chose to publish. The slug is resolved on the
+server; the browser can only say "the school on this page", so a visitor can
+never point the assistant at another institution, and a school's confidential
+data (students, results, fees, staff) is never in reach.
+
+With no model connected the space still answers: the same tools are called by a
+small rule-based router (`schoolDeterministicAnswer`), so a visitor gets the
+school's real news, events, programmes and admissions status either way.
+
+---
+
+## The widget itself
+
+Pressing the AI icon opens a **full-screen** chat, not a floating bubble — one
+class (`ai-root--fullscreen`) on the widget root, the same on every surface.
+The panel's own minimize button (as well as the X and Escape) returns it to the
+floating launcher and unlocks the page. Suggestions are capped at three and
+disappear for good once the first question is asked. Because the SPA changes
+pages without reloading, `ai-boot.js` re-syncs the widget on every route
+change: leaving a school's website swaps its assistant for the right one.
 
 ---
 
