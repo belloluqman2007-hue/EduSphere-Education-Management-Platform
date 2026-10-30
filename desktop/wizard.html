@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EduSphere — Desktop settings</title>
+<link rel="stylesheet" href="wizard.css">
+</head>
+<body>
+<main>
+  <header>
+    <img class="logo" src="assets/icon-128.png" alt="" width="52" height="52">
+    <div>
+      <h1 id="title">Welcome to EduSphere</h1>
+      <p class="sub" id="subtitle">Choose how this computer should run EduSphere. You can change this later in EduSphere → Desktop settings.</p>
+    </div>
+  </header>
+
+  <form id="form" autocomplete="off">
+    <fieldset class="modes">
+      <legend class="sr-only">Runtime mode</legend>
+
+      <label class="card" data-mode="cloud">
+        <input type="radio" name="mode" value="cloud" id="mode-cloud">
+        <span class="card-body">
+          <span class="card-title">Cloud-synced app</span>
+          <span class="card-text">Opens your EduSphere server on the internet. Everything you do is saved on this computer first and synced when a connection is available. Best for an office with working internet.</span>
+        </span>
+      </label>
+
+      <label class="card" data-mode="hub">
+        <input type="radio" name="mode" value="hub" id="mode-hub">
+        <span class="card-body">
+          <span class="card-title">Local school LAN hub</span>
+          <span class="card-text">This computer becomes the school's own EduSphere server. It works with no internet at all, and phones, tablets and other PCs on the same Wi-Fi can sign in to it.</span>
+        </span>
+      </label>
+    </fieldset>
+
+    <section class="panel" id="cloud-panel">
+      <label for="base-url">EduSphere server address</label>
+      <input type="url" id="base-url" name="baseUrl" placeholder="https://school.edusphere.app" spellcheck="false" autocapitalize="none">
+      <p class="hint">The address your school already uses in a browser. It must start with https:// (or http:// on a local network).</p>
+    </section>
+
+    <section class="panel" id="hub-panel" hidden>
+      <label for="admin-username">Administrator username</label>
+      <input type="text" id="admin-username" name="adminUsername" value="admin" spellcheck="false" autocapitalize="none">
+      <label for="admin-password" id="password-label">Administrator password</label>
+      <input type="password" id="admin-password" name="adminPassword" placeholder="At least 8 characters" autocomplete="new-password">
+      <p class="hint" id="password-hint">This creates the first sign-in for the school's own database on this computer. It is stored in the operating system's keychain, never in plain text.</p>
+      <ul class="facts">
+        <li>Data stays in this computer's EduSphere data folder and is backed up automatically.</li>
+        <li>Phones and tablets on the same Wi-Fi open the address shown after start-up (with a QR code to scan).</li>
+        <li>Your firewall may ask for permission — choose <strong>Allow</strong> on private networks.</li>
+      </ul>
+    </section>
+
+    <p class="error" id="error" role="alert" hidden></p>
+
+    <footer>
+      <button type="button" class="ghost" id="cancel" hidden>Cancel</button>
+      <button type="submit" id="submit">Start EduSphere</button>
+    </footer>
+    <p class="meta" id="meta"></p>
+  </form>
+</main>
+<script src="wizard.js"></script>
+</body>
+</html>

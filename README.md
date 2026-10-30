@@ -330,9 +330,31 @@ public/            static mobile-first SPA (hash routing, EN/AR, RTL,
                    light/dark theme, public site rendered without a session)
 test/              npm test suite + smoke.sh end-to-end
 docs/              isolation audit, database, deployment, security,
-                   subscriptions & AI, plan tiers & feature gating
+                   subscriptions & AI, plan tiers & feature gating,
+                   OFFLINE-NATIVE-APP-ROADMAP.md, DESKTOP-APP.md
+desktop/           installable Windows/macOS/Linux app (Electron shell +
+                   electron-builder installers; own package.json, own tests)
+docs/ci/           desktop-release.yml — installer pipeline (copy to
+                   .github/workflows/ to activate; see docs/DESKTOP-APP.md)
 render.yaml        NEW Render service definition (production)
 ```
+
+### Desktop app (Windows, macOS, Linux)
+
+`desktop/` packages the same platform as a native desktop application with two
+runtime modes: **cloud-synced** (opens your EduSphere server) and **local school
+LAN hub** (runs the Express + SQLite server on the school PC so phones and
+tablets on the same Wi-Fi keep working with no internet). Build the installers
+with:
+
+```bash
+cd desktop && npm install
+npm test          # 53 headless tests (mocked Electron, no display needed)
+npm run dist      # → desktop/dist/EduSphere-<version>-<os>-<arch>.<ext>
+```
+
+Full guide (install, modes, LAN pairing, firewall, backup/restore, code
+signing): **[docs/DESKTOP-APP.md](docs/DESKTOP-APP.md)**.
 
 ## Key features (as delivered)
 

@@ -10,8 +10,8 @@ This document defines the 4-phase engineering roadmap transforming EduSphere fro
 |---|---|---|
 | **Phase 1** | **App-Ready Backend, Device Bearer Auth & Offline Sync API** (`/api/sync`, `device_auth_tokens`, `sync_mutations`, native CORS/CSP, `api.js` transport interceptor) | **Completed** |
 | **Phase 2** | **Frontend Local-First Storage, Outbox Engine & Sync UI** (IndexedDB/SQLite store, offline read/write interception via `API.setTransportInterceptor`, optimistic local IDs, Offline Unlock, Sync Status Bar & Queue Drawer) | **Completed** |
-| **Phase 3** | **Desktop Software Application (PC)** (Electron + `electron-builder` installers `.exe` / `.dmg` / `.AppImage` / `.deb`, embedded local Node+SQLite server / LAN School Hub mode + Cloud Sync) | Next |
-| **Phase 4** | **Mobile & Tablet Software Application (Phones & Tabs)** (Capacitor Android `.apk`/`.aab` & iOS/iPadOS `.ipa`, native SQLite storage, network listener, camera QR attendance scanner, mobile/tablet UX polish) | Planned |
+| **Phase 3** | **Desktop Software Application (PC)** (Electron + `electron-builder` installers `.exe` / `.dmg` / `.AppImage` / `.deb`, embedded local Node+SQLite server / LAN School Hub mode + Cloud Sync) | **Completed** |
+| **Phase 4** | **Mobile & Tablet Software Application (Phones & Tabs)** (Capacitor Android `.apk`/`.aab` & iOS/iPadOS `.ipa`, native SQLite storage, network listener, camera QR attendance scanner, mobile/tablet UX polish) | Next |
 
 ---
 
@@ -257,25 +257,139 @@ Everything below runs in the browser today and is reused unchanged by the Electr
 
 ---
 
-## Phase 3 Specification (Session 3) — Desktop Software Application (PC)
+## Phase 3 Reference (Implemented) — Desktop Software Application (PC)
 
-- `desktop/` workspace: Electron `main.js` (single-instance lock, window state,
-  system tray, auto-launch, native print/PDF export, safe `preload.js` exposing
-  `window.__EDUSPHERE_NATIVE__` so `api.js` mints Bearer device tokens), plus
-  `electron-builder` targets: Windows NSIS `.exe`, macOS `.dmg`, Linux `.AppImage`
-  and `.deb`.
-- Two selectable runtime modes in Desktop Settings:
-  1. **Cloud-Synced App Mode** — the packaged app loads the remote EduSphere server
-     with the full Phase 2 local-first engine + native Bearer token.
-  2. **Local Standalone / School LAN Hub Mode** — boots the embedded Express +
-     SQLite server on the school PC (same `server/` code, `PORT`/`DATA_DIR` from the
-     app's user-data folder) so campus phones/tablets on Wi-Fi keep working when the
-     town has no internet, with optional upstream cloud sync.
-- GitHub Actions matrix workflow producing the four installers as release assets.
-- Must ship the Phase 2 assets untouched (no fork of the offline engine), keep the
-  SQL dialect guardrails green, and end by explaining the work + verifying security
-  and zero-crashing before merging, then emit the Session 4 prompt.
+Phase 3 lives entirely in `desktop/` and ships the **same** `server/` Express +
+SQLite code and the **same** `public/` bundle (Phase 2 engine included) inside a
+native shell. There is no fork of the offline engine and no second offline
+implementation: the packaged app serves/preloads the exact files the web
+deployment serves.
 
-## Phase 4 Specification (Session 4)
-- `mobile/` Capacitor project (`capacitor.config.ts`, Android Gradle project & iOS Xcode config, build scripts + GitHub Actions Android `.apk`/`.aab` builder).
-- Native bridge (`public/js/native-bridge.js`) injecting `window.__EDUSPHERE_NATIVE__`, native network status listener, persistent SQLite/IndexedDB durability, native back-button handling, safe-area insets for notches/tablets, and instant camera QR scanning for offline student/staff gate attendance.
+### 1. `desktop/` workspace (own `package.json`, own lockfile)
+
+`electron` and `electron-builder` are **devDependencies of `desktop/` only** — the
+root `npm install` and `npm test` are untouched and stay fast.
+`desktop/node_modules/`, `desktop/dist/` and the staged `desktop/server/` +
+`desktop/public/` copies are git-ignored build artifacts.
+
+| File | Responsibility |
+|---|---|
+| `main.js` | app lifecycle, single-instance lock (`second-instance` forwards the deep link), window-state restore validated against the live displays, macOS/Windows behaviours, `app.setAboutPanelOptions`, `uncaughtException` / `unhandledRejection` handlers that log to `logs/main.log` and show a friendly dialog, a real recovery page for a crashed or unreachable renderer, IPC, deep links, orderly shutdown |
+| `preload.js` | contextIsolation ON, nodeIntegration OFF, sandbox ON; exposes one **frozen** `window.__EDUSPHERE_NATIVE__ = { isNative, appVersion, platform, deviceId, deviceName, mode, getDeviceToken(), setDeviceToken(), clearDeviceToken(), print(), savePdf(), openExternal() }`. The token is fetched once with a single synchronous IPC handshake and never reaches page storage. |
+| `settings.js` | per-user JSON in `app.getPath("userData")/settings.json`, **atomic** writes (temp → fsync → rename → dir fsync), corrupt-file recovery, strict validation of mode/URL/port/bind host/window geometry |
+| `secret-store.js` | device token + generated hub `SESSION_SECRET` through Electron `safeStorage` (Keychain / DPAPI / libsecret), atomic 0600 blobs; **with no OS keychain nothing is written at all** — memory-only and reported |
+| `server-host.js` | embedded-runtime supervisor: forks `server-entry.js`, allow-listed child env, free-port selection, ready/error/exit plumbing, graceful stop (IPC `shutdown` → SIGTERM → SIGKILL) |
+| `server-entry.js` | boots the real `server/` (`config.validate`, `connectWithRetries`, `migrate`, `seedPlans`/`seedSuperAdmin`, AI knowledge seed, media hydration, `createApp().listen`, auto-backup timer, session/device-token prune, final snapshot on shutdown) |
+| `tray.js` / `menu.js` | tray + native menu: **Sync now**, **Mode** (radio), **Open data folder**, LAN Hub pairing info, Print / Save as PDF, About, Desktop settings |
+| `print.js` | native print dialog, `printToPDF` for report cards/receipts, off-screen batch export carrying the Bearer token — all local, so printing survives an internet outage |
+| `deep-link.js` | `edusphere://` parser with an allow-list (`sync`, `settings`, `hub`, `mode/<cloud|hub>`, `about`, `open/<path>`); rejects foreign schemes, `..`, control characters and over-long links |
+| `lan-hub.js` | the School LAN Hub window: loopback + every LAN URL, a QR drawn by the platform's own encoder (`server/services/print-documents.qrSvg`), OS-specific firewall guidance, first-sign-in credentials, data folder, optional upstream |
+| `wizard.html/.css/.js` + `wizard-preload.js` | first-run wizard **and** Desktop Settings (same window): choose mode, validate the server address / admin password, switch at runtime |
+| `scripts/stage.js` | copies `../server` + `../public` into `desktop/` right before packaging |
+| `tools/make-icons.js` | dependency-free icon generator → PNG, multi-size `.ico`, `.icns`, Linux hicolor set, tray + macOS template glyphs |
+| `electron-builder.yml` + `build/entitlements.mac.plist` | installer targets, artifact naming, hardened-runtime entitlements |
+
+### 2. Two runtime modes
+
+1. **Cloud-synced app mode** — the packaged app opens the operator's remote
+   EduSphere server. It reuses the Phase 2 bundle untouched: `api.js` detects
+   `window.__EDUSPHERE_NATIVE__`, mints a Bearer device token at sign-in
+   (`issueDeviceToken: true` + real `deviceId`/`deviceName`/`platform`), and
+   `SyncEngine` keeps serving cached reads and queueing writes. The token is
+   persisted with `safeStorage` and **removed from `localStorage`** so no bearer
+   credential ever sits in web storage. No cookies, no CSRF handshake.
+2. **Local standalone / School LAN Hub mode** — the app forks the real server as
+   a child process with `NODE_ENV=production`, a SQLite database in
+   `app.getPath("userData")/data`, `DATA_DIR`/`BACKUP_DIR`/`UPLOAD_DIR` pointing
+   into it, a generated 96-char `SESSION_SECRET` kept in the keychain, automatic
+   migrations and seeds, and the existing backup subsystem (3-hourly snapshots,
+   12 kept, plus a final snapshot on quit). It binds `0.0.0.0` **only in this
+   mode**, shows the pairing window (URL + QR + firewall guidance), and can pass
+   an optional upstream cloud endpoint for a later phase. A crash in the server
+   is restarted (up to three times) without taking the window down.
+
+### 3. Installers (`electron-builder`)
+
+Windows NSIS `.exe` (x64 + arm64), macOS universal `.dmg` (hardened runtime +
+entitlements prepared for signing), Linux `.AppImage` and `.deb` (x64 + arm64).
+Artifacts are always `EduSphere-<version>-<os>-<arch>.<ext>`. Signing and
+notarization are env-driven and optional: unsigned builds work locally, CI signs
+when the secrets exist. `docs/ci/desktop-release.yml` (copy it to
+`.github/workflows/desktop-release.yml` to activate — see its header) runs the matrix
+(`ubuntu-latest` / `macos-latest` / `windows-latest`), caches npm, runs
+`npm ci` at the root and in `desktop/`, uploads the installers as artifacts on
+every push and attaches them to a GitHub Release on a `v*` tag.
+
+### 4. Guardrails & verification
+
+- `test/sql-compat.test.js`, `test/mysql-runtime.test.js`,
+  `test/card-scanner-csrf.test.js`, `test/admin-login.test.js`,
+  `test/unified-login-ui.test.js`, `test/offline-frontend-sync.test.js` and the
+  rest of the existing suite pass unchanged; the only edit inside `public/` is
+  the native-token branch in `api.js` (no raw mutating `fetch` added).
+- `desktop/test/*.test.js` (plain `node --test`, mocked Electron, no display):
+  settings atomicity + self-healing, `safeStorage` token storage never writing
+  plaintext, mode selection, a real Express + SQLite boot on an ephemeral port
+  serving `/login`, `/sw.js`, `/api/health`, two hosts on one data folder, the
+  jsdom proof that `api.js` prefers the native bridge, deep-link allow-list,
+  menu/tray actions, the packaging contract, and static + runtime security
+  assertions (contextIsolation, no remote module, navigation allow-list, loopback
+  in cloud mode).
+- Production boot smoke check with a fresh database: `NODE_ENV=production` +
+  generated secrets + an empty `DATA_DIR` boots, migrates, seeds and serves.
+
+## Phase 4 Specification (Session 4) — Mobile & Tablet Software Application
+
+**Goal:** the same platform as a real installable app on Android phones/tablets
+and iPhone/iPad, with durable offline storage, a real network listener and a
+camera QR attendance scanner.
+
+1. **`mobile/` Capacitor project** — `capacitor.config.ts`, `android/` Gradle
+   project, `ios/` Xcode project, its own `package.json`
+   (`@capacitor/core|android|ios|cli` as devDependencies of `mobile/` only — the
+   root install stays unchanged), `mobile/node_modules` git-ignored, and a
+   `scripts/sync-web.js` that copies `public/` into the platform bundles exactly
+   as `desktop/scripts/stage.js` does for the PC.
+2. **Native bridge (`public/js/native-bridge.js`)** — injects the same frozen
+   `window.__EDUSPHERE_NATIVE__` contract the desktop app exposes (platform,
+   deviceId, deviceName, `getDeviceToken`/`setDeviceToken`/`clearDeviceToken`,
+   `openExternal`, `mode`) so `public/js/api.js` mints Bearer device tokens
+   exactly as it already does on the desktop. Tokens go to the iOS Keychain /
+   Android Keystore-backed storage — never `localStorage`.
+3. **Native storage durability** — a SQLite-backed adapter behind
+   `public/js/offline-db.js` (same scoped-key contract, same outbox semantics),
+   selected automatically inside the native shell, migrating whatever IndexedDB
+   already holds so an updated install keeps its queue.
+4. **Real network listener** — `@capacitor/network` drives
+   `SyncEngine.setOnline()` so the pill, the outbox flush and the pull timer react
+   to the radio instead of polling `navigator.onLine`; app foreground/background
+   transitions trigger a sync on resume.
+5. **Camera QR attendance scanner** — camera permission handling for Android
+   (runtime permission + rationale) and iOS (`NSCameraUsageDescription`),
+   continuous scanning with `jsQR`, a torch toggle, and a manual-code fallback
+   for denied permissions or a broken camera, reusing the Phase 1
+   `attendance.scan` mutation so scans queue offline and verify against cached
+   `card_credentials`.
+6. **Mobile/tablet UX polish** — safe-area insets for notches and rounded
+   corners, 44px minimum touch targets, Android hardware back button routed into
+   the SPA history, no rubber-band scrolling behind modals, and a tablet
+   two-column layout for registers.
+7. **GitHub Actions** — `.github/workflows/mobile-release.yml`: an Android job
+   (`ubuntu-latest`) producing a signed `.apk` (debug-signed fallback when no
+   keystore secrets exist) and an `.aab` for Play upload via
+   `bundleRelease`, plus documented, gated iOS build steps for a `macos-latest`
+   runner (`.ipa` via `xcodebuild archive`/`exportArchive`, signing only when
+   Apple secrets are present). Artifacts uploaded on every push, attached to a
+   GitHub Release on a `v*` tag.
+8. **Tests & guardrails** — `mobile/test/*.test.js` with plain `node --test`
+   (bridge contract, network listener wiring, storage adapter parity with
+   IndexedDB, camera-permission fallbacks), the whole existing suite plus the
+   desktop suite still green, and no raw mutating `fetch` added to `public/js/`.
+9. **Security & zero crashes** — camera permission only when the scanner opens,
+   deep-link/URL allow-lists on the native side, no plaintext token on disk, no
+   remote code, and an uncaught-exception/error boundary that shows a friendly
+   screen instead of a blank WebView.
+10. **Close the roadmap** — explain the work in plain language, prove the
+    verification (test counts, build output, artifact names), wait for explicit
+    confirmation before merging, then mark Phase 4 (and the 4-phase project)
+    completed in this document.

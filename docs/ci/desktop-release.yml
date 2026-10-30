@@ -1,0 +1,211 @@
+name: Desktop installers
+
+# =============================================================================
+# EduSphere desktop (Phase 3) — builds the real installers on every push and
+# attaches them to a GitHub Release when a `v*` tag is pushed.
+#
+# WHERE THIS FILE LIVES
+#   This is the canonical workflow, versioned here because the automation that
+#   opened this branch is a GitHub App without the `workflows` permission, so a
+#   file under .github/workflows/ could not be pushed. To activate CI, run:
+#
+#       mkdir -p .github/workflows
+#       cp docs/ci/desktop-release.yml .github/workflows/desktop-release.yml
+#
+#   (or grant the app `Workflows: Read and write` and move the file there).
+#   desktop/test/packaging.test.js reads the live path when present and this
+#   copy otherwise, so the workflow is still verified by the test suite.
+#
+#   Windows  EduSphere-<version>-win-x64.exe / -win-arm64.exe        (NSIS)
+#   macOS    EduSphere-<version>-mac-universal.dmg
+#   Linux    EduSphere-<version>-linux-x64.AppImage / .deb (+ arm64)
+#
+# Signing is OPTIONAL and env-driven. With no secrets configured every job
+# still produces working, unsigned installers; when the secrets exist the same
+# workflow signs (and, on macOS, notarizes) without any further change.
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "server/**"
+      - "public/**"
+      - ".github/workflows/desktop-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.22.3"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Fast guard: the desktop suite is headless (mocked Electron) so it runs on
+  #    the cheapest runner before any installer is built.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Desktop tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Run the desktop test suite
+        working-directory: desktop
+        run: npm test
+
+      - name: Run the platform guard tests (SQL dialect, CSRF, login)
+        run: >
+          node --disable-warning=ExperimentalWarning --test
+          test/sql-compat.test.js
+          test/mysql-runtime.test.js
+          test/card-scanner-csrf.test.js
+          test/admin-login.test.js
+          test/unified-login-ui.test.js
+          test/offline-frontend-sync.test.js
+
+  # ---------------------------------------------------------------------------
+  # 2. Build the installers for each operating system.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.label }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+            build: npm run dist:linux
+            artifacts: |
+              desktop/dist/*.AppImage
+              desktop/dist/*.deb
+          - os: macos-latest
+            label: macOS
+            build: npm run dist:mac
+            artifacts: |
+              desktop/dist/*.dmg
+          - os: windows-latest
+            label: Windows
+            build: npm run dist:win
+            artifacts: |
+              desktop/dist/*.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Stage the shared server/ and public/ folders
+        working-directory: desktop
+        run: npm run stage
+
+      # ----- macOS: sign + notarize only when the Apple secrets exist -------
+      - name: Build (signed + notarized)
+        if: matrix.os == 'macos-latest' && secrets.MAC_CSC_LINK != ''
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --config electron-builder.yml --mac --config.mac.notarize=true
+
+      # ----- Windows: sign only when the Windows certificate exists ---------
+      - name: Build (signed)
+        if: matrix.os == 'windows-latest' && secrets.WIN_CSC_LINK != ''
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npx electron-builder --config electron-builder.yml --win
+
+      # ----- Unsigned fallback: still produces a real, installable build ----
+      - name: Build (unsigned)
+        if: |
+          (matrix.os == 'ubuntu-latest') ||
+          (matrix.os == 'macos-latest' && secrets.MAC_CSC_LINK == '') ||
+          (matrix.os == 'windows-latest' && secrets.WIN_CSC_LINK == '')
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: ${{ matrix.build }}
+
+      - name: List the produced installers
+        shell: bash
+        run: ls -lh desktop/dist || dir desktop\dist
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: EduSphere-${{ matrix.label }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # 3. Publish: on a `v*` tag, collect every installer and attach them to the
+  #    GitHub Release for that tag.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download every installer
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Show what will be published
+        run: ls -lh release
+
+      - name: Attach installers to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: EduSphere ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: release/*
