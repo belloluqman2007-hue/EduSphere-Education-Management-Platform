@@ -19,6 +19,7 @@ const config = require("../config");
 const { cleanStr, logActivity, asyncHandler } = require("../util");
 const permissionService = require("../services/permissions");
 const profileMedia = require("../services/profile-media");
+const deviceTokens = require("../services/device-tokens");
 const { imageUploader } = require("../middleware/upload");
 
 const router = express.Router();
@@ -49,6 +50,14 @@ function csrfGuard(req, res, next) {
   if (path.startsWith("/auth/login") || path.startsWith("/auth/forgot-password") ||
       path.startsWith("/auth/reset-password") || path.startsWith("/csrf-token") ||
       path.endsWith("/fees/payment/webhook")) return next();
+  // Native desktop/mobile apps authenticate explicitly via Authorization: Bearer
+  // header (never ambient cross-site cookies). If an Authorization header was
+  // sent and failed verification, answer 401 rather than falling through to
+  // cookie CSRF.
+  if (req.authMethod === "bearer" && req.user) return next();
+  if (req.authMethod === "bearer_invalid") {
+    return res.status(401).json({ error: "Authentication required.", code: "DEVICE_TOKEN_INVALID" });
+  }
   const token = String(req.get("x-csrf-token") || "");
   if (!token || token !== (req.session && req.session.csrfToken)) {
     return res.status(403).json({ error: "CSRF token missing or invalid. Refresh the page and try again." });
@@ -185,7 +194,7 @@ router.post("/login", async (req, res) => {
       // migrated; logging must never block a valid sign-in.
       logActivity(db, { madrasaId: user.madrasa_id, userId: user.id, action: "login", entity: "auth", entityId: String(user.id), ip: req.ip || "" });
     });
-    req.session.save((saveErr) => {
+    req.session.save(async (saveErr) => {
       if (saveErr) {
         // The credentials WERE correct — only writing the session row failed.
         // Log the real driver error so the cause is visible in the server log
@@ -193,7 +202,26 @@ router.post("/login", async (req, res) => {
         console.error("Login failed while saving the session:", saveErr);
         return res.status(500).json({ error: sessionStoreMessage(saveErr), code: "SESSION_SAVE_ERROR" });
       }
-      res.json({
+      const wantDeviceToken = Boolean(
+        (req.body && req.body.issueDeviceToken) || req.get("x-client-platform")
+      );
+      let minted = null;
+      if (wantDeviceToken) {
+        try {
+          minted = await deviceTokens.issueToken({
+            userId: user.id,
+            madrasaId: user.madrasa_id,
+            deviceId: (req.body && req.body.deviceId) || req.get("x-device-id") || "",
+            deviceName: (req.body && req.body.deviceName) || "",
+            platform: (req.body && req.body.platform) || req.get("x-client-platform") || "native",
+            ip: String(req.ip || "").slice(0, 64),
+          });
+        } catch (tokenErr) {
+          console.error("Login failed while issuing device token:", tokenErr);
+          return res.status(500).json({ error: "Sign-in succeeded, but device token creation failed.", code: "DEVICE_TOKEN_ERROR" });
+        }
+      }
+      const payload = {
         ok: true,
         role: user.role,
         madrasaId: user.madrasa_id,
@@ -206,16 +234,30 @@ router.post("/login", async (req, res) => {
           fullName: user.full_name,
           fullNameAr: user.full_name_ar,
         },
-      });
+      };
+      if (minted) {
+        payload.deviceToken = minted.token;
+        payload.deviceTokenExpiresAt = minted.expiresAt;
+        payload.deviceTokenId = minted.tokenId;
+      }
+      res.json(payload);
     });
   });
 });
 
-router.post("/logout", (req, res) => {
-  const uid = req.session && req.session.userId;
+router.post("/logout", asyncHandler(async (req, res) => {
+  const uid = (req.user && req.user.id) || (req.session && req.session.userId) || null;
   const mid = req.user ? req.user.madrasaId : null;
   const role = req.user ? req.user.role : "";
-  req.session.destroy(() => {
+  if (req.deviceTokenId && uid) {
+    await deviceTokens.revokeTokenById(req.deviceTokenId, uid).catch(() => {});
+  } else {
+    const bearer = deviceTokens.extractBearerToken(req);
+    if (bearer.present && bearer.token) {
+      await deviceTokens.revokeRawToken(bearer.token).catch(() => {});
+    }
+  }
+  const finish = () => {
     res.clearCookie("mm_session");
     db.run(
       `INSERT INTO activity_log (madrasa_id, user_id, user_role, action, module, entity, entity_id, ip)
@@ -225,8 +267,40 @@ router.post("/logout", (req, res) => {
       logActivity(db, { madrasaId: mid, userId: uid, action: "logout", entity: "auth", entityId: String(uid || "") });
     });
     res.json({ ok: true });
+  };
+  if (req.session && typeof req.session.destroy === "function") {
+    req.session.destroy(() => finish());
+  } else {
+    finish();
+  }
+}));
+
+/** Lists active signed-in native/offline devices for the current account. */
+router.get("/devices", asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  const devices = await deviceTokens.listUserDevices(req.user.id, req.deviceTokenId || null);
+  res.json({ ok: true, devices });
+}));
+
+/** Revokes a signed-in device token belonging to the current account. */
+router.delete("/devices/:id", asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+  const tokenId = Number(req.params.id);
+  if (!Number.isInteger(tokenId) || tokenId <= 0) {
+    return res.status(400).json({ error: "Invalid device id." });
+  }
+  const removed = await deviceTokens.revokeTokenById(tokenId, req.user.id);
+  if (!removed) return res.status(404).json({ error: "Device session not found." });
+  logActivity(db, {
+    madrasaId: req.user.madrasaId,
+    userId: req.user.id,
+    action: "device_token.revoke",
+    entity: "auth",
+    entityId: String(tokenId),
+    ip: req.ip,
   });
-});
+  res.json({ ok: true, revokedId: tokenId });
+}));
 
 router.get("/me", asyncHandler(async (req, res) => {
   if (!req.user) return res.json({ loggedIn: false });
@@ -477,7 +551,8 @@ router.post("/change-password", async (req, res) => {
   // A password change invalidates every OTHER session of this account (other
   // browsers/devices). This session stays: the user just proved they own it.
   const killed = await destroyUserSessions(req.user.id, req.sessionID);
-  logActivity(db, { madrasaId: req.user.madrasaId, userId: req.user.id, action: "change_password", entity: "auth", entityId: String(req.user.id), ip: req.ip, meta: { sessionsInvalidated: killed } });
+  const devicesRevoked = await deviceTokens.revokeUserTokens(req.user.id, req.deviceTokenId || null);
+  logActivity(db, { madrasaId: req.user.madrasaId, userId: req.user.id, action: "change_password", entity: "auth", entityId: String(req.user.id), ip: req.ip, meta: { sessionsInvalidated: killed, devicesRevoked } });
   res.json({ ok: true });
 });
 
@@ -623,6 +698,7 @@ router.post("/reset-password", async (req, res) => {
   await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [hash, user.id]);
   // Password changed from an unauthenticated flow: drop EVERY session.
   await destroyUserSessions(user.id, null);
+  await deviceTokens.revokeUserTokens(user.id, null);
   logActivity(db, {
     madrasaId: user.madrasa_id, userId: user.id, action: "password_reset.complete",
     entity: "auth", entityId: String(user.id), ip: req.ip,

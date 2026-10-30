@@ -61,6 +61,8 @@ const { router: subscriptionRouter, platformRouter: subscriptionAdminRouter } = 
 // EduSphere AI: dashboard assistant, public website, WhatsApp and the
 // operator's knowledge base.
 const { router: aiRouter, publicRouter: aiPublicRouter, whatsappRouter: aiWhatsappRouter, platformRouter: aiAdminRouter } = require("./routes/ai");
+// Native desktop/mobile offline-first sync engine (/api/sync/status, /pull, /push).
+const { router: syncRouter } = require("./routes/sync");
 const institution = require("./services/institution");
 const perfMonitor = require("./services/perf-monitor");
 const { asyncHandler, ok, err, toNum, logActivity } = require("./util");
@@ -71,6 +73,11 @@ function createApp() {
   app.disable("x-powered-by");
   app.set("trust proxy", 1); // behind a proxy (Render/Railway) for correct req.ip
 
+  const connectSrc = ["'self'"];
+  if (config.API_BASE_URL) {
+    try { connectSrc.push(new URL(config.API_BASE_URL).origin); } catch (e) { /* relative path */ }
+  }
+
   app.use(helmet({
     contentSecurityPolicy: {
       useDefaults: true,
@@ -79,7 +86,7 @@ function createApp() {
         "script-src": ["'self'"],
         "style-src": ["'self'", "'unsafe-inline'"],
         "img-src": ["'self'", "data:", "blob:"],
-        "connect-src": ["'self'"],
+        "connect-src": connectSrc,
       },
     },
     crossOriginEmbedderPolicy: false,
@@ -97,9 +104,13 @@ function createApp() {
   app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
   /* ------------------------- CORS (allow-list) --------------------------- */
-  // Same-origin by default (no headers needed). Cross-origin only if the
-  // operator explicitly allows the origin via CORS_ORIGINS.
-  const allowedOrigins = new Set(config.CORS_ORIGINS);
+  // Same-origin by default (no headers needed). Cross-origin allowed for
+  // operator-configured CORS_ORIGINS and native Electron / Capacitor app shells
+  // (which authenticate via explicit Authorization: Bearer device tokens).
+  const allowedOrigins = new Set([
+    ...(config.CORS_ORIGINS || []),
+    ...(config.NATIVE_APP_ORIGINS || []),
+  ]);
   app.use((req, res, next) => {
     const origin = req.get("origin");
     if (origin && allowedOrigins.has(origin)) {
@@ -107,7 +118,7 @@ function createApp() {
       res.setHeader("Vary", "Origin");
       res.setHeader("Access-Control-Allow-Credentials", "true");
       res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, Authorization, X-Device-Id, X-Client-Platform");
       if (req.method === "OPTIONS") return res.status(204).end();
     }
     next();
@@ -130,6 +141,8 @@ function createApp() {
         apiBase: config.EFFECTIVE_API_BASE,
         categoryConfig: institution.clientCategoryConfig(),
         schoolSlug: custom ? custom.slug : "",
+        offlineSync: true,
+        syncVersion: 1,
       }) + ";");
   });
 
@@ -330,6 +343,8 @@ function createApp() {
       appName: "Multi-Madrasa Management Platform",
       env: config.NODE_ENV,
       paymentGateway: config.PAYMENT_GATEWAY,
+      offlineSync: true,
+      syncVersion: 1,
     });
   });
 
@@ -355,8 +370,11 @@ function createApp() {
     },
   }));
 
-  api.use(csrfGuard);
+  // Resolve authentication (Bearer device token OR session cookie) BEFORE
+  // csrfGuard so valid Bearer-authenticated native app calls pass cleanly while
+  // cookie-based browser sessions continue enforcing X-CSRF-Token strictly.
   api.use(loadUser);
+  api.use(csrfGuard);
   // Authenticated API payloads must never sit in a shared/proxy cache or be
   // re-served from disk cache after logout (browser Back must not re-expose
   // data). Only anonymous responses (config, csrf token, health) stay neutral.
@@ -369,6 +387,7 @@ function createApp() {
   api.get("/csrf-token", (req, res) => res.json({ csrfToken: ensureCsrfToken(req) }));
 
   api.use("/auth", authRouter);
+  api.use("/sync", syncRouter);
   // Cross-cutting admin capabilities (granular permissions, the institution
   // audit log, dashboard "needs attention" and global search). It owns no new
   // data model — it reads the tables the existing modules already own, always

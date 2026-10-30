@@ -15,10 +15,39 @@
    and a stolen-but-valid cookie can't outlive an account being disabled.
    ========================================================================== */
 const db = require("../db");
+const deviceTokens = require("../services/device-tokens");
 
-/** Loads the current user from the session; attaches fresh DB record to req.user. */
+/**
+ * Loads the current user from either:
+ *   1. an explicit `Authorization: Bearer eds_...` device token (native PC,
+ *      phone & tablet apps), or
+ *   2. the DB-backed session cookie (web browser).
+ * Attaches a fresh DB record to `req.user`. When a Bearer header is sent,
+ * authentication never falls back to a session cookie, preventing a bogus
+ * Authorization header from bypassing cookie CSRF checks.
+ */
 async function loadUser(req, res, next) {
   req.user = null;
+  req.authMethod = null;
+  req.deviceTokenId = null;
+
+  const bearer = deviceTokens.extractBearerToken(req);
+  if (bearer.present) {
+    try {
+      const verified = await deviceTokens.verifyBearerToken(bearer.token);
+      if (verified) {
+        req.user = verified.user;
+        req.authMethod = "bearer";
+        req.deviceTokenId = Number(verified.tokenRow.id);
+      } else {
+        req.authMethod = "bearer_invalid";
+      }
+    } catch (e) {
+      req.authMethod = "bearer_invalid";
+    }
+    return next();
+  }
+
   const uid = req.session && req.session.userId;
   if (uid) {
     try {
@@ -36,6 +65,7 @@ async function loadUser(req, res, next) {
           fullNameAr: u.full_name_ar,
           studentId: u.student_id ? Number(u.student_id) : null,
         };
+        req.authMethod = "session";
       } else {
         // Account removed or deactivated — clear the stale session.
         req.session.userId = null;

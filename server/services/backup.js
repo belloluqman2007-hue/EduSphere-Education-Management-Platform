@@ -41,10 +41,10 @@ const TABLE_ORDER = [
   "website_pages", "gallery_albums", "gallery_images",
   // Expense & budget tables
   "expense_categories", "budgets", "expenses", "expense_receipts",
-  "user_permissions", "activity_log",
+  "user_permissions", "sync_mutations", "activity_log",
 ];
 /* Never part of a snapshot: login state is not data. */
-const SKIP_TABLES = new Set(["app_sessions"]);
+const SKIP_TABLES = new Set(["app_sessions", "device_auth_tokens"]);
 
 function stamp(d = new Date()) {
   // Milliseconds are part of the name on purpose: two snapshots taken in the
