@@ -51,13 +51,13 @@ test("electron-builder produces .exe, .dmg, .AppImage and .deb for every arch", 
   assert.match(yml, /target:\s*dmg/);
   assert.match(yml, /-\s*universal/);
   assert.match(yml, /hardenedRuntime:\s*true/);
-  assert.match(yml, /entitlements:\s*build\/entitlements\.mac\.plist/);
+  assert.match(yml, /entitlements:\s*resources\/entitlements\.mac\.plist/);
   assert.match(yml, /target:\s*AppImage/);
   assert.match(yml, /target:\s*deb/);
   assert.match(yml, /notarize:\s*false/, "notarization stays off unless CI passes --config.mac.notarize=true");
-  assert.match(yml, /icon:\s*build\/icon\.ico/);
-  assert.match(yml, /icon:\s*build\/icon\.icns/);
-  assert.match(yml, /icon:\s*build\/icons/);
+  assert.match(yml, /icon:\s*resources\/icon\.ico/);
+  assert.match(yml, /icon:\s*resources\/icon\.icns/);
+  assert.match(yml, /icon:\s*resources\/icons/);
   assert.doesNotMatch(yml, /CSC_LINK\s*[:=]\s*\S/, "no certificate path or secret is committed");
   assert.doesNotMatch(yml, /^\s*(password|CSC_KEY_PASSWORD)\s*:/m, "no credential ever appears in the build config");
 });
@@ -74,21 +74,21 @@ test("the app entry points and security-sensitive files exist", () => {
 });
 
 test("icons exist for Windows, macOS and Linux in every format the targets need", () => {
-  const png = fs.readFileSync(path.join(DESKTOP, "build", "icon.png"));
-  assert.equal(png.slice(0, 8).toString("hex"), "89504e470d0a1a0a", "build/icon.png is a real PNG");
+  const png = fs.readFileSync(path.join(DESKTOP, "resources", "icon.png"));
+  assert.equal(png.slice(0, 8).toString("hex"), "89504e470d0a1a0a", "resources/icon.png is a real PNG");
   assert.ok(png.length > 5000);
 
-  const ico = fs.readFileSync(path.join(DESKTOP, "build", "icon.ico"));
+  const ico = fs.readFileSync(path.join(DESKTOP, "resources", "icon.ico"));
   assert.equal(ico.readUInt16LE(0), 0, "ICO reserved field");
   assert.equal(ico.readUInt16LE(2), 1, "ICO type is 1 (icon)");
   assert.ok(ico.readUInt16LE(4) >= 6, "the .ico carries multiple sizes");
 
-  const icns = fs.readFileSync(path.join(DESKTOP, "build", "icon.icns"));
+  const icns = fs.readFileSync(path.join(DESKTOP, "resources", "icon.icns"));
   assert.equal(icns.slice(0, 4).toString("ascii"), "icns");
   assert.ok(icns.length > 10000);
 
   for (const size of [16, 32, 48, 128, 256, 512]) {
-    const file = path.join(DESKTOP, "build", "icons", size + "x" + size + ".png");
+    const file = path.join(DESKTOP, "resources", "icons", size + "x" + size + ".png");
     assert.ok(fs.existsSync(file), "missing Linux icon " + size);
     assert.equal(fs.readFileSync(file).slice(1, 4).toString("ascii"), "PNG");
   }
@@ -98,8 +98,8 @@ test("icons exist for Windows, macOS and Linux in every format the targets need"
 });
 
 test("macOS entitlements allow JIT and the LAN hub, and no camera/mic access", () => {
-  const main = read("build/entitlements.mac.plist");
-  const inherit = read("build/entitlements.mac.inherit.plist");
+  const main = read("resources/entitlements.mac.plist");
+  const inherit = read("resources/entitlements.mac.inherit.plist");
   assert.match(main, /^<\?xml version="1\.0"/m, "valid XML declaration (not HTML-escaped)");
   assert.match(main, /<key>com\.apple\.security\.cs\.allow-jit<\/key>/);
   assert.match(main, /<key>com\.apple\.security\.network\.server<\/key>/, "LAN hub mode needs network.server");

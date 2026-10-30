@@ -197,7 +197,7 @@ Unsigned builds work everywhere; a signed build removes the OS warnings.
 
 `electron-builder.yml` ships `notarize: false` so a local build never fails on a
 missing certificate. Hardened-runtime entitlements live in
-`desktop/build/entitlements.mac.plist` (JIT, `network.server` for LAN mode,
+`desktop/resources/entitlements.mac.plist` (JIT, `network.server` for LAN mode,
 printing) and `entitlements.mac.inherit.plist` for the helper processes.
 
 ## 10. Security posture (verified by `desktop/test/`)

@@ -12,8 +12,8 @@
    Writes:
      assets/icon.png, assets/icon-128.png, assets/icon.ico
      assets/tray.png, assets/trayTemplate.png, assets/trayTemplate@2x.png
-     build/icon.png, build/icon.ico, build/icon.icns
-     build/icons/<size>x<size>.png   (Linux hicolor theme)
+     resources/icon.png, resources/icon.ico, resources/icon.icns
+     resources/icons/<size>x<size>.png   (Linux hicolor theme)
    ========================================================================== */
 const fs = require("fs");
 const path = require("path");
@@ -21,7 +21,7 @@ const zlib = require("zlib");
 
 const ROOT = path.resolve(__dirname, "..");
 const ASSETS = path.join(ROOT, "assets");
-const BUILD = path.join(ROOT, "build");
+const BUILD = path.join(ROOT, "resources");
 
 /* ------------------------------ PNG encoder ------------------------------ */
 
@@ -289,8 +289,8 @@ function main() {
   const written = [
     "assets/icon.png", "assets/icon-128.png", "assets/icon.ico",
     "assets/tray.png", "assets/trayTemplate.png", "assets/trayTemplate@2x.png",
-    "build/icon.png", "build/icon.ico", "build/icon.icns",
-    "build/icons/*.png (9 sizes)",
+    "resources/icon.png", "resources/icon.ico", "resources/icon.icns",
+    "resources/icons/*.png (9 sizes)",
   ];
   console.log("EduSphere icons written:\n  " + written.join("\n  "));
 }

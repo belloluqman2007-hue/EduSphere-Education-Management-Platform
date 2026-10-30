@@ -20,7 +20,7 @@ productName: EduSphere
 copyright: Copyright © 2026 EduSphere
 
 directories:
-  buildResources: build
+  buildResources: resources
   output: dist
 
 # asar is DISABLED on purpose: the embedded server is started as a child
@@ -47,7 +47,7 @@ files:
 
 # ---------------------------------------------------------------- Windows ----
 win:
-  icon: build/icon.ico
+  icon: resources/icon.ico
   target:
     - target: nsis
       arch:
@@ -71,7 +71,7 @@ nsis:
 
 # -------------------------------------------------------------------- macOS --
 mac:
-  icon: build/icon.icns
+  icon: resources/icon.icns
   category: public.app-category.education
   target:
     - target: dmg
@@ -82,8 +82,8 @@ mac:
   # Notarization stays OFF in this file so a local, unsigned build never fails.
   # CI turns it on with `--config.mac.notarize=true` when Apple secrets exist.
   notarize: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.inherit.plist
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.inherit.plist
   darkModeSupport: true
   minimumSystemVersion: "13.0"
   extendInfo:
@@ -107,7 +107,7 @@ dmg:
 
 # -------------------------------------------------------------------- Linux --
 linux:
-  icon: build/icons
+  icon: resources/icons
   category: Education
   synopsis: Education management for madaris and academies
   description: |
