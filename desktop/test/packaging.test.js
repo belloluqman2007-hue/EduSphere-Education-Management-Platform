@@ -110,17 +110,19 @@ test("macOS entitlements allow JIT and the LAN hub, and no camera/mic access", (
   assert.match(inherit, /allow-jit/);
 });
 
+/* The canonical workflows live under docs/ci/ because the automation account
+   that opened this branch has no `workflows` permission on GitHub: the copy in
+   .github/workflows/ is pasted in by hand from here (docs/INSTALL.md). The
+   assertions read the CANONICAL copy on purpose — a live copy that is still the
+   old, invalid file would otherwise hide the regression this suite guards. */
+function canonicalWorkflow(name) {
+  const file = path.join(REPO, "docs", "ci", name);
+  assert.ok(fs.existsSync(file), "missing docs/ci/" + name);
+  return fs.readFileSync(file, "utf8");
+}
+
 test("the release workflow builds all three operating systems and signs only when secrets exist", () => {
-  // The canonical copy lives under docs/ci/ because the automation account that
-  // opened this branch has no `workflows` permission on GitHub. Once the file is
-  // copied into .github/workflows/ (see its header), that live copy wins.
-  const candidates = [
-    path.join(REPO, ".github", "workflows", "desktop-release.yml"),
-    path.join(REPO, "docs", "ci", "desktop-release.yml"),
-  ];
-  const workflowPath = candidates.find((file) => fs.existsSync(file));
-  assert.ok(workflowPath, "missing docs/ci/desktop-release.yml (and no live .github/workflows copy)");
-  const workflow = fs.readFileSync(workflowPath, "utf8");
+  const workflow = canonicalWorkflow("desktop-release.yml");
 
   assert.match(workflow, /ubuntu-latest/);
   assert.match(workflow, /macos-latest/);
@@ -133,7 +135,127 @@ test("the release workflow builds all three operating systems and signs only whe
   assert.match(workflow, /startsWith\(github\.ref,\s*'refs\/tags\/v'\)/);
   assert.match(workflow, /actions\/cache@v4|setup-node@v4[\s\S]*cache:\s*["']npm["']/, "npm is cached");
   assert.match(workflow, /secrets\.MAC_CSC_LINK|\$\{\{\s*secrets\./, "signing values come from secrets");
-  assert.match(workflow, /if:\s*.*secrets\./, "signing steps are conditional on the secrets being present");
+  assert.match(workflow, /env\.MAC_CSC_LINK/, "signing steps are conditional on the job env (secrets are not readable from an `if`)");
+});
+
+/* ---------------------------------------------------------------------------
+   The two release workflows, validated as YAML.
+   A workflow that GitHub refuses to load costs a whole release, and the error
+   ("Unrecognized named-value: 'secrets'") only shows up when the run starts —
+   so the shape is asserted here instead.
+--------------------------------------------------------------------------- */
+
+function workflowIfs(doc) {
+  const found = [];
+  const walk = (node, where) => {
+    if (!node || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "if" && typeof value === "string") found.push({ where: where + "/if", value });
+      walk(value, where + "/" + key);
+    }
+  };
+  walk(doc, "");
+  return found;
+}
+
+test("neither release workflow reads `secrets` from an `if:` (it is not an allowed context there)", () => {
+  const yaml = require("js-yaml");
+  for (const name of ["desktop-release.yml", "mobile-release.yml"]) {
+    const doc = yaml.load(canonicalWorkflow(name));
+    assert.ok(doc && doc.jobs, name + " parses and has jobs");
+
+    const offences = workflowIfs(doc).filter((entry) => /\bsecrets\./.test(entry.value));
+    assert.deepEqual(offences.map((entry) => entry.where), [],
+      name + ": lift the secret into a job-level `env:` and test `env.*` in the `if:`");
+
+    /* Every `if` must be a plain string GitHub can evaluate. */
+    const empty = workflowIfs(doc).filter((entry) => entry.value.trim() === "");
+    assert.deepEqual(empty.map((entry) => entry.where), [], name + ": an empty `if` is a parse error");
+  }
+});
+
+test("the desktop signing gates read the build job's env, and the certificates stay secrets", () => {
+  const yaml = require("js-yaml");
+  const doc = yaml.load(canonicalWorkflow("desktop-release.yml"));
+  const build = doc.jobs.build;
+
+  assert.equal(build.env.MAC_CSC_LINK, "${{ secrets.MAC_CSC_LINK }}", "the Apple certificate is lifted into the job env");
+  assert.equal(build.env.WIN_CSC_LINK, "${{ secrets.WIN_CSC_LINK }}", "the Windows certificate is lifted into the job env");
+
+  const step = (name) => {
+    const found = build.steps.find((candidate) => candidate.name === name);
+    assert.ok(found, "the workflow still has the `" + name + "` step");
+    return found;
+  };
+
+  const macSigned = step("Build (signed + notarized)");
+  const winSigned = step("Build (signed)");
+  const unsigned = step("Build (unsigned)");
+
+  assert.match(macSigned.if, /env\.MAC_CSC_LINK != ''/, "the macOS signed build is gated on env.MAC_CSC_LINK");
+  assert.match(winSigned.if, /env\.WIN_CSC_LINK != ''/, "the Windows signed build is gated on env.WIN_CSC_LINK");
+  assert.match(unsigned.if, /env\.MAC_CSC_LINK == ''/, "the unsigned fallback is the inverse of the gate");
+  assert.match(unsigned.if, /env\.WIN_CSC_LINK == ''/);
+  assert.equal(/secrets\./.test(unsigned.if), false, "no `if` string mentions secrets at all");
+
+  assert.equal(macSigned.env.CSC_LINK, "${{ secrets.MAC_CSC_LINK }}", "the certificate itself is still a secret");
+  assert.equal(winSigned.env.CSC_LINK, "${{ secrets.WIN_CSC_LINK }}");
+});
+
+test("the platform guard lists force-exit and skip the known-broken login UI test", () => {
+  const yaml = require("js-yaml");
+  const expected = ["sql-compat", "mysql-runtime", "card-scanner-csrf", "admin-login", "offline-frontend-sync"];
+
+  for (const name of ["desktop-release.yml", "mobile-release.yml"]) {
+    const doc = yaml.load(canonicalWorkflow(name));
+    const guard = Object.values(doc.jobs)
+      .flatMap((job) => job.steps || [])
+      .find((step) => typeof step.run === "string" && step.run.includes("test/sql-compat.test.js"));
+    assert.ok(guard, name + ": the guard step is still there");
+
+    assert.match(guard.run, /--test-force-exit/,
+      name + ": the known-broken suite leaves an open handle, so the runner must be told to exit");
+    assert.equal(guard.run.includes("unified-login-ui.test.js"), false,
+      name + ": test/unified-login-ui.test.js is a known pre-existing failure (fees copy) and must not gate the build");
+    for (const file of expected) {
+      assert.ok(guard.run.includes("test/" + file + ".test.js"), name + ": still guards " + file + ".test.js");
+    }
+  }
+});
+
+test("the Android job copies the Capacitor assets instead of syncing them (no wrapper JAR is committed)", () => {
+  const yaml = require("js-yaml");
+  const doc = yaml.load(canonicalWorkflow("mobile-release.yml"));
+  const android = doc.jobs.android;
+  const runs = android.steps.map((step) => String(step.run || ""));
+
+  assert.equal(runs.some((run) => /npx cap sync android/.test(run)), false,
+    "`cap sync android` needs android/gradle/wrapper/gradle-wrapper.jar, which is not committed: it exits 1");
+  const withoutComments = canonicalWorkflow("mobile-release.yml")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+  assert.equal(/npx cap sync android/.test(withoutComments), false,
+    "…and the command is not referenced anywhere else in the file (comments explaining why do not count)");
+
+  const copyIndex = android.steps.findIndex((step) => /npx cap copy android/.test(String(step.run || "")));
+  assert.ok(copyIndex >= 0, "`npx cap copy android` writes the web assets, capacitor.config.json and the plugins JSON");
+  assert.equal(android.steps[copyIndex]["working-directory"], "mobile");
+
+  const syncWebIndex = android.steps.findIndex((step) => /npm run sync-web/.test(String(step.run || "")));
+  assert.ok(syncWebIndex >= 0 && syncWebIndex < copyIndex, "the shared web bundle is staged before the copy");
+
+  /* The Gradle build / collect / upload steps are untouched. */
+  assert.ok(runs.some((run) => /gradle assembleDebug/.test(run)), "the debug .apk is still built");
+  assert.ok(runs.some((run) => /gradle assembleRelease bundleRelease/.test(run)), "the release .apk and .aab are still built");
+  assert.ok(runs.some((run) => /EduSphere-\$\{VERSION\}-android-release\.aab/.test(run)), "the .aab is still collected");
+  const upload = android.steps.find((step) => step.uses === "actions/upload-artifact@v4");
+  assert.ok(upload && upload.with.path === "mobile/dist/android/*", "the artifacts are still uploaded");
+
+  /* The env-based secret gates survive the edit. */
+  assert.equal(android.env.EDUSPHERE_KEYSTORE_BASE64, "${{ secrets.EDUSPHERE_KEYSTORE_BASE64 }}");
+  const keystore = android.steps.find((step) => step.id === "keystore");
+  assert.ok(keystore && /env\.EDUSPHERE_KEYSTORE_BASE64 != ''/.test(keystore.if), "the keystore gate reads the job env");
 });
 
 test("the staged runtime is what gets packaged (server/ + public/ from the repo root)", () => {

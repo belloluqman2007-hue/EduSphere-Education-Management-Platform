@@ -14,6 +14,11 @@ through the same `window.API` layer.
 
 ## 1. Install
 
+> **Not technical?** [docs/INSTALL.md](INSTALL.md) walks through the Android
+> install (including the "unknown apps" prompt) and how to get the `.apk` in
+> the first place: copy the two workflow files into `.github/workflows/`, then
+> publish a `v1.0.0` tag.
+
 | Platform | How pupils and teachers get it |
 | --- | --- |
 | **Android phone / tablet** | **Google Play Console** (internal testing → closed → production), or the `.apk` from a GitHub Release for schools that side-load |
