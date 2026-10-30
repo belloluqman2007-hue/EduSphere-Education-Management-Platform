@@ -242,6 +242,15 @@ permission. Jobs:
 | `ios` | macOS | `EduSphere-<version>-ios.ipa` — **secret-gated** by `EDUSPHERE_IOS_BUILD` / `APPLE_TEAM_ID` |
 | `release` | Ubuntu | attaches every artifact to a GitHub Release on a `v*` tag |
 
+The Android job runs `npm run sync-web` and then `npx cap sync android`.
+`sync` (not `copy`) matters: only its `update` half writes
+`android/app/src/main/assets/capacitor.plugins.json`, the file that registers
+`@capacitor/app` (deep links) and `@capacitor/network` (the online/offline
+listener) inside the APK; `cap copy` produces an app with no native plugins.
+Both need `typescript`, because `capacitor.config.ts` is a TypeScript file —
+that is why it is a devDependency of `mobile/package.json`. Neither command
+invokes Gradle, so no committed wrapper JAR is involved.
+
 Artifacts are uploaded on **every push** to `main` (so a teacher can be handed
 a build to test), and a `v*` tag adds them to a published Release. The iOS job
 runs `xcodebuild archive` and `xcodebuild -exportArchive`; without the Apple

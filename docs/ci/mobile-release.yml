@@ -17,13 +17,18 @@ name: Mobile apps (Android + iOS)
 #   mobile/test/packaging.test.js reads the live path when present and this
 #   copy otherwise, so the workflow is still verified by `npm test`.
 #
-#   NOTE ON `cap copy` VS `cap sync` (Android)
-#   `npx cap sync android` also runs the native dependency update, which boots
-#   the Gradle wrapper — and no android/gradle/wrapper/gradle-wrapper.jar is
-#   committed here (binaries are not versioned). On a clean runner that exits 1
-#   before Gradle ever starts. The Android job therefore uses `npx cap copy
-#   android`, which writes the web assets, capacitor.config.json and the
-#   plugins JSON, and builds with the Gradle installed by setup-gradle.
+#   NOTE ON `cap sync android` AND TypeScript
+#   `capacitor.config.ts` is a TypeScript file, so the Capacitor CLI refuses to
+#   start unless `typescript` is installed: it exits 1 with
+#   "Could not find installation of TypeScript" BEFORE copying anything. That —
+#   not the Gradle wrapper — is what made the Android job fail. `typescript` is
+#   now a devDependency of mobile/package.json, so `npm ci` provides it.
+#
+#   `cap sync android` (= copy + update) is the right command, NOT `cap copy`:
+#   only the update half writes `android/app/src/main/assets/capacitor.plugins.json`,
+#   the file that registers @capacitor/app and @capacitor/network in the APK.
+#   Neither command invokes Gradle; the build below uses the Gradle installed by
+#   gradle/actions/setup-gradle, so no wrapper JAR is needed either way.
 #
 #   NOTE ON THE GUARD TESTS
 #   The platform guard list carries `--test-force-exit` and skips
@@ -159,19 +164,20 @@ jobs:
         working-directory: mobile
         run: npm run sync-web
 
-      # `npx cap sync android` copies the web assets AND then runs the native
-      # dependency update, which shells out to the Gradle wrapper. No
-      # `android/gradle/wrapper/gradle-wrapper.jar` is committed (binaries are
-      # not versioned here), so the wrapper cannot bootstrap itself on a clean
-      # runner and `cap sync android` exits 1 — the job dies before Gradle runs.
+      # `capacitor.config.ts` needs TypeScript (a devDependency of mobile/, so
+      # `npm ci` installed it): without it the CLI exits 1 with "Could not find
+      # installation of TypeScript" before writing a single file — that was the
+      # real Android failure, not the missing Gradle wrapper JAR.
       #
-      # `npx cap copy android` writes exactly what the build reads: the web
-      # assets, `capacitor.config.json` and the Capacitor plugins JSON. The
-      # Gradle steps below use the `gradle/actions/setup-gradle` toolchain that
-      # is installed in this job, so no wrapper JAR is needed.
-      - name: Capacitor copy (web assets + config + plugins JSON)
+      # `sync` = `copy` + `update`. `copy` alone is not enough: only `update`
+      # writes `android/app/src/main/assets/capacitor.plugins.json`, which is
+      # what registers @capacitor/app (deep links) and @capacitor/network
+      # (offline/online listener) inside the APK. Neither step runs Gradle — the
+      # builds below use the toolchain from gradle/actions/setup-gradle — so
+      # this is safe on a clean runner with no committed wrapper JAR.
+      - name: Capacitor sync (web assets + config + plugins JSON)
         working-directory: mobile
-        run: npx cap copy android
+        run: npx cap sync android
 
       - name: Decode the upload keystore (only when the secrets exist)
         id: keystore
