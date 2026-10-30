@@ -120,10 +120,13 @@ const persistence = require("./services/persistence");
     // accumulates dead sessions forever. Best-effort: a failed prune logs and
     // tries again on the next tick, it never takes the app down.
     if (config.SESSION_PRUNE_MINUTES > 0) {
+      const deviceTokens = require("./services/device-tokens");
       const pruneSessions = async (why) => {
         try {
           const r = await sessionStore.prune();
           if (r && r.changes) console.log(`Session prune (${why}): removed ${r.changes} expired session(s).`);
+          const dt = await deviceTokens.pruneExpiredTokens();
+          if (dt && dt.changes) console.log(`Device token prune (${why}): removed ${dt.changes} expired token(s).`);
         } catch (e) { console.error("Session prune failed:", e.message); }
       };
       await pruneSessions("boot");

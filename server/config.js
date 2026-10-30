@@ -248,6 +248,31 @@ const PAYMENT_CALLBACK_URL = String(process.env.PAYMENT_CALLBACK_URL || "").trim
 const CORS_ORIGINS = String(process.env.CORS_ORIGINS || "")
   .split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean);
 
+// Native desktop (Electron) and mobile/tablet (Capacitor) shells run from
+// embedded WebView origins rather than the cloud hostname, and authenticate
+// with explicit Bearer device tokens (never ambient cross-site cookies).
+// Operators may override via NATIVE_APP_ORIGINS="capacitor://localhost,app://edusphere"
+// or disable completely with NATIVE_APP_ORIGINS="none".
+const DEFAULT_NATIVE_APP_ORIGINS = [
+  "capacitor://localhost",
+  "ionic://localhost",
+  "app://localhost",
+  "app://edusphere",
+  "https://localhost",
+  "http://localhost",
+];
+const rawNativeOrigins = String(process.env.NATIVE_APP_ORIGINS || "").trim();
+const NATIVE_APP_ORIGINS = rawNativeOrigins.toLowerCase() === "none"
+  ? []
+  : (rawNativeOrigins
+      ? rawNativeOrigins.split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean)
+      : DEFAULT_NATIVE_APP_ORIGINS.slice());
+
+// Device tokens let native PC/Phone/Tablet apps stay signed in across offline
+// stretches (default 90 days, rolling when online) while still revocable at
+// any time from the server.
+const DEVICE_TOKEN_MAX_AGE_MS = Math.max(1, Number(process.env.DEVICE_TOKEN_MAX_AGE_DAYS || 90)) * 24 * 60 * 60 * 1000;
+
 /* ---------------------------------------------------------------------------
    RATE LIMITING
    All limiters are per-IP (per process — see docs/DEPLOYMENT.md when scaling
@@ -580,6 +605,9 @@ module.exports = {
   SUPER_ADMIN_PASSWORD,
   PUBLIC_URL,
   CORS_ORIGINS,
+  DEFAULT_NATIVE_APP_ORIGINS,
+  NATIVE_APP_ORIGINS,
+  DEVICE_TOKEN_MAX_AGE_MS,
   PAYSTACK_SECRET_KEY,
   PAYSTACK_PUBLIC_KEY,
   FLUTTERWAVE_SECRET_KEY,

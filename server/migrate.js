@@ -3049,6 +3049,65 @@ const MIGRATIONS = [
       await addColumn("madrasa_registrations", "town", "VARCHAR(120) NOT NULL DEFAULT ''");
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  {
+    // NATIVE DESKTOP / MOBILE APPS & OFFLINE SYNC FOUNDATION
+    // 1. device_auth_tokens: revocable Bearer tokens (stored only as SHA-256
+    //    hashes) for Electron PC and Capacitor Android/iOS apps, which run
+    //    cross-origin from embedded WebViews and must remain signed in across
+    //    multi-day offline stretches.
+    // 2. sync_mutations: per-tenant idempotency ledger + local-to-server ID
+    //    mapping table so queued offline mutations pushed via /api/sync/push
+    //    execute at most once even across flaky mobile network retries.
+    id: "045_native_app_and_offline_sync",
+    up: async (api, dialect) => {
+      const idx = async (sql) => {
+        try { await api.run(sql); }
+        catch (e) { if (!/duplicate|already exists/i.test(e.message || "")) throw e; }
+      };
+
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS device_auth_tokens (
+          id ${D.autoInc(dialect)},
+          madrasa_id INT NULL,
+          user_id INT NOT NULL,
+          token_hash CHAR(64) NOT NULL,
+          device_id VARCHAR(120) NOT NULL DEFAULT '',
+          device_name VARCHAR(160) NOT NULL DEFAULT '',
+          platform VARCHAR(40) NOT NULL DEFAULT 'native',
+          last_used_at BIGINT NOT NULL DEFAULT 0,
+          expires_at BIGINT NOT NULL,
+          revoked_at BIGINT NULL,
+          created_ip VARCHAR(64) NOT NULL DEFAULT '',
+          created_at ${D.ts()},
+          UNIQUE (token_hash)
+        )${D.engine(dialect)}
+      `);
+      await idx("CREATE INDEX idx_device_tokens_tenant ON device_auth_tokens (madrasa_id, user_id)");
+      await idx("CREATE INDEX idx_device_tokens_user ON device_auth_tokens (user_id, revoked_at)");
+      await idx("CREATE INDEX idx_device_tokens_expiry ON device_auth_tokens (expires_at)");
+
+      await api.run(`
+        CREATE TABLE IF NOT EXISTS sync_mutations (
+          id ${D.autoInc(dialect)},
+          madrasa_id INT NOT NULL,
+          user_id INT NOT NULL,
+          client_mutation_id VARCHAR(120) NOT NULL,
+          entity VARCHAR(60) NOT NULL,
+          action VARCHAR(60) NOT NULL,
+          local_id VARCHAR(120) NOT NULL DEFAULT '',
+          server_id VARCHAR(120) NOT NULL DEFAULT '',
+          status VARCHAR(20) NOT NULL DEFAULT 'applied',
+          response_json TEXT NULL,
+          created_at ${D.ts()},
+          ${D.fkClause(dialect, "madrasa_id", "madaris")}UNIQUE (madrasa_id, client_mutation_id)
+        )${D.engine(dialect)}
+      `);
+      await idx("CREATE INDEX idx_sync_mutations_local_id ON sync_mutations (madrasa_id, entity, local_id)");
+      await idx("CREATE INDEX idx_sync_mutations_user ON sync_mutations (user_id, created_at)");
+    },
+  },
 ];
 
 async function migrate(options = {}) {

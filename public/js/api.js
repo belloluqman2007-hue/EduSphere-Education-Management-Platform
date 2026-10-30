@@ -2,19 +2,54 @@
 /* ============================================================================
    MULTI-MADRASA PLATFORM — API client
    ----------------------------------------------------------------------------
-   Same-origin fetch with CSRF double-submit token. All requests go to the
-   NEW platform API. The base URL comes from the runtime config served by
-   this deployment (window.__APP_CONFIG__.apiBase, via /app-config.js) and
-   falls back to same-origin "/api". No hard-coded/old production URLs.
+   Same-origin fetch with CSRF double-submit token on the web, plus revocable
+   Bearer device-token auth and offline transport-interceptor hooks for native
+   Desktop (Electron) and Mobile/Tablet (Capacitor Android/iOS) applications.
+   The base URL comes from runtime config (window.__APP_CONFIG__.apiBase, via
+   /app-config.js) and falls back to same-origin "/api".
    ========================================================================== */
 (function () {
   const BASE =
     (window.__APP_CONFIG__ && window.__APP_CONFIG__.apiBase) || "/api";
+  const DEVICE_TOKEN_KEY = "edusphere.deviceToken";
   let csrfToken = null;
+  let memoryDeviceToken = "";
+  let transportInterceptor = null;
+
+  function readStoredDeviceToken() {
+    if (memoryDeviceToken) return memoryDeviceToken;
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const stored = window.localStorage.getItem(DEVICE_TOKEN_KEY) || "";
+        if (stored) memoryDeviceToken = stored;
+        return stored;
+      }
+    } catch (e) { /* storage unavailable */ }
+    return "";
+  }
+
+  function setDeviceToken(token) {
+    const clean = String(token || "").trim();
+    memoryDeviceToken = clean;
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        if (clean) window.localStorage.setItem(DEVICE_TOKEN_KEY, clean);
+        else window.localStorage.removeItem(DEVICE_TOKEN_KEY);
+      }
+    } catch (e) { /* storage unavailable */ }
+  }
+
+  function clearDeviceToken() {
+    setDeviceToken("");
+  }
+
+  function isCrossOriginBase() {
+    return /^https?:\/\//i.test(BASE);
+  }
 
   async function ensureCsrf() {
     if (csrfToken) return csrfToken;
-    const r = await fetch(BASE + "/csrf-token", { credentials: "same-origin" });
+    const r = await fetch(BASE + "/csrf-token", { credentials: isCrossOriginBase() ? "include" : "same-origin" });
     if (!r.ok) throw new Error("Could not obtain CSRF token");
     const d = await r.json();
     csrfToken = d.csrfToken;
@@ -25,8 +60,11 @@
      keeps the public location cascade working on engines without fetch. */
   function getJson(path) {
     const url = BASE + path;
+    const bearer = readStoredDeviceToken();
     if (typeof fetch === "function") {
-      return fetch(url, { headers: { Accept: "application/json" }, credentials: "same-origin" })
+      const headers = { Accept: "application/json" };
+      if (bearer) headers.Authorization = "Bearer " + bearer;
+      return fetch(url, { headers, credentials: isCrossOriginBase() ? "include" : "same-origin" })
         .then((r) => (r.ok ? r.json().catch(() => ({})) : {}))
         .catch(() => ({}));
     }
@@ -34,6 +72,7 @@
       try {
         const xhr = new XMLHttpRequest();
         xhr.open("GET", url);
+        if (bearer) xhr.setRequestHeader("Authorization", "Bearer " + bearer);
         xhr.onload = () => {
           try {
             resolve(xhr.status >= 200 && xhr.status < 300 ? JSON.parse(xhr.responseText) : {});
@@ -45,16 +84,19 @@
     });
   }
 
-  async function request(method, path, body, opts = {}) {
+  async function onlineRequest(method, path, body, opts = {}) {
     const headers = { Accept: "application/json" };
+    const bearer = readStoredDeviceToken();
     if (body && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
-    if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    if (bearer) {
+      headers.Authorization = "Bearer " + bearer;
+    } else if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
       headers["X-CSRF-Token"] = await ensureCsrf();
     }
     const res = await fetch(BASE + path, {
       method,
       headers,
-      credentials: "same-origin",
+      credentials: isCrossOriginBase() ? "include" : "same-origin",
       body: body instanceof FormData ? body : (body ? JSON.stringify(body) : undefined),
     });
     let data = null;
@@ -67,7 +109,7 @@
     const featureGated = Boolean(data && data.code === "feature_gated");
     if (res.status === 403 && headers["X-CSRF-Token"] && !featureGated && !opts.retried) {
       csrfToken = null;
-      return request(method, path, body, Object.assign({ retried: true }, opts));
+      return onlineRequest(method, path, body, Object.assign({ retried: true }, opts));
     }
     if (!res.ok) {
       /* A plan-gated action is a SALES moment, not a dead end: the server sends
@@ -81,13 +123,13 @@
           }));
         } catch (e) { /* non-fatal */ }
       }
-      // A 401 on an authenticated call means the session ended server-side
-      // (logged out elsewhere, expired, deactivated). Tell the dashboard so
-      // it can fall back to the sign-in screen instead of painting a shell
-      // whose every request now fails. (The login endpoint itself uses raw
-      // fetch and never reaches this branch.)
-      if (res.status === 401 && typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
-        try { window.dispatchEvent(new CustomEvent("bello:unauthorized", { detail: { path } })); } catch (e) { /* non-fatal */ }
+      // A 401 on an authenticated call means the session or device token ended
+      // server-side (logged out elsewhere, expired, deactivated).
+      if (res.status === 401) {
+        if (bearer) clearDeviceToken();
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+          try { window.dispatchEvent(new CustomEvent("bello:unauthorized", { detail: { path } })); } catch (e) { /* non-fatal */ }
+        }
       }
       const e = new Error((data && data.error) || `Request failed (${res.status})`);
       e.status = res.status;
@@ -97,9 +139,45 @@
     return data;
   }
 
+  async function request(method, path, body, opts = {}) {
+    if (typeof transportInterceptor === "function" && !opts.bypassOfflineInterceptor) {
+      return transportInterceptor({
+        method,
+        path,
+        body,
+        opts,
+        onlineRequest: () => onlineRequest(method, path, body, Object.assign({}, opts, { bypassOfflineInterceptor: true })),
+      });
+    }
+    return onlineRequest(method, path, body, opts);
+  }
+
   window.API = {
     /** Absolute URL for a download/print link (respects API_BASE_URL). */
     url: (p) => BASE + p,
+    getDeviceToken: readStoredDeviceToken,
+    setDeviceToken,
+    clearDeviceToken,
+    /** Hook used by sync-engine.js to serve cached reads & queue offline writes. */
+    setTransportInterceptor(fn) {
+      transportInterceptor = typeof fn === "function" ? fn : null;
+    },
+    /** Offline-first sync transport helpers (/api/sync/*). */
+    sync: {
+      status: () => onlineRequest("GET", "/sync/status", undefined, { bypassOfflineInterceptor: true }),
+      pull: (since) => onlineRequest(
+        "GET",
+        "/sync/pull" + (since ? "?since=" + encodeURIComponent(since) : ""),
+        undefined,
+        { bypassOfflineInterceptor: true }
+      ),
+      push: (mutations, deviceId) => onlineRequest(
+        "POST",
+        "/sync/push",
+        { mutations: Array.isArray(mutations) ? mutations : [], deviceId: deviceId || "" },
+        { bypassOfflineInterceptor: true }
+      ),
+    },
     /** Public (logged-out) endpoints — no session, no CSRF needed for GET. */
     public: {
       get: (p) => request("GET", "/public" + p),
@@ -108,7 +186,7 @@
       post: (p, b) => fetch(BASE + "/public" + p, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
+        credentials: isCrossOriginBase() ? "include" : "same-origin",
         body: JSON.stringify(b || {}),
       }).then(async (r) => {
         const d = await r.json().catch(() => null);
@@ -116,19 +194,33 @@
         return d;
       }),
     },
-    get: (p) => request("GET", p),
-    post: (p, b) => request("POST", p, b),
-    put: (p, b) => request("PUT", p, b),
-    patch: (p, b) => request("PATCH", p, b),
-    del: (p) => request("DELETE", p),
-    async login(username, password, remember) {
+    get: (p, opts) => request("GET", p, undefined, opts),
+    post: (p, b, opts) => request("POST", p, b, opts),
+    put: (p, b, opts) => request("PUT", p, b, opts),
+    patch: (p, b, opts) => request("PATCH", p, b, opts),
+    del: (p, opts) => request("DELETE", p, undefined, opts),
+    async login(username, password, remember, deviceOpts) {
+      const nativeInfo = (typeof window !== "undefined" && window.__EDUSPHERE_NATIVE__) || null;
+      const opts = deviceOpts || (nativeInfo ? {
+        issueDeviceToken: true,
+        deviceId: nativeInfo.deviceId || "",
+        deviceName: nativeInfo.deviceName || "",
+        platform: nativeInfo.platform || "native",
+      } : null);
+      const loginBody = { username, password, remember: Boolean(remember) };
+      if (opts && opts.issueDeviceToken) {
+        loginBody.issueDeviceToken = true;
+        if (opts.deviceId) loginBody.deviceId = String(opts.deviceId);
+        if (opts.deviceName) loginBody.deviceName = String(opts.deviceName);
+        if (opts.platform) loginBody.platform = String(opts.platform);
+      }
       let r;
       try {
         r = await fetch(BASE + "/auth/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ username, password, remember: Boolean(remember) }),
+          credentials: isCrossOriginBase() ? "include" : "same-origin",
+          body: JSON.stringify(loginBody),
         });
       } catch (networkError) {
         // DNS failure, offline, server down, TLS error… fetch rejects and the
@@ -153,13 +245,39 @@
         e.data = d;
         throw e;
       }
+      if (d && d.deviceToken) {
+        setDeviceToken(d.deviceToken);
+      }
       return d;
     },
     async me() {
-      const r = await fetch(BASE + "/auth/me", { credentials: "same-origin" });
+      if (typeof transportInterceptor === "function") {
+        return transportInterceptor({
+          method: "GET",
+          path: "/auth/me",
+          body: undefined,
+          opts: {},
+          onlineRequest: async () => {
+            const bearer = readStoredDeviceToken();
+            const headers = bearer ? { Authorization: "Bearer " + bearer } : {};
+            const r = await fetch(BASE + "/auth/me", { headers, credentials: isCrossOriginBase() ? "include" : "same-origin" });
+            return r.json();
+          },
+        });
+      }
+      const bearer = readStoredDeviceToken();
+      const headers = bearer ? { Authorization: "Bearer " + bearer } : {};
+      const r = await fetch(BASE + "/auth/me", { headers, credentials: isCrossOriginBase() ? "include" : "same-origin" });
       return r.json();
     },
-    logout: () => request("POST", "/auth/logout", {}),
+    async logout() {
+      try {
+        return await request("POST", "/auth/logout", {});
+      } finally {
+        csrfToken = null;
+        clearDeviceToken();
+      }
+    },
     reportCardUrl: (studentId, termId) => `${BASE}/results/report-card/${studentId}/${termId}`,
     bulkReportSheetsUrl: (classId, termId) => `${BASE}/results/report-cards/bulk?classId=${classId}&termId=${termId}`,
     reportTemplatePreviewUrl: (templateJson) =>
