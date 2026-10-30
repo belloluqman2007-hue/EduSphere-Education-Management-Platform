@@ -30,3 +30,10 @@ tools/promo/dist/
 
 # Agent workspace scratch (dev-only preview/seed scripts, never shipped)
 .arena/
+
+# Desktop app (Electron) — dependencies, build output, and the staged copies of
+# server/ + public/ that scripts/stage.js writes right before packaging.
+desktop/node_modules/
+desktop/dist/
+desktop/server/
+desktop/public/

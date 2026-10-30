@@ -16,7 +16,38 @@
   let memoryDeviceToken = "";
   let transportInterceptor = null;
 
+  /* The native shell (Electron desktop → Phase 3, Capacitor mobile → Phase 4)
+     injects `window.__EDUSPHERE_NATIVE__` before this script runs. When it is
+     present the device token lives in the OPERATING SYSTEM's encrypted store
+     (Electron safeStorage / iOS Keychain / Android Keystore) behind that
+     bridge, so this file must never keep a copy in localStorage: a bearer
+     token in web storage is readable by any script on the page and survives a
+     sign-out the OS did not perform. */
+  function nativeBridge() {
+    if (typeof window === "undefined") return null;
+    const bridge = window.__EDUSPHERE_NATIVE__;
+    return bridge && typeof bridge.getDeviceToken === "function" ? bridge : null;
+  }
+
+  /** Remove a token left behind by an older/browser session (native only). */
+  function dropLegacyWebToken() {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.removeItem(DEVICE_TOKEN_KEY);
+      }
+    } catch (e) { /* storage unavailable */ }
+  }
+
   function readStoredDeviceToken() {
+    const bridge = nativeBridge();
+    if (bridge) {
+      try {
+        const token = bridge.getDeviceToken();
+        return typeof token === "string" ? token : "";
+      } catch (e) {
+        return "";
+      }
+    }
     if (memoryDeviceToken) return memoryDeviceToken;
     try {
       if (typeof window !== "undefined" && window.localStorage) {
@@ -31,6 +62,20 @@
   function setDeviceToken(token) {
     const clean = String(token || "").trim();
     memoryDeviceToken = clean;
+    const bridge = nativeBridge();
+    if (bridge) {
+      try {
+        if (clean && typeof bridge.setDeviceToken === "function") {
+          const pending = bridge.setDeviceToken(clean);
+          if (pending && typeof pending.catch === "function") pending.catch(() => {});
+        } else if (!clean && typeof bridge.clearDeviceToken === "function") {
+          const pending = bridge.clearDeviceToken();
+          if (pending && typeof pending.catch === "function") pending.catch(() => {});
+        }
+      } catch (e) { /* the shell will report its own failure */ }
+      dropLegacyWebToken();
+      return;
+    }
     try {
       if (typeof window !== "undefined" && window.localStorage) {
         if (clean) window.localStorage.setItem(DEVICE_TOKEN_KEY, clean);

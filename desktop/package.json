@@ -1,0 +1,38 @@
+{
+  "name": "edusphere-desktop",
+  "productName": "EduSphere",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EduSphere desktop application for Windows, macOS and Linux — cloud-synced or a local school LAN hub with no internet.",
+  "author": {
+    "name": "EduSphere",
+    "email": "desktop@edusphere.app"
+  },
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "scripts": {
+    "stage": "node scripts/stage.js",
+    "start": "electron .",
+    "icons": "node tools/make-icons.js",
+    "test": "node --test \"test/*.test.js\"",
+    "pack": "npm run stage && electron-builder --config electron-builder.yml --dir",
+    "dist": "npm run stage && electron-builder --config electron-builder.yml",
+    "dist:linux": "npm run stage && electron-builder --config electron-builder.yml --linux",
+    "dist:win": "npm run stage && electron-builder --config electron-builder.yml --win",
+    "dist:mac": "npm run stage && electron-builder --config electron-builder.yml --mac"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.4.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
+    "express-session": "^1.18.1",
+    "helmet": "^8.1.0",
+    "multer": "^2.4.0",
+    "mysql2": "^3.14.0"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.0"
+  }
+}

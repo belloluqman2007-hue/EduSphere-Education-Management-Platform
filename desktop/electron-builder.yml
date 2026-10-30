@@ -1,0 +1,152 @@
+# =============================================================================
+# EduSphere desktop — electron-builder configuration
+# -----------------------------------------------------------------------------
+# Produces the four real installers the project ships:
+#     Windows   NSIS .exe   (x64 + arm64)
+#     macOS     .dmg        (universal: x64 + arm64, hardened runtime)
+#     Linux     .AppImage   (x64 + arm64)
+#     Linux     .deb        (x64 + arm64)
+# Artifact names are always:  EduSphere-<version>-<os>-<arch>.<ext>
+#
+# Code signing is ENV-DRIVEN AND OPTIONAL:
+#   • unsigned locally  → just run `npm run dist` (no certificate needed),
+#   • signed in CI      → export CSC_LINK / CSC_KEY_PASSWORD (Windows, macOS),
+#                         APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID
+#                         (notarization) and pass `--config.mac.notarize=true`.
+# See docs/DESKTOP-APP.md → "Code signing".
+# =============================================================================
+appId: app.edusphere.desktop
+productName: EduSphere
+copyright: Copyright © 2026 EduSphere
+
+directories:
+  buildResources: resources
+  output: dist
+
+# asar is DISABLED on purpose: the embedded server is started as a child
+# process (server-entry.js) and serves public/ through Express. A plain app
+# folder keeps forked scripts, `require()` resolution and static files boringly
+# ordinary on every OS — the trade-off (a slightly larger install) is worth not
+# debugging asar path rewriting inside a school's PC.
+asar: false
+npmRebuild: false
+compression: normal
+removePackageScripts: true
+buildDependenciesFromSource: false
+
+artifactName: EduSphere-${version}-${os}-${arch}.${ext}
+
+files:
+  - "**/*"
+  - "!test{,/**/*}"
+  - "!tools{,/**/*}"
+  - "!scripts{,/**/*}"
+  - "!dist{,/**/*}"
+  - "!**/*.log"
+  - "!**/.DS_Store"
+
+# ---------------------------------------------------------------- Windows ----
+win:
+  icon: resources/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+  legalTrademarks: EduSphere
+  # Requesting elevation only when the user installs for all users (below).
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: EduSphere
+  uninstallDisplayName: EduSphere
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
+
+# -------------------------------------------------------------------- macOS --
+mac:
+  icon: resources/icon.icns
+  category: public.app-category.education
+  target:
+    - target: dmg
+      arch:
+        - universal
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  # Notarization stays OFF in this file so a local, unsigned build never fails.
+  # CI turns it on with `--config.mac.notarize=true` when Apple secrets exist.
+  notarize: false
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.inherit.plist
+  darkModeSupport: true
+  minimumSystemVersion: "13.0"
+  extendInfo:
+    NSHumanReadableCopyright: Copyright © 2026 EduSphere
+    NSHighResolutionCapable: true
+    LSApplicationCategoryType: public.app-category.education
+
+dmg:
+  title: EduSphere ${version}
+  window:
+    width: 560
+    height: 380
+  contents:
+    - x: 150
+      y: 190
+      type: file
+    - x: 410
+      y: 190
+      type: link
+      path: /Applications
+
+# -------------------------------------------------------------------- Linux --
+linux:
+  icon: resources/icons
+  category: Education
+  synopsis: Education management for madaris and academies
+  description: |
+    EduSphere desktop runs the full EduSphere school platform on Windows, macOS
+    and Linux. It works offline: every change is saved on the device first and
+    synced when a connection is available. Schools with no internet can run
+    this computer as their own local server (School LAN Hub) so phones and
+    tablets on the same Wi-Fi keep working.
+  maintainer: EduSphere <desktop@edusphere.app>
+  vendor: EduSphere
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: deb
+      arch:
+        - x64
+        - arm64
+  desktop:
+    entry:
+      Name: EduSphere
+      Comment: Education management for madaris and academies
+      Categories: Office;Education;
+      Keywords: school;madrasa;students;results;fees;offline;
+
+deb:
+  priority: optional
+  # Chromium's own shared libraries; the suite is standard on Ubuntu 22.04+.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+
+appImage:
+  artifactName: EduSphere-${version}-linux-${arch}.${ext}
