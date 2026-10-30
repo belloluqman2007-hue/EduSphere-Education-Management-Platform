@@ -131,6 +131,40 @@
     return csrfPending;
   }
 
+  /* ------------------------------ offline ---------------------------------
+     At a gate with no internet, sync-engine.js is the thing that knows the card
+     register (it is kept in the scoped local store) and the Outbox that will
+     carry the marking to the server later. When the browser reports that it is
+     offline we therefore hand the same two calls to window.API, which serves
+     them locally, and wrap the answer in a fetch-shaped object so the rest of
+     this file — and its message handling — stays exactly as it is.
+  ------------------------------------------------------------------------- */
+  function offlineMode() {
+    return typeof navigator !== "undefined" && navigator.onLine === false && Boolean(window.API);
+  }
+
+  /** "/api/attendance/scan" or an absolute URL -> "/attendance/scan" for window.API. */
+  function apiRelativePath(path) {
+    const clean = String(path || "");
+    if (!clean) return "";
+    if (/^https?:/i.test(clean)) {
+      try { return new URL(clean).pathname.replace(/^\/api(?=\/)/, ""); } catch (e) { return clean; }
+    }
+    return clean.startsWith("/api/") ? clean.slice(4) : clean;
+  }
+
+  /** A Response-shaped object for answers that never crossed the network. */
+  function jsonResponse(data, status) {
+    const body = data === null || data === undefined ? {} : data;
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (name) => (String(name).toLowerCase() === "content-type" ? "application/json" : null) },
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    };
+  }
+
   /**
    * POST a JSON body with the CSRF token attached, retrying the request exactly
    * once with a fresh token when the server says the old one went stale. The
@@ -138,6 +172,13 @@
    * operator when the retry does not help either.
    */
   async function postJson(path, body) {
+    if (offlineMode() && typeof window.API.post === "function") {
+      try {
+        return jsonResponse(await window.API.post(apiRelativePath(path), body), 200);
+      } catch (error) {
+        return jsonResponse({ error: (error && error.message) || "This card could not be checked offline." }, 503);
+      }
+    }
     const url = endpointUrl(path);
     const attempt = async (token) => {
       const headers = { "Content-Type": "application/json", Accept: "application/json" };
@@ -149,13 +190,25 @@
         body: JSON.stringify(body),
       });
     };
-    const response = await attempt(await csrfEnsure(false));
-    if (response.status !== 403) return response;
-    // 403 on a request that carried a token means the token is no longer the
-    // session's (expired, signed in elsewhere, server restarted). Ask once for
-    // the current one and try again; a second 403 is reported as it stands.
-    const retryToken = await csrfEnsure(true);
-    return retryToken ? attempt(retryToken) : response;
+    try {
+      const response = await attempt(await csrfEnsure(false));
+      if (response.status !== 403) return response;
+      // 403 on a request that carried a token means the token is no longer the
+      // session's (expired, signed in elsewhere, server restarted). Ask once for
+      // the current one and try again; a second 403 is reported as it stands.
+      const retryToken = await csrfEnsure(true);
+      return retryToken ? attempt(retryToken) : response;
+    } catch (networkError) {
+      // Wi-Fi that claims to be up but delivers nothing: hand the marking to the
+      // offline engine, which writes it locally and syncs it when the link returns.
+      if (window.API && typeof window.API.post === "function") {
+        try { return jsonResponse(await window.API.post(apiRelativePath(path), body), 200); }
+        catch (offlineError) {
+          return jsonResponse({ error: (offlineError && offlineError.message) || "The check could not be completed. Check the connection and scan again." }, 503);
+        }
+      }
+      throw networkError;
+    }
   }
 
   /* The software QR reader is fetched the first time a camera needs it, so a
@@ -435,7 +488,14 @@
       if (!endpoint) { window.location.href = `/verify/${encodeURIComponent(value)}`; return; }
       if (checkButton) checkButton.disabled = true;
       try {
-        const response = await fetch(endpoint + encodeURIComponent(value), { headers: { Accept: "application/json" }, credentials: "omit" });
+        const lookupUrl = endpoint + encodeURIComponent(value);
+        let response;
+        if (offlineMode() && typeof window.API.get === "function") {
+          try { response = jsonResponse(await window.API.get(apiRelativePath(lookupUrl)), 200); }
+          catch (offlineError) { response = jsonResponse({ error: (offlineError && offlineError.message) || "This card is not saved on this device." }, 503); }
+        } else {
+          response = await fetch(lookupUrl, { headers: { Accept: "application/json" }, credentials: "omit" });
+        }
         const data = await response.json().catch(() => null);
         if (!response.ok) {
           fail((data && data.error) || "No card matches that code. Check it and try again.");
