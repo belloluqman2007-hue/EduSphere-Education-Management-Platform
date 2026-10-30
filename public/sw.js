@@ -21,7 +21,7 @@
    SHELL_VERSION — the activate handler deletes the previous cache.
    ========================================================================== */
 
-const SHELL_VERSION = "edusphere-shell-v2";
+const SHELL_VERSION = "edusphere-shell-v3";
 const SHELL_CACHE = `${SHELL_VERSION}-static`;
 const RUNTIME_CACHE = `${SHELL_VERSION}-runtime`;
 
@@ -48,12 +48,17 @@ const SHELL_ASSETS = [
   "/css/subscription.css",
   "/css/print.css",
   "/css/offline-sync.css",
+  "/css/mobile-native.css",
 
   /* scripts (must match public/index.html) */
+  "/js/native-boot.js",
+  "/js/native-bridge.js",
+  "/js/mobile-storage.js",
   "/js/api.js",
   "/js/offline-db.js",
   "/js/sync-engine.js",
   "/js/sync-ui.js",
+  "/js/mobile-shell.js",
   "/js/print-page.js",
   "/js/register.js",
   "/js/register-academy.js",

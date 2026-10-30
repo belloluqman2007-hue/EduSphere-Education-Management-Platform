@@ -37,3 +37,26 @@ desktop/node_modules/
 desktop/dist/
 desktop/server/
 desktop/public/
+
+# Mobile app (Capacitor Android/iOS) — dependencies, the staged copy of public/
+# that scripts/sync-web.js writes, and every platform build output.
+mobile/node_modules/
+mobile/public/
+mobile/dist/
+mobile/.platform-stash/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/capacitor-cordova-android-plugins/
+mobile/android/app/src/main/assets/public/
+mobile/android/app/src/main/assets/capacitor.config.json
+mobile/android/app/src/main/assets/capacitor.plugins.json
+mobile/ios/App/App/public/
+mobile/ios/App/App/capacitor.config.json
+mobile/ios/App/Pods/
+mobile/ios/App/build/
+mobile/ios/App/output/
+mobile/ios/App/App.xcworkspace/
+mobile/ios/App/App.xcodeproj/project.xcworkspace/
+mobile/ios/App/App.xcodeproj/xcuserdata/

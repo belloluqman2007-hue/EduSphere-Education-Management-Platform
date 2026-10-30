@@ -34,11 +34,20 @@
   <link rel="stylesheet" href="/css/subscription.css">
   <link rel="stylesheet" href="/css/print.css">
   <link rel="stylesheet" href="/css/offline-sync.css">
+  <link rel="stylesheet" href="/css/mobile-native.css">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
   <div id="app"></div>
   <script src="/app-config.js"></script>
+  <!-- Native shell (Capacitor Android/iOS). native-boot.js is a no-op in a
+       browser; inside the phone/tablet shell it pulls in native-bridge.js (the
+       SAME frozen window.__EDUSPHERE_NATIVE__ contract the Electron preload
+       exposes, so api.js mints Phase 1 Bearer device tokens unchanged),
+       mobile-storage.js (the offline database on real SQLite) and
+       mobile-shell.js. Keeping them out of the browser keeps the web app's boot
+       exactly as fast as it was before Phase 4. -->
+  <script src="/js/native-boot.js"></script>
   <script src="/js/print-page.js"></script>
   <script src="/js/api.js"></script>
   <!-- Local-first storage, offline transport interceptor & sync UI. They load

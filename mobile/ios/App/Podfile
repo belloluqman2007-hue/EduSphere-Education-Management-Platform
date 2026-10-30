@@ -1,0 +1,35 @@
+# =============================================================================
+# EduSphere mobile — iOS/iPadOS (Capacitor 7)
+#
+# The Xcode project itself is generated once with `npx cap add ios`
+# (`npm run add:ios` does it for you and restores these committed sources);
+# this Podfile and the App sources are the parts that carry EduSphere's own
+# configuration: bundle id app.edusphere.mobile, the edusphere:// URL scheme,
+# NSCameraUsageDescription, the local-network prompt for a school LAN hub, and
+# the Keychain/SQLite plugin.
+#
+# Build on macOS only:  npm run ios:build   (see docs/MOBILE-APP.md)
+# =============================================================================
+require_relative '../../node_modules/@capacitor/ios/scripts/pods_helpers'
+
+platform :ios, '14.0'
+use_frameworks!
+
+install! 'cocoapods', :disable_input_output_paths => true
+
+def capacitor_pods
+  pod 'Capacitor', :path => '../../node_modules/@capacitor/ios'
+  pod 'CapacitorCordova', :path => '../../node_modules/@capacitor/ios'
+  pod 'CapacitorApp', :path => '../../node_modules/@capacitor/app'
+  pod 'CapacitorNetwork', :path => '../../node_modules/@capacitor/network'
+end
+
+target 'App' do
+  capacitor_pods
+  # SQLite3 (libsqlite3) ships with iOS; no extra pod is needed for the offline
+  # store — SqliteStore.swift imports the system module directly.
+end
+
+post_install do |installer|
+  assertDeploymentTarget(installer)
+end

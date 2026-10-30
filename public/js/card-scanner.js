@@ -140,7 +140,45 @@
      this file — and its message handling — stays exactly as it is.
   ------------------------------------------------------------------------- */
   function offlineMode() {
-    return typeof navigator !== "undefined" && navigator.onLine === false && Boolean(window.API);
+    if (!window.API) return false;
+    /* In the native shell the radio can drop while navigator.onLine still says
+       "online"; SyncEngine knows the truth (Phase 4 network listener). */
+    try {
+      if (window.SyncEngine && typeof window.SyncEngine.isOnline === "function" && window.SyncEngine.isOnline() === false) return true;
+    } catch (e) { /* fall through to the browser flag */ }
+    return typeof navigator !== "undefined" && navigator.onLine === false;
+  }
+
+  /* --------------------------- native permission -------------------------
+     On a phone the camera is an OS permission with three real answers: allow,
+     ask again (rationale), and "never" (permanently denied — a second request
+     shows nothing at all). mobile-shell.js asks properly and can open the
+     system settings; in a browser/desktop shell it is absent and getUserMedia
+     prompts by itself.
+  ---------------------------------------------------------------------- */
+  function cameraGate() {
+    const shell = window.MobileShell;
+    if (!shell || typeof shell.requestCamera !== "function") return Promise.resolve({ ok: true, state: "unsupported" });
+    try {
+      return Promise.resolve(shell.requestCamera()).catch(() => ({ ok: true, state: "unknown" }));
+    } catch (e) {
+      return Promise.resolve({ ok: true, state: "unknown" });
+    }
+  }
+
+  /** Offers the only action that helps after a permanent refusal — no dead end. */
+  function offerSettings(block, errorNode) {
+    if (!block || block.querySelector("[data-scanner-settings]")) return;
+    const shell = window.MobileShell;
+    if (!shell || typeof shell.openAppSettings !== "function") return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "dash-btn dash-btn-ghost dash-btn-sm";
+    button.setAttribute("data-scanner-settings", "1");
+    button.textContent = "Open camera settings";
+    button.addEventListener("click", () => { Promise.resolve(shell.openAppSettings()).catch(() => {}); });
+    const anchor = errorNode && errorNode.parentNode ? errorNode : block;
+    anchor.insertAdjacentElement("afterend", button);
   }
 
   /** "/api/attendance/scan" or an absolute URL -> "/attendance/scan" for window.API. */
@@ -297,7 +335,18 @@
       stopped = true;
       if (scanTimer) { window.clearTimeout(scanTimer); scanTimer = 0; }
       if (resumeTimer) { window.clearTimeout(resumeTimer); resumeTimer = 0; }
-      if (stream) stream.getTracks().forEach((track) => track.stop());
+      if (stream) {
+        stream.getTracks().forEach((track) => {
+          try {
+            const caps = typeof track.getCapabilities === "function" ? track.getCapabilities() : null;
+            if (caps && caps.torch && typeof track.applyConstraints === "function") {
+              const off = track.applyConstraints({ advanced: [{ torch: false }] });
+              if (off && typeof off.catch === "function") off.catch(() => {});
+            }
+          } catch (e) { /* older WebView */ }
+          track.stop();
+        });
+      }
       stream = null;
       if (viewport) {
         const video = viewport.querySelector("video");
@@ -369,6 +418,16 @@
         if (input) input.focus();
         return;
       }
+      /* Ask the OS BEFORE touching the camera, so a permanent refusal is
+         explained once (with a route to Settings) instead of failing silently
+         on every tap. */
+      const gate = await cameraGate();
+      if (!gate.ok) {
+        say(gate.message || "Camera permission is not available. Type the code printed under the QR instead.");
+        if (gate.settings) offerSettings(block, errorNode);
+        if (input) input.focus();
+        return;
+      }
       const mine = ++session;
       stopped = false;
       if (openButton) { openButton.textContent = "Starting camera…"; openButton.dataset.scannerRunning = "1"; }
@@ -412,6 +471,32 @@
       status.setAttribute("role", "status");
       status.textContent = reader ? "Hold the QR code inside the frame" : "Type the code printed under the QR";
       viewport.append(video, frame, status);
+      /* Torch: a dark gate at 7pm is exactly when a card is hardest to read.
+         Only offered when the hardware reports the capability. */
+      let torchTrack = null;
+      try {
+        torchTrack = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+        const caps = torchTrack && typeof torchTrack.getCapabilities === "function" ? torchTrack.getCapabilities() : null;
+        if (caps && caps.torch) {
+          const torch = document.createElement("button");
+          torch.type = "button";
+          torch.className = "scan-torch";
+          torch.setAttribute("data-scanner-torch", "1");
+          torch.setAttribute("aria-pressed", "false");
+          torch.textContent = "Torch";
+          torch.addEventListener("click", () => {
+            const nextTorch = torch.getAttribute("aria-pressed") !== "true";
+            Promise.resolve(torchTrack.applyConstraints({ advanced: [{ torch: nextTorch }] }))
+              .then(() => {
+                torch.setAttribute("aria-pressed", nextTorch ? "true" : "false");
+                torch.textContent = nextTorch ? "Torch on" : "Torch";
+                setStatus(nextTorch ? "Torch on" : "Torch off");
+              })
+              .catch(() => { torch.disabled = true; torch.textContent = "Torch unavailable"; });
+          });
+          viewport.appendChild(torch);
+        }
+      } catch (e) { /* the camera simply has no torch */ }
       block.insertAdjacentElement("afterend", viewport);
       block.classList.add("is-scanning");
       if (openButton) { openButton.textContent = "Stop camera"; openButton.dataset.scannerRunning = "1"; }

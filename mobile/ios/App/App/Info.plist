@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  EduSphere mobile — iOS/iPadOS Info.plist.
+
+  The privacy strings are not decoration: iOS kills the app if it touches a
+  protected resource without one, and App Review rejects it.
+
+    NSCameraUsageDescription          the QR attendance scanner. The camera is
+                                      opened ONLY when an operator taps
+                                      "Scan with camera"; nothing else in the
+                                      app asks for it.
+    NSLocalNetworkUsageDescription    pairing with a school's LAN hub
+                                      (http://192.168.x.x:port on the school
+                                      Wi-Fi).
+    NSPhotoLibraryAddUsageDescription not used for reading photos; saving a
+                                      printed receipt is the only write path.
+
+  ATS: NSAllowsArbitraryLoadsInWebContent is scoped to the WKWebView only and
+  is required for the LAN hub's plain-HTTP address, exactly like the Android
+  network_security_config. The JS allow-list (native-bridge.js) refuses any
+  public http origin, so this cannot be used as a general downgrade.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>EduSphere</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>UILaunchStoryboardName</key>
+    <string>LaunchScreen</string>
+    <key>UIMainStoryboardFile</key>
+    <string>Main</string>
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>armv7</string>
+    </array>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UIViewControllerBasedStatusBarAppearance</key>
+    <true/>
+    <key>UIStatusBarStyle</key>
+    <string>UIStatusBarStyleLightContent</string>
+
+    <!-- Deep links: edusphere://sync | edusphere://open/students | edusphere://hub?url=… -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>app.edusphere.mobile</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>edusphere</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Privacy (requested at the moment of use, never at launch) -->
+    <key>NSCameraUsageDescription</key>
+    <string>EduSphere uses the camera only to read a student's or staff ID card QR code when you open the attendance scanner. Nothing is recorded or uploaded.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>EduSphere connects to your school's own EduSphere server on the local Wi-Fi network so attendance, results and fees keep working without internet.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>EduSphere can save a report card or receipt you asked it to save to your photos.</string>
+    <key>NSFaceIDUsageDescription</key>
+    <string>EduSphere can use Face ID to keep your saved offline sign-in on this device.</string>
+
+    <!-- Local networking for a school LAN hub; web content only. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+    <key>CADisableMinimumFrameDurationOnPhone</key>
+    <true/>
+</dict>
+</plist>

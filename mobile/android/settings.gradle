@@ -1,0 +1,7 @@
+// EduSphere mobile — Android project (committed, reproducible).
+//
+// `npx cap sync android` rewrites capacitor.settings.gradle with exactly these
+// module includes; it is committed so a plain `gradle assembleDebug` works
+// straight from a clone that has run `npm install` in mobile/.
+include ':app'
+apply from: 'capacitor.settings.gradle'

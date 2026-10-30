@@ -1,0 +1,29 @@
+{
+  "name": "edusphere-mobile",
+  "productName": "EduSphere",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EduSphere mobile & tablet application for Android phones/tablets and iPhone/iPad — the same offline-first platform in a Capacitor shell.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "sync-web": "node scripts/sync-web.js",
+    "add:android": "node scripts/add-platforms.js android",
+    "add:ios": "node scripts/add-platforms.js ios",
+    "sync": "npm run sync-web && npx cap sync",
+    "sync:android": "npm run sync-web && npx cap sync android",
+    "sync:ios": "npm run sync-web && npx cap sync ios",
+    "android:debug": "node scripts/build-android.js debug",
+    "android:release": "node scripts/build-android.js release",
+    "ios:build": "node scripts/build-ios.js",
+    "verify": "node scripts/verify-native.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "devDependencies": {
+    "@capacitor/android": "^7.6.10",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/cli": "^7.6.10",
+    "@capacitor/core": "^7.6.10",
+    "@capacitor/ios": "^7.6.10",
+    "@capacitor/network": "^7.0.4"
+  }
+}

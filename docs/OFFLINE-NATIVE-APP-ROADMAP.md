@@ -11,7 +11,7 @@ This document defines the 4-phase engineering roadmap transforming EduSphere fro
 | **Phase 1** | **App-Ready Backend, Device Bearer Auth & Offline Sync API** (`/api/sync`, `device_auth_tokens`, `sync_mutations`, native CORS/CSP, `api.js` transport interceptor) | **Completed** |
 | **Phase 2** | **Frontend Local-First Storage, Outbox Engine & Sync UI** (IndexedDB/SQLite store, offline read/write interception via `API.setTransportInterceptor`, optimistic local IDs, Offline Unlock, Sync Status Bar & Queue Drawer) | **Completed** |
 | **Phase 3** | **Desktop Software Application (PC)** (Electron + `electron-builder` installers `.exe` / `.dmg` / `.AppImage` / `.deb`, embedded local Node+SQLite server / LAN School Hub mode + Cloud Sync) | **Completed** |
-| **Phase 4** | **Mobile & Tablet Software Application (Phones & Tabs)** (Capacitor Android `.apk`/`.aab` & iOS/iPadOS `.ipa`, native SQLite storage, network listener, camera QR attendance scanner, mobile/tablet UX polish) | Next |
+| **Phase 4** | **Mobile & Tablet Software Application (Phones & Tabs)** (Capacitor Android `.apk`/`.aab` & iOS/iPadOS `.ipa`, native SQLite storage, network listener, camera QR attendance scanner, mobile/tablet UX polish) | **Completed** |
 
 ---
 
@@ -393,3 +393,132 @@ camera QR attendance scanner.
     verification (test counts, build output, artifact names), wait for explicit
     confirmation before merging, then mark Phase 4 (and the 4-phase project)
     completed in this document.
+
+---
+
+## Phase 4 Reference (Implemented) — Mobile & Tablet Application (Android/iOS)
+
+The phone/tablet app is the **same `public/` bundle** as the web and desktop
+builds, wrapped by Capacitor. No screen, no offline rule and no API path is
+reimplemented: everything below is a *shell* around Phase 1–3.
+
+### 1. `mobile/` — a self-contained Capacitor workspace
+
+| Path | What it is |
+|---|---|
+| `mobile/package.json` | `@capacitor/core|cli|android|ios|app|network` as **devDependencies of `mobile/`**; the root install and root `npm test` are untouched |
+| `mobile/capacitor.config.ts` | appId `app.edusphere.mobile`, androidScheme `http`, iosScheme `capacitor`, hostname `localhost`, `allowNavigation: []`, `allowMixedContent: false` |
+| `mobile/scripts/sync-web.js` | mirrors `desktop/scripts/stage.js`: copies `public/` into `android/app/src/main/assets/public` and `ios/App/App/public` |
+| `mobile/scripts/{add-platforms,build-android,build-ios}.js` | one-command platform build; signing comes from `EDUSPHERE_KEYSTORE_*` env vars, with a documented debug-key fallback |
+| `mobile/scripts/verify-native.js` | 20 static native checks (`npm run verify`), used by CI and by `mobile/test` |
+| `mobile/android/` | committed Gradle 8.11.1 / AGP 8.7.2 project (Java 21, minSdk 23, target 35) with the Kotlin-free plugin, `SqliteStore.java`, `SecureTokenStore.java`, `MainActivity.java` |
+| `mobile/ios/App/` | committed Xcode project sources (`Info.plist`, `AppDelegate.swift`, `SecureTokenStore.swift`, `SqliteStore.swift`, `EduSphereNativePlugin.swift`) |
+
+`mobile/node_modules`, staged `public/` copies, Gradle `build/`, `Pods/` and any
+keystore/profile are git-ignored; no Gradle wrapper JAR and no `.pbxproj` are
+committed (both are generated, and both are `mobile/test` assertions).
+
+### 2. The same frozen native contract
+
+`public/js/native-bridge.js` publishes the **identical** surface the Electron
+preload does:
+
+```js
+isNative, appVersion, platform, deviceId, deviceName, mode,
+getDeviceToken(), setDeviceToken(t), clearDeviceToken(),
+print(options), savePdf(options), openExternal(url)
+```
+
+The object is `Object.freeze`d and the descriptor set is frozen by
+`mobile/test/bridge-contract.test.js`, so a future edit that would silently
+break `api.js` fails both shells at once. `api.js` therefore needed **zero**
+mobile-specific code: the Bearer token, `issueDeviceToken`, the `401 → clear the
+OS token` behaviour and the "no CSRF handshake on native" rule are the Phase 1
+paths, verified through the real `api.js` in `mobile/test/api-native.test.js`.
+
+**`public/js/native-boot.js`** decides which shell is running. In a browser it
+writes nothing (the web app downloads not one byte of native code); inside
+Capacitor it writes `native-bridge.js`, `mobile-storage.js` and `mobile-shell.js`
+synchronously, in order, before `api.js` — so the contract exists before the
+first API call and the CSP (`script-src 'self'`) is respected.
+
+### 3. Native storage durability
+
+`public/js/mobile-storage.js` implements the Phase 2 backend contract over
+`node:sqlite`-equivalent native SQLite (`SQLiteOpenHelper` on Android,
+`sqlite3` in Application Support on iOS, WAL + `synchronous=NORMAL`), with the
+tables `collections, meta, outbox, id_map, snapshots, kv` and the same
+`m<madrasaId>|u<userId>` scope key. `offline-db.js` picks it automatically
+(`window.MobileStorage.available()`), falls back to IndexedDB on any driver
+failure, and migrates an existing IndexedDB queue **once**
+(`migrateFromIndexedDB`, `{migrated:false, reason:"already-migrated"}` on a
+re-run). Because the store is app-private and every statement commits, the
+pending queue survives a kill, a restart, a reboot and a cache clear — proven in
+`mobile/test/storage-adapter.test.js` against **real SQLite** (`node:sqlite`),
+not a mock.
+
+### 4. Real network listener and resume
+
+`@capacitor/network` → `MobileShell` → `SyncEngine.setOnline()` **and**
+`SyncEngine.setConnectivityProbe()`, so the pill, the outbox flush and the pull
+timer stop trusting a stale `navigator.onLine`. `appStateChange` (active)
+triggers `syncNow()`; the browser keeps its Phase 2 `online`/`offline` events.
+
+### 5. Camera QR attendance
+
+`MobileShell.requestCamera()` is the single gate: permission is requested **when
+the scanner opens** (rationale first), `granted` → viewfinder + torch
+(`aria-pressed`, `getCapabilities().torch`), `denied-permanently` → never calls
+`getUserMedia` again, offers *Open settings* and focuses the manual code box;
+`prompt` → explain + manual entry. The scan itself reuses the Phase 1
+`attendance.scan` mutation, so it queues offline like every other write.
+`MainActivity` never requests CAMERA at launch, the manifest declares
+`CAMERA` + `uses-feature camera required="false"`, and `Info.plist` carries
+`NSCameraUsageDescription`; the `jsQR` decoder is vendored and served from the
+app bundle (no remote code).
+
+### 6. Mobile/tablet UX
+
+Safe-area insets, 44/48 px touch targets, hardware back → modal/drawer/scanner →
+history → exit, no rubber-band scrolling behind an overlay, keyboard-aware
+layout, and a two-column tablet register that **moves** rows (never clones them)
+so delegated handlers keep working. `public/css/mobile-native.css` holds the
+styling; `mobile/test/network-listener.test.js` drives the DOM behaviour.
+
+### 7. Release workflow
+
+`docs/ci/mobile-release.yml` (also installed at
+`.github/workflows/mobile-release.yml` where the token has `workflows`
+permission): `test` → `android` (`EduSphere-<version>-android-debug.apk`, plus
+`-android-release.apk` and `-android-release.aab` when a keystore is present) →
+`ios` on `macos-latest` (`xcodebuild archive` + `-exportArchive` →
+`EduSphere-<version>-ios.ipa`, secret-gated by `EDUSPHERE_IOS_BUILD` /
+`APPLE_TEAM_ID`, unsigned archive otherwise) → `release` attaching every
+artifact on a `v*` tag. Artifacts upload on every push to `main`.
+
+### 8. Verification (this branch)
+
+| Suite | Result |
+|---|---|
+| `cd mobile && npm test` | **90 tests, 90 pass** (bridge contract 14, storage adapter 7, network listener 13, camera 11, api-native 8, packaging 16, secure token 11, security 13) |
+| `cd mobile && npm run verify` | **20/20 native checks** |
+| root `npm test` | 885 tests, 883 pass — both remaining failures reproduce on the untouched `e0a2e8e` worktree (`unified-login-ui` fee-payment copy; one jsdom timing race), so Phase 4 adds no root failure |
+| `test/card-scanner-csrf.test.js` | still green: every mutating call still goes through `window.API` |
+| `test/registration-administrator-page.test.js` | 12/12 (the native payload is no longer fetched by browsers) |
+
+### 9. Security posture (asserted, not promised)
+
+No plaintext token (Keystore/Keychain only, `ThisDeviceOnly`,
+`allowBackup="false"`); a stale browser-era token is deleted; camera only from
+the scanner; https or private-LAN-http server allow-list; `edusphere:` deep-link
+allow-list; `openExternal` scheme allow-list; no `eval`, `new Function` or
+remote asset; and a WebView error boundary (uncaught error, rejected promise, or
+a shell that never paints) that shows a friendly recovery screen instead of a
+white rectangle.
+
+### 10. What an operator sees
+
+Install from **Play Console** (Android) or **TestFlight** (iOS), scan or type the
+school address (cloud URL or the **LAN hub** address on the school Wi-Fi), sign
+in once, then work with or without a connection. `docs/MOBILE-APP.md` is the
+plain-language manual for that journey.

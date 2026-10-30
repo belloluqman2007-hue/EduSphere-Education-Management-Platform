@@ -328,10 +328,38 @@
   }
 
   let backendPromise = null;
+  /**
+   * Which storage engine this device uses.
+   *
+   * 1. NATIVE SHELL (Capacitor Android/iOS): SQLite through
+   *    `public/js/mobile-storage.js`, selected automatically. It implements the
+   *    same backend contract, so every line of `OfflineScope` below is shared.
+   *    The first open migrates whatever IndexedDB already holds, so an app
+   *    update keeps the pending Outbox.
+   * 2. Browser / Electron: IndexedDB, exactly as in Phase 2.
+   * 3. Neither: the in-memory backend, so the app still runs this session.
+   */
   function backend() {
     if (backendPromise) return backendPromise;
-    backendPromise = openDatabase()
-      .then((db) => new IdbBackend(db))
+    const mobile = (typeof window !== "undefined" && window.MobileStorage) || null;
+    const preferNative = Boolean(mobile && typeof mobile.available === "function" && mobile.available());
+
+    /* Built lazily: constructing a rejected promise for the branch we do not
+       take would surface as an unhandled rejection in the console. */
+    const attempt = preferNative
+      ? Promise.resolve()
+        .then(() => mobile.openBackend())
+        .catch((error) => {
+          try {
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn("[offline-db] Native SQLite unavailable, falling back to IndexedDB:", error && error.message);
+            }
+          } catch (e) { /* console is optional */ }
+          return openDatabase().then((db) => new IdbBackend(db));
+        })
+      : openDatabase().then((db) => new IdbBackend(db));
+
+    backendPromise = attempt
       .catch((error) => {
         // Degraded mode is still an offline-capable application for this
         // session; only durability across restarts is lost.
