@@ -1,0 +1,317 @@
+/* ============================================================================
+   EduSphere — NATIVE MOBILE & TABLET POLISH (Phase 4)
+   ----------------------------------------------------------------------------
+   Loaded by every platform, but every rule below is scoped to `html.is-native`
+   (a class native-bridge.js adds only inside the Android/iOS shell), so the
+   browser and the desktop app keep their existing layout untouched.
+
+     • safe-area insets for notches, rounded corners and gesture bars
+     • 44px minimum touch targets (Apple HIG) for every control a thumb hits
+     • no rubber-band scrolling of the page behind an open modal/drawer
+     • keyboard-aware modals and forms (--keyboard-inset, set by mobile-shell.js)
+     • tablet: two-column registers (.reg-two-col) and roomier tables
+   ========================================================================== */
+
+:root {
+  --es-safe-top: env(safe-area-inset-top, 0px);
+  --es-safe-right: env(safe-area-inset-right, 0px);
+  --es-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --es-safe-left: env(safe-area-inset-left, 0px);
+  --es-touch: 44px;
+  --keyboard-inset: 0px;
+}
+
+/* ------------------------------- safe areas ------------------------------ */
+
+html.is-native,
+html.is-native body {
+  /* A WebView must not bounce the whole document: it feels like a broken app
+     and it moves the header out of the notch area. */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+html.is-native body {
+  padding-left: var(--es-safe-left);
+  padding-right: var(--es-safe-right);
+  min-height: 100dvh;
+}
+
+html.is-native .dash-top,
+html.is-native .site-head,
+html.is-native header:first-of-type {
+  padding-top: calc(var(--es-safe-top) + 8px);
+}
+
+html.is-native .dash-sidebar,
+html.is-native .ss-drawer__panel {
+  padding-bottom: calc(var(--es-safe-bottom) + 12px);
+}
+
+/* Anything pinned to the bottom of the screen (sync pill, toasts, sheets)
+   must sit above the home indicator. */
+html.is-native .es-sync-pill,
+html.is-native .dash-toasts,
+html.is-native .es-sync-drawer,
+html.is-native .scan-viewport {
+  margin-bottom: var(--es-safe-bottom);
+}
+
+html.is-native .es-sync-pill {
+  max-width: calc(100vw - 32px);
+}
+
+/* ----------------------------- touch targets ----------------------------- */
+
+html.is-native button,
+html.is-native [role="button"],
+html.is-native input[type="button"],
+html.is-native input[type="submit"],
+html.is-native .dash-btn,
+html.is-native .btn,
+html.is-native select,
+html.is-native input[type="checkbox"],
+html.is-native input[type="radio"] {
+  min-height: var(--es-touch);
+}
+
+html.is-native a.btn,
+html.is-native .dash-btn,
+html.is-native .btn {
+  min-width: var(--es-touch);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+html.is-native input,
+html.is-native select,
+html.is-native textarea {
+  /* 16px keeps iOS from zooming the whole page when a field is focused. */
+  font-size: max(16px, 1rem);
+}
+
+html.is-native .dash-btn-sm,
+html.is-native .scan-actions button {
+  min-height: var(--es-touch);
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+/* A thumb cannot reliably hit a 12px icon; give small icon-only buttons area. */
+html.is-native .dash-icon-btn,
+html.is-native .ss-drawer__close,
+html.is-native .dash-modal-close {
+  min-width: var(--es-touch);
+  min-height: var(--es-touch);
+}
+
+/* ---------------------- modals, drawers & scroll lock -------------------- */
+
+html.is-native body.is-modal-open {
+  overflow: hidden;
+  touch-action: none;
+}
+
+html.is-native body.is-modal-open .dash-modal-backdrop,
+html.is-native .dash-modal-backdrop {
+  align-items: flex-start;
+  padding-top: calc(var(--es-safe-top) + 12px);
+  padding-bottom: calc(var(--es-safe-bottom) + 12px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+html.is-native .dash-modal {
+  max-height: calc(100dvh - var(--es-safe-top) - var(--es-safe-bottom) - 24px);
+  width: 100%;
+}
+
+html.is-native .ss-drawer.is-open,
+html.is-native .es-sync-drawer.is-open {
+  overscroll-behavior: contain;
+}
+
+/* ------------------------- keyboard-aware layout ------------------------- */
+
+html.is-native.is-keyboard-open .dash-modal-backdrop {
+  align-items: flex-start;
+  padding-bottom: 0;
+}
+
+html.is-native.is-keyboard-open .dash-modal {
+  max-height: calc(100dvh - var(--keyboard-inset) - 12px);
+  overflow-y: auto;
+}
+
+html.is-native.is-keyboard-open .es-sync-pill,
+html.is-native.is-keyboard-open .dash-toasts {
+  display: none;
+}
+
+html.is-native .dash-field,
+html.is-native .dash-form-grid {
+  scroll-margin-bottom: calc(var(--keyboard-inset) + 24px);
+}
+
+/* ---------------------------- tablet layout ------------------------------ */
+
+html.is-tablet .dash-grid-2,
+html.is-tablet .student-profile-columns,
+html.is-tablet .student-profile-block-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+/* Two-column register: mobile-shell.js moves half the rows into a second
+   table so a whole class is visible without a long scroll. */
+html.is-tablet .reg-two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+html.is-tablet .reg-two-col > .dash-table-wrap {
+  margin: 0;
+}
+
+html.is-tablet .reg-two-col .dash-table {
+  font-size: 0.92rem;
+}
+
+html.is-tablet .dash-card-pad,
+html.is-tablet .dash-page {
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+/* --------------------------- camera / scanner ---------------------------- */
+
+html.is-native .scan-viewport {
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+html.is-native .scan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+html.is-native .scan-torch {
+  min-height: var(--es-touch);
+  min-width: var(--es-touch);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(10, 8, 14, 0.55);
+  color: #fff;
+  font-weight: 650;
+  padding: 0 16px;
+  cursor: pointer;
+}
+
+html.is-native .scan-torch[aria-pressed="true"] {
+  background: #f4c542;
+  color: #220b40;
+  border-color: #f4c542;
+}
+
+html.is-native .scan-permission {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+html.is-native .scan-permission a,
+html.is-native .scan-permission button {
+  min-height: var(--es-touch);
+}
+
+/* ------------------------------- pairing --------------------------------- */
+
+.edusphere-pairing {
+  position: fixed;
+  inset: 0;
+  z-index: 2147482000;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  padding: calc(var(--es-safe-top) + 24px) 22px calc(var(--es-safe-bottom) + 24px);
+  background: #220b40;
+  color: #fff;
+  overflow-y: auto;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.edusphere-pairing h1 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.edusphere-pairing p {
+  margin: 0;
+  line-height: 1.55;
+  opacity: 0.9;
+  font-size: 0.95rem;
+}
+
+.edusphere-pairing form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.edusphere-pairing label {
+  font-weight: 650;
+  font-size: 0.9rem;
+}
+
+.edusphere-pairing input {
+  min-height: 48px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  padding: 0 14px;
+  font-size: 16px;
+}
+
+.edusphere-pairing button[type="submit"] {
+  min-height: 48px;
+  border-radius: 999px;
+  border: 0;
+  background: #f4c542;
+  color: #220b40;
+  font-weight: 700;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.edusphere-pairing__error {
+  color: #ffb4a8;
+  font-weight: 600;
+}
+
+.edusphere-pairing__note {
+  opacity: 0.6;
+  font-size: 0.8rem;
+}
+
+/* ------------------------------ crash screen ----------------------------- */
+
+#edusphere-native-crash button {
+  min-height: 48px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.is-native * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

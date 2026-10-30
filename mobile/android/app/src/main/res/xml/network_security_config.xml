@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EduSphere mobile — network security policy.
+
+  WHY ANY CLEARTEXT AT ALL
+    A school with no internet runs the desktop app in "School LAN Hub" mode and
+    the office PC serves plain HTTP on the private network, e.g.
+    http://192.168.1.5:4123. A phone on the same Wi-Fi must be able to reach it,
+    or the offline-first promise is a browser-only feature.
+
+  HOW IT STAYS NARROW
+    1. The JS layer (public/js/native-bridge.js, `normalizeServerUrl`) accepts
+       https anywhere, and http ONLY on a private address:
+       10/8, 172.16/12, 192.168/16, 127/8, localhost, *.local. A public http
+       host is refused before any request is made.
+    2. Production domains are pinned to https here as well, so even a future
+       bug in the allow-list cannot downgrade edusphere.app traffic.
+    3. `trustUserAddedCAs` is false: a user-installed proxy certificate cannot
+       silently intercept a teacher's password or a device token.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">edusphere.app</domain>
+        <domain includeSubdomains="true">edusphere.com</domain>
+    </domain-config>
+</network-security-config>

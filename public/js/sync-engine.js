@@ -74,7 +74,20 @@
 
   /* ------------------------------ utilities ------------------------------ */
 
+  /* A native shell knows better than `navigator.onLine`, which a WebView keeps
+     stale when the radio drops. mobile-shell.js installs a probe backed by the
+     real @capacitor/network listener; the browser keeps the old behaviour.
+     (`var`, not `let`: `state.online` below is initialised during this same
+     pass, before a `let` here would be initialised.) */
+  var connectivityProbe = null;
+
   function onlineNow() {
+    if (typeof connectivityProbe === "function") {
+      try {
+        const answer = connectivityProbe();
+        if (answer !== null && answer !== undefined) return answer !== false;
+      } catch (e) { /* a broken probe falls back to the browser answer */ }
+    }
     try { return navigator.onLine !== false; } catch (e) { return true; }
   }
 
@@ -190,6 +203,13 @@
   }
 
   function deviceId() {
+    /* The native bridge owns the stable per-installation id (Android/iOS ship
+       it from the encrypted store), so sync records name the same device that
+       `api.js` signed in with. Web builds keep the localStorage id. */
+    try {
+      const native = window.__EDUSPHERE_NATIVE__;
+      if (native && typeof native.deviceId === "string" && native.deviceId) return native.deviceId;
+    } catch (e) { /* non-native */ }
     const existing = (function () {
       try { return window.localStorage.getItem(DEVICE_ID_KEY) || ""; } catch (e) { return ""; }
     })();
@@ -2211,6 +2231,13 @@
   async function boot(options) {
     if (state.booted && !(options && options.force)) return publicState();
     state.booted = true;
+    /* Native: the Bearer token lives in the OS keychain and is read
+       asynchronously at boot. Waiting for that prime means the very first
+       `/auth/me` already carries it instead of racing a 401. */
+    try {
+      const mobile = window.__EDUSPHERE_MOBILE__;
+      if (mobile && mobile.ready && typeof mobile.ready.then === "function") await mobile.ready;
+    } catch (e) { /* the browser has no prime to wait for */ }
     state.online = onlineNow();
     await restoreLastScope().catch(() => {});
     try {
@@ -2283,6 +2310,11 @@
     },
     isOnline: () => state.online,
     setOnline,
+    /** mobile-shell.js points this at the real network listener. */
+    setConnectivityProbe(fn) {
+      connectivityProbe = typeof fn === "function" ? fn : null;
+      return connectivityProbe !== null;
+    },
     pullNow,
     flushOutbox,
     syncNow: async function () {

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EduSphere mobile — Android manifest.
+
+  Permissions are the minimum that makes the app work offline and at a gate:
+
+    INTERNET             the cloud API and the school LAN hub
+    ACCESS_NETWORK_STATE @capacitor/network's real connectivity listener
+    CAMERA               the QR attendance scanner (requested at runtime, and
+                         ONLY when the scanner opens — see card-scanner.js and
+                         docs/MOBILE-APP.md)
+
+  Cleartext HTTP is permitted ONLY so a phone can pair with a school's LAN hub
+  (the desktop hub serves plain HTTP on the private network). The app itself
+  restricts every server address to https, or http on a private LAN address, in
+  native-bridge.js (`normalizeServerUrl`), and production domains are forced to
+  https again here in network_security_config.xml.
+
+  `edusphere://` is the app's deep-link scheme; every link is parsed against an
+  allow-list (sync / open/<path> / hub?url=… / settings / about) before it does
+  anything.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:hardwareAccelerated="true"
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|density"
+            android:exported="true"
+            android:label="@string/title_activity_main"
+            android:launchMode="singleTask"
+            android:screenOrientation="unspecified"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:windowSoftInputMode="adjustResize">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- edusphere://sync | edusphere://open/students | edusphere://hub?url=… -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="edusphere" />
+            </intent-filter>
+        </activity>
+
+        <!-- The WebView keeps its own cache; school data is in SQLite + the
+             KeyStore-encrypted token store, which "Clear cache" never touches. -->
+    </application>
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+</manifest>
