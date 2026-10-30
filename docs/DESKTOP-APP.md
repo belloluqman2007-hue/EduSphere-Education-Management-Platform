@@ -190,13 +190,17 @@ SQL/CSRF/login guards), a build matrix on `ubuntu-24.04` / `macos-latest` /
 artifacts uploaded on every run, and — on a `v*` tag — a release job that
 attaches every installer to the GitHub Release.
 
-> **Why `ubuntu-24.04` and not `ubuntu-latest`?** `ubuntu-latest` moved to
-> Ubuntu 26.04 (glibc 2.43) on 2026-10-19. The AppImage/deb tooling that
-> electron-builder downloads ships its own `libm.so.6` and refuses to start
-> there, so the Linux leg died a few seconds into `npm run dist:linux` while
-> macOS and Windows stayed green. The pin is asserted by
-> `desktop/test/packaging.test.js`; drop it once electron-builder ships tooling
-> built for glibc 2.43.
+> **Why `ubuntu-24.04` and not `ubuntu-latest`?** Release legs are pinned to an
+> image instead of the moving label (GitHub has announced `ubuntu-latest`
+> migrates to Ubuntu 26.04 / glibc 2.43, where electron-builder's bundled
+> AppImage tooling is known to break). The pin is asserted by
+> `desktop/test/packaging.test.js`.
+>
+> **The Linux leg needs `homepage` in `desktop/package.json`.** It builds an
+> AppImage *and* a `.deb`; the `.deb` is produced by fpm, which aborts the whole
+> job with *"Please specify project homepage, see …/configuration#metadata"* if
+> that field is missing. `description`, `license` and `author.email` are read by
+> the same code, and all four are now asserted by the packaging suite.
 
 ## 9. Code signing (optional, env-driven)
 

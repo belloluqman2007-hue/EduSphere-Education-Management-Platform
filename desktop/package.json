@@ -9,6 +9,7 @@
     "email": "desktop@edusphere.app"
   },
   "license": "UNLICENSED",
+  "homepage": "https://github.com/belloluqman2007-hue/EduSphere-Education-Management-Platform",
   "main": "main.js",
   "scripts": {
     "stage": "node scripts/stage.js",

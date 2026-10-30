@@ -242,6 +242,22 @@ permission. Jobs:
 | `ios` | macOS | `EduSphere-<version>-ios.ipa` — **secret-gated** by `EDUSPHERE_IOS_BUILD` / `APPLE_TEAM_ID` |
 | `release` | Ubuntu | attaches every artifact to a GitHub Release on a `v*` tag |
 
+Two things the Android build is unforgiving about, both proven by
+`mobile/test/packaging.test.js`:
+
+* **The manifest must be well-formed XML.** A missing `>` on the opening
+  `<application …>` tag is accepted by every regex but rejected by AGP's
+  manifest merger (*"Element type \"application\" must be followed by either
+  attribute specifications, \">\" or \"/>\""*), which fails `assembleDebug`
+  before a single class is compiled. The suite parses every committed
+  `.xml`/`.plist` and checks that each `@style` / `@string` / `@mipmap` /
+  `@drawable` / `@xml` reference in it resolves to a committed file.
+* **The AndroidX versions in `android/variables.gradle` must exist.**
+  `androidxCoordinatorLayoutVersion` is read by `:capacitor-android`, and a
+  version that was never published (1.2.1) fails resolution with *"Could not
+  find androidx.coordinatorlayout:coordinatorlayout:1.2.1"*. 1.2.0 is the last
+  release; Capacitor itself defaults to it.
+
 The Android job runs `npm run sync-web` and then `npx cap sync android`.
 `sync` (not `copy`) matters: only its `update` half writes
 `android/app/src/main/assets/capacitor.plugins.json`, the file that registers
