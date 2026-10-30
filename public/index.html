@@ -33,6 +33,7 @@
   <link rel="stylesheet" href="/css/support-chat.css">
   <link rel="stylesheet" href="/css/subscription.css">
   <link rel="stylesheet" href="/css/print.css">
+  <link rel="stylesheet" href="/css/offline-sync.css">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
@@ -40,6 +41,12 @@
   <script src="/app-config.js"></script>
   <script src="/js/print-page.js"></script>
   <script src="/js/api.js"></script>
+  <!-- Local-first storage, offline transport interceptor & sync UI. They load
+       immediately after api.js so the interceptor is installed before any
+       screen issues its first request. -->
+  <script src="/js/offline-db.js"></script>
+  <script src="/js/sync-engine.js"></script>
+  <script src="/js/sync-ui.js"></script>
   <script src="/js/register.js"></script>
   <script src="/js/register-academy.js"></script>
   <script src="/js/my-institution.js"></script>
