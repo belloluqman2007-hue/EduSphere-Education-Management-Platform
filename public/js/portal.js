@@ -277,6 +277,8 @@
         badge.textContent = state.unread > 99 ? "99+" : String(state.unread);
         badge.hidden = state.unread === 0;
       }
+      const bell = document.getElementById("portalBell");
+      if (bell) bell.setAttribute("aria-label", state.unread ? state.unread + " unread notifications" : "Notifications");
     } catch (e) { /* non-fatal */ }
   }
 
@@ -394,9 +396,11 @@
     const schema = navSchema();
     return schema.map((item) => item.items
       ? `<div class="dash-nav-group"><div class="dash-nav-group-label">${esc(item.label)}</div>` +
-        item.items.map(([label, route]) =>
-          `<a href="#/${state.role}/${encodeURIComponent(route)}" class="dash-nav-link${state.route === route ? " top-active" : ""}">${esc(label)}</a>`).join("") + `</div>`
-      : `<div class="dash-nav-group"><a href="#/${state.role}/${encodeURIComponent(item.route)}" class="dash-nav-link${state.route === item.route ? " top-active" : ""}">${I[item.icon] || ""}<span>${esc(item.label)}</span>${item.badge ? `<span class="dash-nav-badge">${esc(item.badge)}</span>` : ""}</a></div>`
+        item.items.map(([label, route]) => {
+          const active = state.route === route;
+          return `<a href="#/${state.role}/${encodeURIComponent(route)}" class="dash-nav-link${active ? " top-active" : ""}"${active ? ' aria-current="page"' : ""}>${esc(label)}</a>`;
+        }).join("") + `</div>`
+      : `<div class="dash-nav-group"><a href="#/${state.role}/${encodeURIComponent(item.route)}" class="dash-nav-link${state.route === item.route ? " top-active" : ""}"${state.route === item.route ? ' aria-current="page"' : ""}>${I[item.icon] || ""}<span>${esc(item.label)}</span>${item.badge ? `<span class="dash-nav-badge">${esc(item.badge)}</span>` : ""}</a></div>`
     ).join("");
   }
 
@@ -430,7 +434,7 @@
                 <div class="sub">Welcome, ${esc(me.user ? (me.user.fullName || me.user.username) : "")}</div>
               </div>
               <div class="dash-header-spacer"></div>
-              <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm portal-bell" id="portalBell" aria-label="Notifications">
+              <button type="button" class="dash-btn dash-btn-ghost dash-btn-sm portal-bell" id="portalBell" aria-label="${state.unread ? state.unread + " unread notifications" : "Notifications"}">
                 ${I.bell}<span class="portal-bell-badge" id="portalUnreadBadge" ${state.unread ? "" : "hidden"}>${state.unread > 99 ? "99+" : state.unread}</span>
               </button>
               <div class="dash-header-user">
@@ -545,6 +549,10 @@
 
   function onHashChange() {
     if (!roleFromLocation()) return;
+    // On a phone the drawer covers the page it just navigated to. Close it on
+    // every route change, whatever opened it (a nav link, a dashboard button,
+    // the back gesture).
+    setSidebar(false);
     if (!state.me) { boot(); return; }
     state.route = currentRoute();
     const root = document.getElementById("app");

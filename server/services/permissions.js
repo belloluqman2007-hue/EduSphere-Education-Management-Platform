@@ -131,6 +131,14 @@ const CATALOGUE = [
   { key: "audit", label: "Audit", permissions: [
     ["audit.view", "View the audit log"],
   ] },
+  /* The institution's own subscription is BILLING, not day-to-day school
+     work: a teacher must never see what the school pays, nor the plan
+     screens. Only an administrator (who holds every permission) gets these
+     by default, and an administrator may still grant them deliberately. */
+  { key: "subscription", label: "Subscription & billing", permissions: [
+    ["subscription.view", "View the institution's plan, usage and invoices"],
+    ["subscription.manage", "Request plan changes and pay invoices"],
+  ] },
 ];
 
 /** Flat set of every valid permission key. */
