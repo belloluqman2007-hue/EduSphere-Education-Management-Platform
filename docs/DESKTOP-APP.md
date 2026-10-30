@@ -184,11 +184,19 @@ cp docs/ci/desktop-release.yml .github/workflows/desktop-release.yml
 git add .github/workflows/desktop-release.yml && git commit -m "ci: enable desktop release workflow"
 ```
 
-It then runs on every push: a headless test job (desktop suite + the SQL/CSRF/
-login guards), a build matrix on `ubuntu-latest` / `macos-latest` /
+It then runs on every push: a headless test job (desktop suite + the
+SQL/CSRF/login guards), a build matrix on `ubuntu-24.04` / `macos-latest` /
 `windows-latest` with npm caching and `npm ci` at the root *and* in `desktop/`,
 artifacts uploaded on every run, and — on a `v*` tag — a release job that
 attaches every installer to the GitHub Release.
+
+> **Why `ubuntu-24.04` and not `ubuntu-latest`?** `ubuntu-latest` moved to
+> Ubuntu 26.04 (glibc 2.43) on 2026-10-19. The AppImage/deb tooling that
+> electron-builder downloads ships its own `libm.so.6` and refuses to start
+> there, so the Linux leg died a few seconds into `npm run dist:linux` while
+> macOS and Windows stayed green. The pin is asserted by
+> `desktop/test/packaging.test.js`; drop it once electron-builder ships tooling
+> built for glibc 2.43.
 
 ## 9. Code signing (optional, env-driven)
 

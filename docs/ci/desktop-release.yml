@@ -23,6 +23,16 @@ name: Desktop installers
 #   'secrets'"). MAC_CSC_LINK / WIN_CSC_LINK are therefore lifted into the
 #   `build` job's `env:` and every gate tests `env.*` instead.
 #
+#   NOTE ON THE LINUX RUNNER — `ubuntu-24.04`, not `ubuntu-latest`
+#   `ubuntu-latest` moved to Ubuntu 26.04 (glibc 2.43) on 2026-10-19. The
+#   AppImage/deb tooling electron-builder downloads carries its own bundled
+#   libm.so.6, which cannot run against that glibc: the Linux leg dies with
+#   "Process completed with exit code 1" a few seconds into `npm run dist:linux`
+#   while macOS and Windows are fine (they never use those tools). The Linux
+#   leg is therefore PINNED to `ubuntu-24.04`. The `test` job stays on
+#   `ubuntu-latest` — it only runs Node. Remove the pin once electron-builder
+#   ships tooling built for glibc 2.43.
+#
 #   Windows  EduSphere-<version>-win-x64.exe / -win-arm64.exe        (NSIS)
 #   macOS    EduSphere-<version>-mac-universal.dmg
 #   Linux    EduSphere-<version>-linux-x64.AppImage / .deb (+ arm64)
@@ -123,7 +133,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Pinned on purpose: see "NOTE ON THE LINUX RUNNER" above — the
+          # AppImage/deb tools break on ubuntu-latest (Ubuntu 26.04 / glibc
+          # 2.43), and every gate below compares with startsWith(matrix.os, …)
+          # so the pin cannot silently skip the unsigned fallback.
+          - os: ubuntu-24.04
             label: Linux
             build: npm run dist:linux
             artifacts: |
@@ -185,7 +199,7 @@ jobs:
       # ----- Unsigned fallback: still produces a real, installable build ----
       - name: Build (unsigned)
         if: |
-          (matrix.os == 'ubuntu-latest') ||
+          startsWith(matrix.os, 'ubuntu') ||
           (matrix.os == 'macos-latest' && env.MAC_CSC_LINK == '') ||
           (matrix.os == 'windows-latest' && env.WIN_CSC_LINK == '')
         working-directory: desktop

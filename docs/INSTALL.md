@@ -292,9 +292,15 @@ configured.
   step-level `if:` ever reads `secrets` again (GitHub rejects the whole
   workflow with *"Unrecognized named-value: 'secrets'"*), if the platform guard
   list loses `--test-force-exit` or picks the known-failing
-  `test/unified-login-ui.test.js` back up, or if the Android job goes back to
-  `npx cap sync android` (there is no `gradle-wrapper.jar` in the repository,
-  so that command exits 1).
+  `test/unified-login-ui.test.js` back up, if the Android job stops using
+  `npx cap sync android`, or if the desktop Linux leg drifts off its
+  `ubuntu-24.04` pin.
+* Two things that used to break the release and are now guarded:
+  `mobile/capacitor.config.ts` is TypeScript, so `typescript` must stay a
+  devDependency of `mobile/` (without it the Capacitor CLI exits 1 with
+  *"Could not find installation of TypeScript"* before it writes anything), and
+  `ubuntu-latest` is Ubuntu 26.04, where electron-builder's AppImage tools
+  cannot run — hence the Linux pin.
 * Signing is optional everywhere: with no secrets the same workflows still
   produce working, unsigned installers — which is why the "unknown publisher"
   messages above are expected. Add the secrets listed at the top of each

@@ -223,27 +223,33 @@ test("the platform guard lists force-exit and skip the known-broken login UI tes
   }
 });
 
-test("the Android job copies the Capacitor assets instead of syncing them (no wrapper JAR is committed)", () => {
+test("the Android job syncs Capacitor (cap sync, not cap copy) and mobile/ ships TypeScript", () => {
   const yaml = require("js-yaml");
   const doc = yaml.load(canonicalWorkflow("mobile-release.yml"));
   const android = doc.jobs.android;
   const runs = android.steps.map((step) => String(step.run || ""));
 
-  assert.equal(runs.some((run) => /npx cap sync android/.test(run)), false,
-    "`cap sync android` needs android/gradle/wrapper/gradle-wrapper.jar, which is not committed: it exits 1");
-  const withoutComments = canonicalWorkflow("mobile-release.yml")
-    .split("\n")
-    .filter((line) => !line.trim().startsWith("#"))
-    .join("\n");
-  assert.equal(/npx cap sync android/.test(withoutComments), false,
-    "…and the command is not referenced anywhere else in the file (comments explaining why do not count)");
+  /* `capacitor.config.ts` is TypeScript: without a `typescript` dependency the
+     Capacitor CLI exits 1 with "Could not find installation of TypeScript"
+     before it copies anything. That — not a missing Gradle wrapper JAR — is
+     what broke the Android job, so the dependency is asserted, not just the
+     command. */
+  const mobilePkg = JSON.parse(fs.readFileSync(path.join(REPO, "mobile", "package.json"), "utf8"));
+  assert.ok(mobilePkg.devDependencies.typescript, "mobile/ declares typescript (capacitor.config.ts)");
+  assert.equal((mobilePkg.dependencies || {}).typescript, undefined, "it stays a devDependency");
+  const mobileLock = JSON.parse(fs.readFileSync(path.join(REPO, "mobile", "package-lock.json"), "utf8"));
+  assert.ok(mobileLock.packages["node_modules/typescript"], "the lockfile pins typescript (npm ci in CI)");
 
-  const copyIndex = android.steps.findIndex((step) => /npx cap copy android/.test(String(step.run || "")));
-  assert.ok(copyIndex >= 0, "`npx cap copy android` writes the web assets, capacitor.config.json and the plugins JSON");
-  assert.equal(android.steps[copyIndex]["working-directory"], "mobile");
+  /* `sync` = copy + update; only the update half writes the plugins JSON that
+     registers @capacitor/app and @capacitor/network inside the APK. */
+  const syncIndex = android.steps.findIndex((step) => /npx cap sync android/.test(String(step.run || "")));
+  assert.ok(syncIndex >= 0, "`npx cap sync android` writes the web assets, capacitor.config.json and capacitor.plugins.json");
+  assert.equal(android.steps[syncIndex]["working-directory"], "mobile");
+  assert.equal(runs.some((run) => /npx cap copy android/.test(run)), false,
+    "`cap copy` skips the plugins JSON, so the APK would lose its native plugins");
 
   const syncWebIndex = android.steps.findIndex((step) => /npm run sync-web/.test(String(step.run || "")));
-  assert.ok(syncWebIndex >= 0 && syncWebIndex < copyIndex, "the shared web bundle is staged before the copy");
+  assert.ok(syncWebIndex >= 0 && syncWebIndex < syncIndex, "the shared web bundle is staged before the sync");
 
   /* The Gradle build / collect / upload steps are untouched. */
   assert.ok(runs.some((run) => /gradle assembleDebug/.test(run)), "the debug .apk is still built");
@@ -256,6 +262,37 @@ test("the Android job copies the Capacitor assets instead of syncing them (no wr
   assert.equal(android.env.EDUSPHERE_KEYSTORE_BASE64, "${{ secrets.EDUSPHERE_KEYSTORE_BASE64 }}");
   const keystore = android.steps.find((step) => step.id === "keystore");
   assert.ok(keystore && /env\.EDUSPHERE_KEYSTORE_BASE64 != ''/.test(keystore.if), "the keystore gate reads the job env");
+});
+
+test("the desktop Linux leg is pinned to ubuntu-24.04 (AppImage tools break on ubuntu-latest)", () => {
+  const yaml = require("js-yaml");
+  const doc = yaml.load(canonicalWorkflow("desktop-release.yml"));
+  const matrix = doc.jobs.build.strategy.matrix.include;
+  const linux = matrix.find((entry) => entry.label === "Linux");
+  const mac = matrix.find((entry) => entry.label === "macOS");
+  const windows = matrix.find((entry) => entry.label === "Windows");
+
+  /* ubuntu-latest became Ubuntu 26.04 (glibc 2.43) on 2026-10-19: the AppImage
+     and deb tooling electron-builder downloads carries its own libm.so.6 and
+     cannot start there, so the Linux leg failed seconds into
+     `npm run dist:linux` while macOS and Windows stayed green. Keeping the pin
+     under test turns a future jump back to `ubuntu-latest` into a failing
+     assertion instead of a failing release. */
+  assert.equal(linux.os, "ubuntu-24.04", "the Linux leg stays on the glibc the AppImage tools support");
+  assert.equal(mac.os, "macos-latest");
+  assert.equal(windows.os, "windows-latest");
+  assert.equal(doc.jobs.build["runs-on"], "${{ matrix.os }}", "every leg takes its runner from the matrix");
+
+  /* The unsigned fallback has to keep matching the pinned label, or the Linux
+     leg would silently build nothing at all. */
+  const unsigned = doc.jobs.build.steps.find((step) => step.name === "Build (unsigned)");
+  assert.match(unsigned.if, /startsWith\(matrix\.os, 'ubuntu'\)/,
+    "the fallback matches any Ubuntu runner (the matrix no longer says ubuntu-latest)");
+  assert.equal(/\.os == 'ubuntu-latest'/.test(unsigned.if), false, "no stale ubuntu-latest comparison is left behind");
+  assert.equal(unsigned.run, "${{ matrix.build }}", "each leg still runs its own build command");
+
+  /* The guard job needs no pin: it only runs Node. */
+  assert.equal(doc.jobs.test["runs-on"], "ubuntu-latest");
 });
 
 test("the staged runtime is what gets packaged (server/ + public/ from the repo root)", () => {
