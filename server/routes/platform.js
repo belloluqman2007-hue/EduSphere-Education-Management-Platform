@@ -813,6 +813,21 @@ const PLATFORM_SETTING_DEFAULTS = {
   public_contact_phone: "",
   public_apply_url: "",
   public_directory_enabled: "1",
+  // The operator's own information — the "about us / contact us" a Super Admin
+  // types once and the public website renders in its footer and contact block.
+  // Every field is optional; the website hides whatever is left blank rather
+  // than printing an empty label or a dead link.
+  public_operator_name: "",
+  public_operator_about: "",
+  public_contact_whatsapp: "",
+  public_contact_address: "",
+  public_support_hours: "",
+  public_social_facebook: "",
+  public_social_instagram: "",
+  public_social_x: "",
+  public_social_linkedin: "",
+  public_social_tiktok: "",
+  public_footer_note: "",
   // Where institutions send their subscription transfers, and the rules that
   // govern the billing lifecycle. Every field is optional: with the bank
   // details blank the upgrade screen says so instead of inventing an account.

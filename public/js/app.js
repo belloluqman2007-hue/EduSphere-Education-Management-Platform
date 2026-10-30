@@ -106,16 +106,95 @@
         <div class="container footer-grid">
           <div class="footer-brand">
             ${brandMarkup()}
-            <p>EduSphere helps educational institutions manage their operations, academics, communication and digital presence — on one worldwide education management platform.</p>
-            <div class="socials"><a href="#footer" aria-label="EduSphere on Instagram">${icons.instagram}</a><a href="#footer" aria-label="EduSphere on LinkedIn">${icons.linkedin}</a><a href="#footer" aria-label="EduSphere on Facebook">${icons.facebook}</a></div>
+            <p id="siteAbout">EduSphere helps educational institutions manage their operations, academics, communication and digital presence — on one worldwide education management platform.</p>
+            <div class="socials" id="siteSocials" hidden></div>
           </div>
           <div class="footer-col"><h3>Explore</h3><a href="/islamic-schools" data-route="/islamic-schools">Islamic Schools</a><a href="/western-schools" data-route="/western-schools">Western Academies</a><a href="/#how-it-works" data-route="/#how-it-works">How EduSphere works</a></div>
           <div class="footer-col"><h3>For institutions</h3><a href="/register-madrasa" data-route="/register-madrasa">Register an Islamic School</a><a href="/register-academy" data-route="/register-academy">Register a Western Academy</a><a href="/login">Sign In</a></div>
           <div class="footer-col"><h3>Portals</h3><a href="/teacher">Teacher workspace</a><a href="/student">Student portal</a><a href="/parent">Parent portal</a><a href="/parent/meetings" data-route="/parent/meetings">Parents: book a meeting</a></div>
           <div class="footer-col"><h3>Platform</h3><a href="/#institution-future" data-route="/#institution-future">Independent school sites</a><a href="#footer">Contact</a><a href="#footer">Privacy &amp; Terms</a></div>
+          <!-- Filled from Super Admin → Platform Settings → Public website
+               information. Rows the operator leaves blank stay hidden. -->
+          <div class="footer-col" id="siteContactCol" hidden>
+            <h3>Contact</h3>
+            <a id="siteContactEmail" hidden></a>
+            <a id="siteContactPhone" hidden></a>
+            <a id="siteContactWhatsapp" hidden>Chat on WhatsApp</a>
+            <span class="footer-contact-static" id="siteContactAddress" hidden></span>
+            <span class="footer-contact-static" id="siteHours" hidden></span>
+          </div>
         </div>
-        <div class="container footer-bottom"><span>© <span id="year"></span> EduSphere Education Platform. All rights reserved.</span><span>Manage <i></i> Teach <i></i> Learn <i></i> Grow <i></i></span></div>
+        <div class="container footer-bottom"><span>© <span id="year"></span> <span id="siteOwner">EduSphere Education Platform</span>. All rights reserved.</span><span id="siteFooterNote">Manage <i></i> Teach <i></i> Learn <i></i> Grow <i></i></span></div>
       </footer>`;
+  }
+
+  /* --------------------------------------------------------------------
+     PUBLIC SITE INFORMATION (Super Admin → Platform Settings)
+     --------------------------------------------------------------------
+     The operator types their details once in the dashboard; every field is
+     optional and the footer only renders what was actually filled in — no
+     empty labels, no dead social links. Loaded once per page load and cached.
+     -------------------------------------------------------------------- */
+  let siteInfo = null;
+  let siteInfoPromise = null;
+
+  function loadSiteInfo() {
+    if (siteInfo) return Promise.resolve(siteInfo);
+    if (siteInfoPromise) return siteInfoPromise;
+    if (!window.API || !window.API.public) return Promise.resolve(null);
+    siteInfoPromise = window.API.public.get("/site")
+      // The endpoint returns { site, directoryEnabled, madaris, … }; only the
+      // `site` block is the operator's own information.
+      .then((data) => { siteInfo = (data && data.site) || null; return siteInfo; })
+      .catch(() => null);
+    return siteInfoPromise;
+  }
+
+  function whatsappHref(number, message) {
+    let digits = String(number || "").replace(/[^0-9]/g, "");
+    if (!digits) return "";
+    if (digits.indexOf("0") === 0) digits = "234" + digits.slice(1);
+    return "https://wa.me/" + digits + (message ? "?text=" + encodeURIComponent(message) : "");
+  }
+
+  function applySiteInfo() {
+    const byId = (id) => document.getElementById(id);
+    loadSiteInfo().then((s) => {
+      if (!s) return;
+      const about = byId("siteAbout");
+      if (about && s.operatorAbout) about.textContent = s.operatorAbout;
+      else if (about && s.intro) about.textContent = s.intro;
+
+      const socials = byId("siteSocials");
+      const links = [];
+      const soc = s.socials || {};
+      [["facebook", "Facebook", icons.facebook], ["instagram", "Instagram", icons.instagram],
+        ["x", "X", icons.twitter], ["linkedin", "LinkedIn", icons.linkedin],
+        ["tiktok", "TikTok", icons.tiktok]].forEach(([key, label, icon]) => {
+        if (soc[key]) links.push(`<a href="${String(soc[key]).replace(/"/g, "&quot;")}" target="_blank" rel="noopener" aria-label="${label}">${icon}</a>`);
+      });
+      if (socials && links.length) { socials.innerHTML = links.join(""); socials.hidden = false; }
+
+      const col = byId("siteContactCol");
+      let shown = 0;
+      const email = byId("siteContactEmail");
+      if (email && s.contactEmail) { email.href = "mailto:" + s.contactEmail; email.textContent = s.contactEmail; email.hidden = false; shown++; }
+      const phone = byId("siteContactPhone");
+      if (phone && s.contactPhone) { phone.href = "tel:" + String(s.contactPhone).replace(/\s+/g, ""); phone.textContent = s.contactPhone; phone.hidden = false; shown++; }
+      const wa = byId("siteContactWhatsapp");
+      const waLink = whatsappHref(s.contactWhatsapp, "Hello EduSphere, I would like to know more about the platform.");
+      if (wa && waLink) { wa.href = waLink; wa.target = "_blank"; wa.rel = "noopener"; wa.hidden = false; shown++; }
+      const address = byId("siteContactAddress");
+      if (address && s.contactAddress) { address.textContent = s.contactAddress; address.hidden = false; shown++; }
+      const hours = byId("siteHours");
+      if (hours && s.supportHours) { hours.textContent = s.supportHours; hours.hidden = false; shown++; }
+      if (col && shown) col.hidden = false;
+
+      const owner = byId("siteOwner");
+      if (owner && s.operatorName) owner.textContent = s.operatorName;
+      const note = byId("siteFooterNote");
+      if (note && s.footerNote) note.textContent = s.footerNote;
+    });
   }
 
   function schoolChoiceCard(kind) {
@@ -767,6 +846,7 @@
   }
 
   function initPageEvents() {
+    applySiteInfo();
     const toggle = document.querySelector(".menu-toggle");
     const menu = document.querySelector(".mobile-nav");
     const header = document.querySelector(".site-header");

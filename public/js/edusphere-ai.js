@@ -95,6 +95,31 @@
   const IS_PUBLIC = (surface) => surface === "public";
   const HAS_COPILOT = (surface) => surface === "admin" || surface === "super_admin";
 
+  /* The assistant is a DASHBOARD tool only.
+     ------------------------------------------------------------------
+     It used to float over every surface — the public site, a school's own
+     website, and the teacher/student/parent portals. On the portals it sat on
+     top of the message composer and the send button, hiding exactly the
+     conversation it was meant to help with. The launcher is therefore
+     mounted only inside the signed-in institution dashboard and the platform
+     console; everywhere else it is not rendered at all. The underlying
+     surfaces (public, school, portals) still exist server-side, so the
+     restriction is one class check here rather than a data-model change. */
+  const DASHBOARD_ONLY = true;
+  const DASHBOARD_SURFACES = new Set(["admin", "super_admin"]);
+  function onDashboardPage() {
+    try {
+      const hash = String(window.location.hash || "");
+      const path = String(window.location.pathname || "").replace(/\/+$/, "") || "/";
+      return hash.startsWith("#/app") || path === "/admin" || path === "/admin/login";
+    } catch (e) { return false; }
+  }
+  function allowedHere(surface) {
+    if (!DASHBOARD_ONLY) return true;
+    if (!DASHBOARD_SURFACES.has(String(surface || ""))) return false;
+    return onDashboardPage();
+  }
+
   /* ======================================================================
      WIDGET
      ====================================================================== */
@@ -543,15 +568,12 @@
     const opts = Object.assign({}, options || {});
     if (widget) return widget;
 
-    if (opts.surface === "school") {
-      const slug = String(opts.slug || "").trim();
-      if (!slug) return null;
-      let info = null;
-      try { info = await window.API.public.get("/ai/school/" + encodeURIComponent(slug)); } catch (e) { info = null; }
-      // Unknown or unpublished school: no assistant rather than a wrong one.
-      if (!info || !info.space) return null;
-      return build({ surface: "school", slug, info, open: opts.open });
-    }
+    // Checked before a single request is made: off the dashboard there is no
+    // assistant to build, so no session probe and no space fetch.
+    if (DASHBOARD_ONLY && !onDashboardPage()) return null;
+
+    // A school's public website never gets the launcher — dashboard only.
+    if (opts.surface === "school") return null;
 
     let me = null;
     try { me = await window.API.me(); } catch (e) { me = null; }
@@ -565,6 +587,8 @@
     // The server's answer wins: it read the role from the session.
     if (info && info.surface) surface = info.surface;
 
+    // Not a dashboard surface (or not on the dashboard): no launcher.
+    if (!allowedHere(surface)) return null;
     return build({ surface, info: info || {}, open: opts.open });
   }
 
@@ -590,11 +614,16 @@
       surface = String(document.body.dataset.aiSurface || "");
       slug = String(document.body.dataset.aiSchool || "");
     } catch (e) { /* no dataset support */ }
+    // Left the dashboard (a portal, a school website, the public site): the
+    // launcher must not follow the user there.
+    if (!onDashboardPage() || surface === "school") {
+      if (widget) unmount();
+      return null;
+    }
     const currentSurface = widget ? widget.surface : "";
     const currentSlug = widget ? widget.slug : "";
     if (surface === currentSurface && slug === currentSlug) return widget;
     if (widget) unmount();
-    if (surface === "school" && slug) return mount({ surface: "school", slug });
     return mount({});
   }
 

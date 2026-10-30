@@ -1205,7 +1205,102 @@
     hr: ["staff_leave.view"],
     settings: ["institution.settings", "users.manage", "roles.manage", "audit.view"],
     support: ["support.view", "support.create", "support.chat"],
+    // Billing is the institution's own contract with EduSphere. A teacher
+    // holds neither permission, so the whole Subscription section disappears
+    // from their menu — the server refuses /api/subscription/* to them too.
+    subscription: ["subscription.view", "subscription.manage"],
   };
+
+  /* Per-ITEM requirements. A section may be partly usable by restricted staff
+     (a teacher may read the student roster but not add a student), so items
+     are assessed individually instead of exposing a menu of dead ends. Any
+     item not listed here inherits its section's requirement. */
+  const ITEM_PERMISSIONS = {
+    // Institution / website — reading is one thing, changing the public site is
+    // an administrator's job
+    "institution/profile": ["website.edit", "website.view"],
+    "institution/information": ["website.edit"],
+    "institution/website": ["website.view", "website.edit"],
+    "institution/appearance": ["website.edit"],
+    "institution/pages": ["website.edit"],
+    "institution/gallery": ["website.edit"],
+    "institution/contact": ["website.edit"],
+    "institution/settings": ["institution.settings"],
+    // Students
+    "students/add": ["students.create"],
+    "students/applications": ["admissions.view", "admissions.approve"],
+    // Teachers & staff
+    "teachers/add": ["teachers.create"],
+    "teachers/applications": ["teachers.create"],
+    // Classes
+    "classes/add": ["classes.create"],
+    // Documents
+    "documents/templates": ["documents.generate", "institution.settings"],
+    "documents/issue": ["documents.generate"],
+    // Academic
+    "academic/lessons": ["lessons.view"],
+    "academic/assignments": ["assignments.view"],
+    "academic/examinations": ["exams.view"],
+    "academic/question-bank": ["questionbank.view", "questionbank.manage"],
+    "academic/results": ["results.enter", "results.approve", "results.publish"],
+    "academic/report-cards": ["report_cards.view", "report_cards.generate"],
+    "academic/subjects": ["institution.settings", "classes.create"],
+    "academic/sessions": ["institution.settings", "classes.create"],
+    "academic/terms": ["institution.settings", "classes.create"],
+    // Finance
+    "finance/fees": ["fees.view"],
+    "finance/payments": ["payments.view"],
+    "finance/outstanding": ["fees.view"],
+    "finance/records": ["payments.view"],
+    "finance/reports": ["finance.reports"],
+    "finance/expenses/categories": ["expenses.create"],
+    "finance/expenses/record": ["expenses.create"],
+    "finance/expenses": ["expenses.view"],
+    "finance/expenses/budget": ["expenses.view", "finance.reports"],
+    "finance/expenses/reports": ["expenses.view", "finance.reports"],
+    // Payroll
+    "payroll/structures": ["payroll.view"],
+    "payroll/periods": ["payroll.view"],
+    "payroll/payslips": ["payslips.view"],
+    "payroll/advances": ["payroll.view"],
+    // Staff leave
+    "hr/requests": ["staff_leave.view"],
+    "hr/calendar": ["staff_leave.view"],
+    "hr/balances": ["staff_leave.view"],
+    "hr/types": ["staff_leave.approve", "institution.settings"],
+    "hr/my-leave": ["staff_leave.create", "staff_leave.view"],
+    // Settings — administrator-only screens even inside a shared section
+    "settings/institution": ["institution.settings"],
+    "settings/staff": ["users.manage"],
+    "settings/roles": ["roles.manage"],
+    "settings/audit": ["audit.view"],
+    "settings/security": ["institution.settings"],
+    "settings/notifications": ["institution.settings"],
+    // Support tickets stay administrator-side; the shared chat is open to staff
+    "support/tickets": ["support.view"],
+    "support/new": ["support.create"],
+    "support/chat": ["support.chat"],
+    // Subscription screens (belt and braces with SECTION_PERMISSIONS above)
+    "subscription/overview": ["subscription.view"],
+    "subscription/plans": ["subscription.view", "subscription.manage"],
+    "subscription/invoices": ["subscription.view", "subscription.manage"],
+  };
+
+  /** True when the caller may open this route (institution workspaces only). */
+  function routeAllowed(route) {
+    if (state.superAdmin) return true;
+    if (!state.permissions || state.permissions.size === 0) return true;
+    const clean = String(route || "").split("?")[0];
+    const needed = ITEM_PERMISSIONS[clean];
+    if (needed && !needed.some((p) => state.permissions.has(p))) return false;
+    const top = clean.split("/")[0];
+    const sectionNeeded = SECTION_PERMISSIONS[top];
+    if (sectionNeeded && !sectionNeeded.some((p) => state.permissions.has(p))) return false;
+    const sub = clean.split("/").slice(0, 2).join("/");
+    const subNeeded = SECTION_PERMISSIONS[sub];
+    if (subNeeded && !subNeeded.some((p) => state.permissions.has(p))) return false;
+    return true;
+  }
 
   function filterSchemaByPermission(schema) {
     // With no permission list (an older session, or the call failed) show the
@@ -1216,7 +1311,19 @@
       const needed = SECTION_PERMISSIONS[section.key];
       if (!needed) return true;
       return needed.some((p) => state.permissions.has(p));
-    });
+    }).map((section) => {
+      if (!Array.isArray(section.items)) return section;
+      const items = section.items.map((item) => {
+        if (item && item.subgroup) {
+          const kept = (item.items || []).filter(([label, r]) => routeAllowed(r));
+          return kept.length ? Object.assign({}, item, { items: kept }) : null;
+        }
+        if (Array.isArray(item)) return routeAllowed(item[1]) ? item : null;
+        return item;
+      }).filter(Boolean);
+      if (!items.length && !section.route) return null;
+      return Object.assign({}, section, { items });
+    }).filter(Boolean);
   }
 
   /** Unread counter rendered beside a sidebar item (hidden when zero). The
@@ -1321,8 +1428,19 @@
 
   async function renderRouteInner(root) {
     const content = root.querySelector("#dashContent");
-    content.innerHTML = `<div class="dash-coming-soon"><div class="icon">${I.clock}</div><h3>Loading…</h3></div>`;
     const route = state.route;
+    // A route the signed-in account cannot use is never rendered. Hiding the
+    // menu item alone is not enough: a bookmark, a stale link or a typed hash
+    // would otherwise drop a teacher on a screen that only answers 403.
+    if (!routeAllowed(route)) {
+      content.innerHTML = `<div class="dash-coming-soon"><div class="icon">${I.shield}</div>
+        <h3>Not available on your account</h3>
+        <p>This feature is not part of your permissions. Ask an administrator of your institution if you need it.</p>
+        <button class="dash-btn dash-btn-primary" data-nav-route="dashboard" style="margin-top:14px;">Back to dashboard</button></div>`;
+      bindRouteButtons(content);
+      return;
+    }
+    content.innerHTML = `<div class="dash-coming-soon"><div class="icon">${I.clock}</div><h3>Loading…</h3></div>`;
     try {
       if (state.superAdmin) return await renderSuperRoute(content, route);
       if (route === "dashboard") return await pageDashboard(content);
@@ -4643,6 +4761,39 @@
         </form>
       </div></div>
 
+      <div class="dash-page-head" style="margin-top:26px"><div><div class="dash-crumb">Platform</div><h2>Public website information</h2>
+        <p>Your own details — who runs EduSphere — as they should appear on the public website: the footer contact block, the social links and the copyright line. Anything left blank is simply not shown, so the site never prints an empty label or a dead link.</p></div></div>
+      <div class="dash-card"><div class="dash-card-pad">
+        <form id="saPublicInfoForm">
+          <div class="dash-form-grid">
+            <div class="dash-field"><label>Operator / company name</label>
+              <input name="public_operator_name" value="${esc(s.public_operator_name || "")}" placeholder="e.g. EduSphere Education Platform" maxlength="120"></div>
+            <div class="dash-field"><label>Support hours</label>
+              <input name="public_support_hours" value="${esc(s.public_support_hours || "")}" placeholder="e.g. Mon–Fri, 9:00–17:00 WAT" maxlength="120"></div>
+            <div class="dash-field" style="grid-column:1/-1;"><label>About EduSphere (shown in the website footer)</label>
+              <textarea name="public_operator_about" rows="3" maxlength="600" placeholder="One or two sentences visitors should read about the platform.">${esc(s.public_operator_about || "")}</textarea></div>
+            <div class="dash-field"><label>Contact email</label>
+              <input name="public_contact_email" type="email" value="${esc(s.public_contact_email || "")}" placeholder="hello@edusphere.site"></div>
+            <div class="dash-field"><label>Contact phone</label>
+              <input name="public_contact_phone" value="${esc(s.public_contact_phone || "")}" placeholder="+234 801 234 5678"></div>
+            <div class="dash-field"><label>WhatsApp number</label>
+              <input name="public_contact_whatsapp" value="${esc(s.public_contact_whatsapp || "")}" placeholder="+234 801 234 5678"></div>
+            <div class="dash-field"><label>Office address</label>
+              <input name="public_contact_address" value="${esc(s.public_contact_address || "")}" maxlength="200" placeholder="e.g. Ijebu-Ode, Ogun State, Nigeria"></div>
+          </div>
+          <div class="dash-form-grid" style="margin-top:6px;">
+            <div class="dash-field"><label>Facebook URL</label><input name="public_social_facebook" value="${esc(s.public_social_facebook || "")}" placeholder="https://facebook.com/…"></div>
+            <div class="dash-field"><label>Instagram URL</label><input name="public_social_instagram" value="${esc(s.public_social_instagram || "")}" placeholder="https://instagram.com/…"></div>
+            <div class="dash-field"><label>X (Twitter) URL</label><input name="public_social_x" value="${esc(s.public_social_x || "")}" placeholder="https://x.com/…"></div>
+            <div class="dash-field"><label>LinkedIn URL</label><input name="public_social_linkedin" value="${esc(s.public_social_linkedin || "")}" placeholder="https://linkedin.com/company/…"></div>
+            <div class="dash-field"><label>TikTok URL</label><input name="public_social_tiktok" value="${esc(s.public_social_tiktok || "")}" placeholder="https://tiktok.com/@…"></div>
+            <div class="dash-field"><label>Footer note</label><input name="public_footer_note" value="${esc(s.public_footer_note || "")}" maxlength="200" placeholder="e.g. Built in Nigeria for schools worldwide."></div>
+          </div>
+          <button class="dash-btn dash-btn-primary" type="submit" style="margin-top:16px;">${I.check} Save public information</button>
+          <p class="hint" style="margin-top:10px;">These details appear on the public website immediately — no republish needed.</p>
+        </form>
+      </div></div>
+
       <div class="dash-page-head" style="margin-top:26px"><div><div class="dash-crumb">Platform</div><h2>WhatsApp line</h2>
         <p>The number behind "Chat on WhatsApp" on the public website, and the message the button pre-fills. The same assistant answers on this line once the Meta credentials are configured.</p></div></div>
       <div class="dash-card"><div class="dash-card-pad">
@@ -4695,6 +4846,18 @@
       body.public_directory_enabled = fd.get("public_directory_enabled") === "on";
       try { await window.API.put("/platform/settings", body); toast("Settings saved.", "success"); }
       catch (err) { toast(err.message || "Could not save settings.", "error"); }
+    });
+    const publicInfoForm = content.querySelector("#saPublicInfoForm");
+    if (publicInfoForm) publicInfoForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const body = {};
+      ["public_operator_name", "public_operator_about", "public_contact_email", "public_contact_phone",
+        "public_contact_whatsapp", "public_contact_address", "public_support_hours", "public_social_facebook",
+        "public_social_instagram", "public_social_x", "public_social_linkedin", "public_social_tiktok",
+        "public_footer_note"].forEach((k) => { body[k] = String(fd.get(k) || "").trim(); });
+      try { await window.API.put("/platform/settings", body); toast("Public website information saved.", "success"); }
+      catch (err) { toast(err.message || "Could not save the public information.", "error"); }
     });
     content.querySelector("#saWhatsAppForm").addEventListener("submit", async (e) => {
       e.preventDefault();

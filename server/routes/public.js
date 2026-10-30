@@ -47,7 +47,11 @@ async function publicSettings() {
   const rows = await db.all(
     `SELECT key_name, value FROM platform_settings
      WHERE key_name IN ('public_directory_enabled','public_site_title','public_site_tagline',
-                        'public_site_intro','public_contact_email','public_contact_phone','public_apply_url')`
+                        'public_site_intro','public_contact_email','public_contact_phone','public_apply_url',
+                        'public_operator_name','public_operator_about','public_contact_whatsapp',
+                        'public_contact_address','public_support_hours','public_social_facebook',
+                        'public_social_instagram','public_social_x','public_social_linkedin',
+                        'public_social_tiktok','public_footer_note')`
   );
   const out = {};
   rows.forEach((r) => { out[r.key_name] = r.value; });
@@ -63,6 +67,21 @@ async function publicSettings() {
     contactEmail: out.public_contact_email || "",
     contactPhone: out.public_contact_phone || "",
     applyUrl: out.public_apply_url || "",
+    // Super Admin → Platform Settings → Public website information. The public
+    // site renders only the fields that have actually been filled in.
+    operatorName: out.public_operator_name || "",
+    operatorAbout: out.public_operator_about || "",
+    contactWhatsapp: out.public_contact_whatsapp || "",
+    contactAddress: out.public_contact_address || "",
+    supportHours: out.public_support_hours || "",
+    socials: {
+      facebook: out.public_social_facebook || "",
+      instagram: out.public_social_instagram || "",
+      x: out.public_social_x || "",
+      linkedin: out.public_social_linkedin || "",
+      tiktok: out.public_social_tiktok || "",
+    },
+    footerNote: out.public_footer_note || "",
   };
 }
 
