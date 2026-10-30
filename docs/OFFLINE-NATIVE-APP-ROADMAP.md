@@ -500,7 +500,7 @@ artifact on a `v*` tag. Artifacts upload on every push to `main`.
 
 | Suite | Result |
 |---|---|
-| `cd mobile && npm test` | **90 tests, 90 pass** (bridge contract 14, storage adapter 7, network listener 13, camera 11, api-native 8, packaging 16, secure token 11, security 13) |
+| `cd mobile && npm test` | **94 tests, 94 pass** (bridge contract 14, storage adapter 7, network listener 13, camera 11, api-native 8, packaging 17, secure token 11, security 13) |
 | `cd mobile && npm run verify` | **20/20 native checks** |
 | root `npm test` | 885 tests, 883 pass — both remaining failures reproduce on the untouched `e0a2e8e` worktree (`unified-login-ui` fee-payment copy; one jsdom timing race), so Phase 4 adds no root failure |
 | `test/card-scanner-csrf.test.js` | still green: every mutating call still goes through `window.API` |

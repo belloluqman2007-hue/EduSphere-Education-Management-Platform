@@ -210,6 +210,47 @@ test("the release workflow builds an .apk and an .aab, and a secret-gated .ipa",
   assert.match(workflow, /startsWith\(github\.ref, 'refs\/tags\/v'\)/);
 });
 
+test("the workflow parses as GitHub Actions YAML (no `secrets` inside an `if`)", () => {
+  /* `secrets` is not an allowed context in `jobs.<id>.steps[*].if`: a single
+     occurrence makes the whole workflow invalid, and GitHub only reports it
+     when the run starts. Lift secrets into a job-level `env` and test that. */
+  const yaml = require("js-yaml");
+  const live = path.join(REPO, ".github", "workflows", "mobile-release.yml");
+  const canonical = path.join(REPO, "docs", "ci", "mobile-release.yml");
+  const file = fs.existsSync(live) ? live : canonical;
+  const doc = yaml.load(fs.readFileSync(file, "utf8"));
+
+  assert.ok(doc && doc.jobs, "the workflow has jobs");
+  for (const name of ["test", "android", "ios", "release"]) assert.ok(doc.jobs[name], "job " + name + " exists");
+
+  const offences = [];
+  const walk = (node, where) => {
+    if (!node || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "if" && typeof value === "string" && value.includes("secrets.")) offences.push(where + "/if");
+      walk(value, where + "/" + key);
+    }
+  };
+  walk(doc, "");
+  assert.deepEqual(offences, [], "every gate reads the env context, never secrets");
+
+  const ios = doc.jobs.ios;
+  assert.equal(ios["runs-on"], "macos-latest");
+  assert.ok(ios.env && ios.env.APPLE_TEAM_ID, "the Apple secrets are lifted into the job env");
+  const steps = ios.steps.map((step) => step.name || "");
+  assert.ok(steps.indexOf("Archive (xcodebuild archive)") >= 0, "the archive step is a real xcodebuild call");
+  assert.ok(steps.indexOf("Export the .ipa (xcodebuild -exportArchive)") > steps.indexOf("Archive (xcodebuild archive)"), "export happens after the archive");
+  const archive = ios.steps.find((step) => step.name === "Archive (xcodebuild archive)");
+  assert.match(archive.run, /xcodebuild -workspace[\s\S]*-archivePath[\s\S]*archive/);
+  const exportStep = ios.steps.find((step) => step.name === "Export the .ipa (xcodebuild -exportArchive)");
+  assert.match(exportStep.run, /xcodebuild -exportArchive[\s\S]*-exportPath/);
+
+  const android = doc.jobs.android;
+  assert.equal(android["runs-on"], "ubuntu-latest");
+  assert.ok(android.env && android.env.EDUSPHERE_KEYSTORE_BASE64, "the keystore secret is lifted into the job env");
+  assert.ok(doc.jobs.release.needs.includes("android") && doc.jobs.release.needs.includes("ios"));
+});
+
 test("the native verification script passes", () => {
   const output = execFileSync(process.execPath, [path.join(MOBILE, "scripts", "verify-native.js")], {
     cwd: MOBILE,

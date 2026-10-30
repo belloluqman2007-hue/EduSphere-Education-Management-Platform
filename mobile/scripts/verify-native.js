@@ -266,6 +266,9 @@ check("the release workflow exists (live or under docs/ci) with Android + gated 
   if (!/secrets\./.test(workflow)) throw new Error("iOS signing is not secret-gated");
   if (!/upload-artifact/.test(workflow)) throw new Error("artifacts are not uploaded");
   if (!/action-gh-release|softprops/.test(workflow)) throw new Error("no GitHub Release step on a tag");
+  /* `secrets` is not an allowed context in a step-level `if`; one occurrence
+     makes the whole workflow invalid and GitHub only says so at run time. */
+  if (/^\s*if:.*\bsecrets\./m.test(workflow)) throw new Error("a step `if` reads secrets directly (use a job-level env)");
   return path.relative(REPO, file) + " (Android + macOS iOS, secret-gated)";
 });
 

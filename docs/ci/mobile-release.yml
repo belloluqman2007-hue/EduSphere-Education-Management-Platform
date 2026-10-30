@@ -103,6 +103,9 @@ jobs:
     name: Build Android (.apk + .aab)
     needs: test
     runs-on: ubuntu-latest
+    env:
+      # Read once here: a step-level `if` cannot see `secrets` directly.
+      EDUSPHERE_KEYSTORE_BASE64: ${{ secrets.EDUSPHERE_KEYSTORE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -138,7 +141,7 @@ jobs:
 
       - name: Decode the upload keystore (only when the secrets exist)
         id: keystore
-        if: ${{ secrets.EDUSPHERE_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.EDUSPHERE_KEYSTORE_BASE64 != '' }}
         working-directory: mobile
         env:
           KEYSTORE_BASE64: ${{ secrets.EDUSPHERE_KEYSTORE_BASE64 }}
@@ -208,6 +211,12 @@ jobs:
     needs: test
     if: ${{ vars.EDUSPHERE_IOS_BUILD == 'true' }}
     runs-on: macos-latest
+    env:
+      # A step-level `if` cannot see `secrets`, so they are lifted here and the
+      # conditions below read the `env` context instead.
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -234,7 +243,7 @@ jobs:
         run: npx cap sync ios
 
       - name: Import the signing certificate (secret-gated)
-        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' }}
         env:
           CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -250,7 +259,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
       - name: Install the provisioning profile (secret-gated)
-        if: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 != '' }}
+        if: ${{ env.APPLE_PROVISIONING_PROFILE_BASE64 != '' }}
         env:
           PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
         run: |
@@ -259,7 +268,7 @@ jobs:
 
       # ----- Signed build: xcodebuild archive → xcodebuild -exportArchive ----
       - name: Archive (xcodebuild archive)
-        if: ${{ secrets.APPLE_TEAM_ID != '' }}
+        if: ${{ env.APPLE_TEAM_ID != '' }}
         working-directory: mobile/ios/App
         env:
           EDUSPHERE_IOS_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -275,14 +284,14 @@ jobs:
             archive
 
       - name: Prepare ExportOptions.plist
-        if: ${{ secrets.APPLE_TEAM_ID != '' }}
+        if: ${{ env.APPLE_TEAM_ID != '' }}
         working-directory: mobile
         env:
           EDUSPHERE_IOS_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: node -e "require('./scripts/build-ios').writeExportOptions()"
 
       - name: Export the .ipa (xcodebuild -exportArchive)
-        if: ${{ secrets.APPLE_TEAM_ID != '' }}
+        if: ${{ env.APPLE_TEAM_ID != '' }}
         working-directory: mobile
         env:
           EDUSPHERE_IOS_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -297,14 +306,14 @@ jobs:
 
       # ----- No Apple secrets: still prove the project compiles --------------
       - name: Archive unsigned (no Apple secrets configured)
-        if: ${{ secrets.APPLE_TEAM_ID == '' }}
+        if: ${{ env.APPLE_TEAM_ID == '' }}
         working-directory: mobile
         run: |
           echo "::warning::No APPLE_TEAM_ID secret: building an UNSIGNED archive only. Add the Apple secrets to produce a TestFlight-ready .ipa."
           npm run ios:build
 
       - name: Upload the .ipa
-        if: ${{ secrets.APPLE_TEAM_ID != '' }}
+        if: ${{ env.APPLE_TEAM_ID != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: EduSphere-iOS

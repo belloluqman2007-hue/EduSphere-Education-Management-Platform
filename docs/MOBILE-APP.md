@@ -283,9 +283,9 @@ print(options), savePdf(options), openExternal(url)
 `mobile/test/bridge-contract.test.js` freezes the surface, so a future change
 that would silently break `api.js` fails the build on both platforms at once.
 
-**Verified on this branch:** `mobile/` **93 tests passing** (bridge contract 14,
+**Verified on this branch:** `mobile/` **94 tests passing** (bridge contract 14,
 storage adapter 7, network listener 13, camera 11, API native path 8, packaging
-16, secure token 11, security 13), and the root web
+17, secure token 11, security 13), and the root web
 suite is unchanged by the mobile work.
 
 ---
