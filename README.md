@@ -331,11 +331,13 @@ public/            static mobile-first SPA (hash routing, EN/AR, RTL,
 test/              npm test suite + smoke.sh end-to-end
 docs/              isolation audit, database, deployment, security,
                    subscriptions & AI, plan tiers & feature gating,
-                   OFFLINE-NATIVE-APP-ROADMAP.md, DESKTOP-APP.md
+                   OFFLINE-NATIVE-APP-ROADMAP.md, DESKTOP-APP.md,
+                   MOBILE-APP.md, INSTALL.md (plain-language install guide)
 desktop/           installable Windows/macOS/Linux app (Electron shell +
                    electron-builder installers; own package.json, own tests)
-docs/ci/           desktop-release.yml — installer pipeline (copy to
-                   .github/workflows/ to activate; see docs/DESKTOP-APP.md)
+docs/ci/           desktop-release.yml + mobile-release.yml — the installer
+                   pipelines (copy to .github/workflows/ to activate; see
+                   docs/INSTALL.md)
 render.yaml        NEW Render service definition (production)
 ```
 
@@ -349,12 +351,14 @@ with:
 
 ```bash
 cd desktop && npm install
-npm test          # 53 headless tests (mocked Electron, no display needed)
+npm test          # 57 headless tests (mocked Electron, no display needed)
 npm run dist      # → desktop/dist/EduSphere-<version>-<os>-<arch>.<ext>
 ```
 
 Full guide (install, modes, LAN pairing, firewall, backup/restore, code
-signing): **[docs/DESKTOP-APP.md](docs/DESKTOP-APP.md)**.
+signing): **[docs/DESKTOP-APP.md](docs/DESKTOP-APP.md)**. Handing the installers
+to a school, with no technical language (workflow files, the `v1.0.0` tag, the
+SmartScreen / "unknown apps" prompts): **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ## Key features (as delivered)
 

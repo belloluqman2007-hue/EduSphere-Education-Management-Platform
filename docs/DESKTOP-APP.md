@@ -16,6 +16,11 @@ logs and printing — then syncs to the cloud when a connection returns.
 
 ## 1. Install
 
+> **Not technical?** [docs/INSTALL.md](INSTALL.md) is the same information
+> written for a head teacher, including how to make the release page produce
+> these files in the first place (copy the two workflow files into
+> `.github/workflows/`, then publish a `v1.0.0` tag).
+
 | OS | File | Steps |
 |---|---|---|
 | **Windows 10/11** (x64 or arm64) | `EduSphere-1.0.0-win-x64.exe` | Double-click → *Install for me only* (no admin rights needed) → the app opens. A desktop and Start-menu shortcut are created. SmartScreen will warn on an unsigned build: **More info → Run anyway** (a signed release from the project does not). |
