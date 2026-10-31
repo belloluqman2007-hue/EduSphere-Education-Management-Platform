@@ -272,13 +272,14 @@ test("the desktop Linux leg is pinned to ubuntu-24.04 (AppImage tools break on u
   const mac = matrix.find((entry) => entry.label === "macOS");
   const windows = matrix.find((entry) => entry.label === "Windows");
 
-  /* ubuntu-latest became Ubuntu 26.04 (glibc 2.43) on 2026-10-19: the AppImage
-     and deb tooling electron-builder downloads carries its own libm.so.6 and
-     cannot start there, so the Linux leg failed seconds into
-     `npm run dist:linux` while macOS and Windows stayed green. Keeping the pin
-     under test turns a future jump back to `ubuntu-latest` into a failing
-     assertion instead of a failing release. */
-  assert.equal(linux.os, "ubuntu-24.04", "the Linux leg stays on the glibc the AppImage tools support");
+  /* Release legs are pinned to an image, never to the moving `ubuntu-latest`
+     label: GitHub has announced that it migrates to Ubuntu 26.04 (glibc 2.43,
+     where electron-builder's bundled AppImage tooling is known to break), and a
+     release must not change operating system underneath itself. (The Linux
+     failure that prompted the pin turned out to be the missing deb `homepage`,
+     which is now guarded separately — the pin stays as reproducibility.) */
+  assert.equal(linux.os, "ubuntu-24.04", "the Linux leg is pinned to an image, not the moving ubuntu-latest label");
+  assert.notEqual(linux.os, "ubuntu-latest", "no release leg rides the moving label");
   assert.equal(mac.os, "macos-latest");
   assert.equal(windows.os, "windows-latest");
   assert.equal(doc.jobs.build["runs-on"], "${{ matrix.os }}", "every leg takes its runner from the matrix");
@@ -293,6 +294,31 @@ test("the desktop Linux leg is pinned to ubuntu-24.04 (AppImage tools break on u
 
   /* The guard job needs no pin: it only runs Node. */
   assert.equal(doc.jobs.test["runs-on"], "ubuntu-latest");
+});
+
+test("the deb target has the metadata electron-builder refuses to build without", () => {
+  /* `npm run dist:linux` builds an AppImage AND a .deb; the .deb goes through
+     FpmTarget, which aborts with
+       "Please specify project homepage, see …/configuration#metadata"
+     when package.json has no `homepage`. That single missing field failed the
+     whole Linux leg (the AppImage half had already built), so it is asserted —
+     together with the other fields fpm reads — instead of being discovered in
+     CI. */
+  const pkg = JSON.parse(read("package.json"));
+
+  assert.equal(typeof pkg.homepage, "string", "the deb target needs a project homepage");
+  assert.match(pkg.homepage, /^https:\/\/\S+$/, "homepage is an absolute https URL (" + pkg.homepage + ")");
+  assert.ok(pkg.description && pkg.description.length > 10, "fpm writes Description from it");
+  assert.match(pkg.license, /^[A-Za-z0-9.+-]+$/, "fpm writes License from a valid SPDX id");
+  assert.ok(pkg.author && pkg.author.name, "fpm writes the Maintainer from author.name");
+  assert.match(pkg.author.email, /^[^@\s]+@[^@\s]+$/, "Maintainer needs an e-mail address");
+
+  /* The linux block still ships both targets, so a fix for one cannot quietly
+     drop the other. */
+  const yml = read("electron-builder.yml");
+  assert.match(yml, /target:\s*AppImage/, "the AppImage is still built");
+  assert.match(yml, /target:\s*deb/, "the .deb is still built");
+  assert.match(yml, /depends:\s*\n(\s+- .*\n)+/, "the .deb dependency list survives");
 });
 
 test("the staged runtime is what gets packaged (server/ + public/ from the repo root)", () => {

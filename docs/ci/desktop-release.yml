@@ -23,15 +23,20 @@ name: Desktop installers
 #   'secrets'"). MAC_CSC_LINK / WIN_CSC_LINK are therefore lifted into the
 #   `build` job's `env:` and every gate tests `env.*` instead.
 #
-#   NOTE ON THE LINUX RUNNER — `ubuntu-24.04`, not `ubuntu-latest`
-#   `ubuntu-latest` moved to Ubuntu 26.04 (glibc 2.43) on 2026-10-19. The
-#   AppImage/deb tooling electron-builder downloads carries its own bundled
-#   libm.so.6, which cannot run against that glibc: the Linux leg dies with
-#   "Process completed with exit code 1" a few seconds into `npm run dist:linux`
-#   while macOS and Windows are fine (they never use those tools). The Linux
-#   leg is therefore PINNED to `ubuntu-24.04`. The `test` job stays on
-#   `ubuntu-latest` — it only runs Node. Remove the pin once electron-builder
-#   ships tooling built for glibc 2.43.
+#   NOTE ON THE LINUX LEG
+#   1. The runner is PINNED to `ubuntu-24.04` instead of the moving
+#      `ubuntu-latest` label (GitHub announced that label migrates to Ubuntu
+#      26.04 / glibc 2.43 on 2026-10-19, where electron-builder's bundled
+#      AppImage tooling is known to break). A release must not change operating
+#      system underneath itself. The `test` job stays on `ubuntu-latest` — it
+#      only runs Node.
+#   2. `npm run dist:linux` builds an AppImage AND a .deb. The .deb goes
+#      through fpm, which ABORTS the whole job with
+#          "Please specify project homepage, see …/configuration#metadata"
+#      when `desktop/package.json` has no `homepage` — that, not glibc, is what
+#      actually failed the Linux leg. `homepage` is now committed and
+#      `desktop/test/packaging.test.js` asserts it (with description, license
+#      and author e-mail, which fpm also writes).
 #
 #   Windows  EduSphere-<version>-win-x64.exe / -win-arm64.exe        (NSIS)
 #   macOS    EduSphere-<version>-mac-universal.dmg

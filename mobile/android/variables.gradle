@@ -5,7 +5,7 @@ ext {
     targetSdkVersion = 35
     androidxActivityVersion = '1.9.2'
     androidxAppCompatVersion = '1.7.0'
-androidxCoordinatorLayoutVersion = '1.2.0'
+    androidxCoordinatorLayoutVersion = '1.2.0'
     androidxCoreVersion = '1.13.1'
     androidxFragmentVersion = '1.8.3'
     coreSplashScreenVersion = '1.0.1'

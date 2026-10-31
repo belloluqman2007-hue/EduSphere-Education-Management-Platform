@@ -151,6 +151,74 @@ test("Android release signing is env-driven with a debug fallback (no secrets ne
   assert.equal(/keyPassword\s+"[^"]+"/.test(gradle), false);
 });
 
+/* The regex assertions below cannot see a malformed document: they pass on a
+   manifest whose `<application` tag is never closed, which is exactly what
+   AGP's manifest merger rejects with
+   `SAXParseException: Element type "application" must be followed by either
+   attribute specifications, ">" or "/>"` — the Android job died there, not in
+   the test suite. So every committed XML file is PARSED as XML first. */
+function parseXml(relative) {
+  const { JSDOM } = require("jsdom");
+  const source = read(relative);
+  const dom = new JSDOM(source, { contentType: "application/xml" });
+  return { source, document: dom.window.document };
+}
+
+test("every committed Android/iOS XML file is well-formed XML", () => {
+  const files = execFileSync("git", ["ls-files", "android/app/src/main", "../mobile/ios"], { cwd: MOBILE, encoding: "utf8" })
+    .split("\n")
+    .filter((file) => file.endsWith(".xml") || file.endsWith(".plist"))
+    .filter(Boolean);
+  assert.ok(files.length >= 6, "the native XML is committed: " + files.length + " files");
+
+  for (const file of files) {
+    const relative = file.startsWith("../") ? path.join("..", file.slice(3)) : file;
+    assert.doesNotThrow(() => parseXml(relative), file + " must parse as XML (AGP/Gradle reject the whole build otherwise)");
+  }
+});
+
+test("the Android manifest is a complete document, not just regex-shaped", () => {
+  const { document, source } = parseXml("android/app/src/main/AndroidManifest.xml");
+
+  assert.equal(document.documentElement.tagName, "manifest");
+  const application = document.querySelector("application");
+  assert.ok(application, "exactly one <application> element is closed");
+  assert.equal(document.querySelectorAll("application").length, 1);
+  /* A missing `>` on the opening tag swallows the activity into the attribute
+     list; the parsed tree is what proves the tag was closed. */
+  assert.equal(application.children.length, 1, "the activity still lives inside <application>");
+  assert.equal(application.children[0].tagName, "activity");
+  assert.equal(document.querySelectorAll("activity").length, 1, "no stray activity element outside it");
+  assert.equal(document.querySelectorAll("activity intent-filter").length, 2, "launcher + edusphere:// deep links");
+  assert.match(source, /android:hardwareAccelerated="true">/, "the opening <application …> tag ends with >");
+
+  /* Resource references must resolve to files that actually exist, or aapt
+     fails at link time instead of here. */
+  const referenced = [
+    ["@style/AppTheme", "android/app/src/main/res/values/styles.xml", /name="AppTheme"/],
+    ["@style/AppTheme.NoActionBarLaunch", "android/app/src/main/res/values/styles.xml", /name="AppTheme\.NoActionBarLaunch"/],
+    ["@string/app_name", "android/app/src/main/res/values/strings.xml", /name="app_name"/],
+    ["@string/title_activity_main", "android/app/src/main/res/values/strings.xml", /name="title_activity_main"/],
+    ["@drawable/splash", "android/app/src/main/res/drawable/splash.xml", null],
+    ["@xml/network_security_config", "android/app/src/main/res/xml/network_security_config.xml", null],
+    ["@mipmap/ic_launcher", "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png", null],
+    ["@mipmap/ic_launcher_round", "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png", null],
+  ];
+  /* Everything the manifest and the styles can point at, concatenated: a
+     drawable is referenced from styles.xml, a string from the manifest. */
+  const haystack = [
+    read("android/app/src/main/AndroidManifest.xml"),
+    read("android/app/src/main/res/values/styles.xml"),
+    read("android/app/src/main/res/values/strings.xml"),
+  ].join("\n");
+
+  for (const [reference, file, marker] of referenced) {
+    assert.ok(exists(file), reference + " resolves to a committed " + path.basename(file));
+    assert.ok(haystack.includes(reference), reference + " is still referenced by the manifest or the theme");
+    if (marker) assert.match(read(file), marker, reference + " is defined in " + path.basename(file));
+  }
+});
+
 test("the Android manifest is least-privilege and deep-link aware", () => {
   const manifest = read("android/app/src/main/AndroidManifest.xml");
   const permissions = Array.from(manifest.matchAll(/<uses-permission android:name="android\.permission\.([A-Z_]+)"/g))

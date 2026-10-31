@@ -295,12 +295,24 @@ configured.
   `test/unified-login-ui.test.js` back up, if the Android job stops using
   `npx cap sync android`, or if the desktop Linux leg drifts off its
   `ubuntu-24.04` pin.
-* Two things that used to break the release and are now guarded:
-  `mobile/capacitor.config.ts` is TypeScript, so `typescript` must stay a
-  devDependency of `mobile/` (without it the Capacitor CLI exits 1 with
-  *"Could not find installation of TypeScript"* before it writes anything), and
-  `ubuntu-latest` is Ubuntu 26.04, where electron-builder's AppImage tools
-  cannot run — hence the Linux pin.
+* Things that did break the release, and are now guarded by tests:
+  * `mobile/capacitor.config.ts` is TypeScript, so `typescript` must stay a
+    devDependency of `mobile/` (without it the Capacitor CLI exits 1 with
+    *"Could not find installation of TypeScript"* before it writes anything).
+  * `mobile/android/app/src/main/AndroidManifest.xml` must be well-formed XML.
+    One missing `>` on the opening `<application …>` tag made Gradle's manifest
+    merger fail with *"Element type \"application\" must be followed by either
+    attribute specifications, \">\" or \"/>\""*. The mobile suite now parses
+    every committed `.xml`/`.plist` file, so a typo fails `npm test` instead of
+    the store build.
+  * `desktop/package.json` must keep `homepage` (plus description, license and
+    author e-mail): the Linux `.deb` is built by fpm, which aborts with
+    *"Please specify project homepage"* and takes the AppImage down with it.
+  * AndroidX versions in `mobile/android/variables.gradle` must be versions
+    that actually exist (`coordinatorlayout 1.2.1` does not — 1.2.0 is the last
+    release); Gradle fails with *"Could not find
+    androidx.coordinatorlayout:coordinatorlayout:1.2.1"*.
+  * The Linux runner is pinned to `ubuntu-24.04` for reproducibility.
 * Signing is optional everywhere: with no secrets the same workflows still
   produce working, unsigned installers — which is why the "unknown publisher"
   messages above are expected. Add the secrets listed at the top of each

@@ -351,7 +351,7 @@ with:
 
 ```bash
 cd desktop && npm install
-npm test          # 58 headless tests (mocked Electron, no display needed)
+npm test          # 59 headless tests (mocked Electron, no display needed)
 npm run dist      # → desktop/dist/EduSphere-<version>-<os>-<arch>.<ext>
 ```
 
