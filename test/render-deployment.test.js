@@ -49,15 +49,15 @@ function runConfig(script, overrides) {
   }
 }
 
-test("the Render Blueprint requests durable storage and an explicit MySQL database", () => {
+test("the Render Blueprint uses free hosting and an explicit persistent MySQL database", () => {
   const doc = yaml.load(read("render.yaml"));
   assert.ok(Array.isArray(doc.services) && doc.services.length === 1, "one explicit production service");
   const service = doc.services[0];
   assert.equal(service.type, "web");
   assert.equal(service.runtime, "node");
-  assert.equal(service.plan, "starter", "persistent disks need a paid Render service");
-  assert.equal(service.numInstances, 1, "a Render disk cannot be shared by scaled instances");
-  assert.deepEqual(service.disk, { name: "bello-data", mountPath: "/var/data", sizeGB: 1 });
+  assert.equal(service.plan, "free");
+  assert.equal(service.numInstances, 1);
+  assert.equal(service.disk, undefined, "Free hosting has no paid persistent disk");
   assert.equal(service.nodeVersion, undefined, "nodeVersion is not a valid Render Blueprint field");
 
   const vars = envVars(service);
@@ -65,9 +65,9 @@ test("the Render Blueprint requests durable storage and an explicit MySQL databa
   assert.equal(vars.NODE_ENV.value, "production");
   assert.equal(vars.DATABASE_DRIVER.value, "mysql", "production must not fall back to SQLite");
   assert.equal(vars.DATABASE_URL.sync, false, "Render must request a real database URL at deploy time");
-  assert.equal(vars.DATA_DIR.value, "/var/data");
-  assert.equal(vars.UPLOAD_DIR.value, "/var/data/uploads");
-  assert.equal(vars.BACKUP_DIR.value, "/var/data/backups");
+  assert.equal(vars.DATA_DIR.value, "/tmp/edusphere");
+  assert.equal(vars.UPLOAD_DIR.value, "/tmp/edusphere/uploads");
+  assert.equal(vars.BACKUP_DIR.value, "/tmp/edusphere/backups");
   assert.equal(vars.PERSISTENT_VOLUME_DIR.value, "/var/data");
 });
 

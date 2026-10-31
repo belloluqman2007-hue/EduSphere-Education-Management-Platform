@@ -24,11 +24,11 @@
    ========================================================================== */
 const express = require("express");
 const fs = require("fs");
-const multer = require("multer");
-const crypto = require("crypto");
 const path = require("path");
 
 const db = require("../db");
+const { fileUploader } = require("../middleware/upload");
+const privateMedia = require("../services/private-media");
 const chat = require("../services/support-chat");
 const { asyncHandler, err, ok, cleanStr, toNum, logActivity } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
@@ -36,40 +36,12 @@ const { effectiveTenantId } = require("../middleware/tenant");
 const { requirePermission } = require("../services/permissions");
 
 /* ----------------------------- file uploads ------------------------------ */
-/* The name on disk is generated here; the extension comes from the validated
-   MIME type, never from the client's file name (no path traversal, no
-   executable upload, no HTML served back from our own origin). */
-const MIME_EXT = new Map([
-  ["image/jpeg", ".jpg"],
-  ["image/png", ".png"],
-  ["application/pdf", ".pdf"],
-  ["application/msword", ".doc"],
-  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"],
-]);
-
-function rejectUpload(message) {
-  return Object.assign(new Error(message), { status: 400, expose: true });
-}
-
-const attachmentUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      try { cb(null, chat.ensureAttachmentDir()); }
-      catch (e) { cb(e); }
-    },
-    filename: (req, file, cb) => {
-      const ext = MIME_EXT.get(String(file.mimetype || "").toLowerCase()) || ".bin";
-      cb(null, Date.now() + "-" + crypto.randomBytes(12).toString("hex") + ext);
-    },
-  }),
-  limits: { fileSize: chat.MAX_ATTACHMENT_MB * 1024 * 1024, files: 1 },
-  fileFilter: (req, file, cb) => {
-    if (!chat.attachmentTypeAllowed(file.mimetype, file.originalname)) {
-      return cb(rejectUpload("Only JPG, JPEG, PNG, PDF, DOC or DOCX attachments are allowed."));
-    }
-    cb(null, true);
-  },
-}).single("attachment");
+const attachmentUpload = fileUploader("support-chat", "attachment", {
+  privateStorage: true,
+  extensions: chat.ATTACHMENT_EXTENSIONS,
+  maxMb: chat.MAX_ATTACHMENT_MB,
+  validate: (file) => chat.attachmentTypeAllowed(file.mimetype, file.originalname),
+});
 
 /** Runs the uploader and turns multer's errors into friendly 4xx messages. */
 function receiveAttachment(req, res) {
@@ -86,11 +58,18 @@ function receiveAttachment(req, res) {
 /** Deletes a just-stored file when the surrounding request cannot continue. */
 function discard(file) {
   if (!file) return;
+  if (String(file.path || "").startsWith("dbmedia:")) return; // failure response removes the row
   try { fs.unlinkSync(path.resolve(file.path)); } catch (e) { /* nothing to undo */ }
 }
 
 /** Streams an attachment as a download, never inline (no rendered HTML/SVG). */
-function sendAttachment(res, row) {
+async function sendAttachment(res, row) {
+  if (String(row.storage_name || "").startsWith("dbmedia:")) {
+    if (!await privateMedia.download(res, row.storage_name, chat.safeDisplayName(row.file_name))) {
+      return err(res, 404, "This attachment is no longer available.");
+    }
+    return;
+  }
   const full = chat.attachmentPath(row.storage_name);
   if (!full || !fs.existsSync(full)) return err(res, 404, "This attachment is no longer available.");
   res.setHeader("Content-Type", row.mime_type || "application/octet-stream");
@@ -244,7 +223,7 @@ router.get("/conversations/:id/attachments/:attachmentId", requirePermission("su
   const conversation = await ownConversation(req, res); if (!conversation) return;
   const row = await chat.getAttachment(conversation.id, req.params.attachmentId);
   if (!row) return err(res, 404, "This attachment is no longer available.");
-  sendAttachment(res, row);
+  await sendAttachment(res, row);
 }));
 
 /* ========================================================================== */
@@ -363,7 +342,7 @@ platformRouter.get("/:id/attachments/:attachmentId", asyncHandler(async (req, re
   const conversation = await anyConversation(req, res); if (!conversation) return;
   const row = await chat.getAttachment(conversation.id, req.params.attachmentId);
   if (!row) return err(res, 404, "This attachment is no longer available.");
-  sendAttachment(res, row);
+  await sendAttachment(res, row);
 }));
 
 module.exports = { router, platformRouter };

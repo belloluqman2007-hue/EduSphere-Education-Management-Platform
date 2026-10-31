@@ -66,6 +66,7 @@ const { router: syncRouter } = require("./routes/sync");
 const institution = require("./services/institution");
 const perfMonitor = require("./services/perf-monitor");
 const { asyncHandler, ok, err, toNum, logActivity } = require("./util");
+const { requireStaffPermission } = require("./services/permissions");
 const db = require("./db");
 
 function createApp() {
@@ -146,9 +147,62 @@ function createApp() {
       }) + ";");
   });
 
+  // The same session parser is used by the API and private receipt URLs.
+  const sessionSecret = config.SESSION_SECRET || "dev-only-insecure-secret-000000000000000000000000";
+  const sessionMiddleware = session({
+    name: "mm_session", secret: sessionSecret, store: new DBSessionStore(),
+    resave: false, saveUninitialized: false, rolling: true,
+    cookie: { maxAge: config.SESSION_MAX_AGE_MS, httpOnly: true, sameSite: "lax", secure: config.IS_PRODUCTION },
+  });
+  const receiptRouter = express.Router();
+  receiptRouter.use(sessionMiddleware, loadUser);
+  receiptRouter.use((req, res, next) => {
+    if (!req.user || !["madrasa_admin", "teacher", "super_admin"].includes(req.user.role)) return res.sendStatus(404);
+    return next();
+  });
+  receiptRouter.use(requireStaffPermission("expenses.view"));
+  receiptRouter.use(async (req, res, next) => {
+    try {
+      const decoded = decodeURIComponent(req.path);
+      if (!["GET", "HEAD"].includes(req.method) || !/^\/receipts\/\d+-[a-f0-9]{16}\.(?:jpg|jpeg|png|webp|gif|pdf)$/i.test(decoded)) return res.sendStatus(404);
+      const webPath = "/uploads" + decoded;
+      const owner = await db.get("SELECT e.madrasa_id FROM expense_receipts r JOIN expenses e ON e.id = r.expense_id WHERE r.file_path = ?", [webPath]);
+      if (!owner || (req.user.role !== "super_admin" && Number(owner.madrasa_id) !== Number(req.user.madrasaId))) return res.sendStatus(404);
+      res.set("Cache-Control", "private, no-store");
+      res.set("X-Content-Type-Options", "nosniff");
+      const found = await require("./services/media-store").get(webPath);
+      if (found) {
+        if (found.mime === "application/pdf" || /^image\/(jpeg|png|webp|gif)$/.test(found.mime)) res.type(found.mime);
+        else { res.attachment(path.basename(webPath)); res.type("application/octet-stream"); }
+        return res.send(found.data);
+      }
+      // Legacy receipts may still be present on the old persistent disk.
+      return res.sendFile(path.join(config.UPLOAD_DIR, decoded), (err) => {
+        if (err && !res.headersSent) res.sendStatus(404);
+      });
+    } catch (e) { next(e); }
+  });
+
   // Static frontend + uploads
   app.use(express.static(path.join(__dirname, "..", "public")));
-  app.use("/uploads", express.static(config.UPLOAD_DIR, { maxAge: "1h", fallthrough: true }));
+  // Private database media can only be downloaded through authorized API routes.
+  app.use("/uploads", (req, res, next) => {
+    let decoded;
+    try { decoded = decodeURIComponent(req.path); } catch (_) { return res.sendStatus(400); }
+    if (/^\/private-/i.test(decoded)) return res.status(404).type("txt").send("Not found.");
+    if (/^\/receipts(?:\/|$)/i.test(decoded)) return receiptRouter(req, res, next);
+    next();
+  });
+  app.use("/uploads", sessionMiddleware, loadUser, async (req, res, next) => {
+    try {
+      const webPath = "/uploads" + decodeURIComponent(req.path);
+      if (!await require("./services/media-access").allowed(webPath, req.user, req.query.media)) return res.sendStatus(404);
+      // Private responses must not be stored by shared caches or survive logout.
+      res.set("Cache-Control", "private, no-store");
+      next();
+    } catch (e) { next(e); }
+  });
+  app.use("/uploads", express.static(config.UPLOAD_DIR, { fallthrough: true, setHeaders: (res) => res.setHeader("Cache-Control", "private, no-store") }));
   // The durable copy: every upload is also stored in the media_files table, so
   // a deploy that replaces the container filesystem (no persistent disk) no
   // longer wipes portraits, signatures and logos. The disk stays the fast
@@ -159,11 +213,16 @@ function createApp() {
       const webPath = "/uploads" + (req.path === "/" ? "" : req.path);
       const found = await mediaStore.get(webPath);
       if (!found) return next();
-      res.set("Cache-Control", "public, max-age=3600");
-      res.type(found.mime);
+      res.set("Cache-Control", "private, no-store");
+      // A client-supplied MIME must never make a document execute as HTML.
+      const imageType = /\.(?:jpg|jpeg)$/i.test(webPath) ? "image/jpeg"
+        : /\.png$/i.test(webPath) ? "image/png"
+        : /\.webp$/i.test(webPath) ? "image/webp" : null;
+      if (imageType && found.mime === imageType) res.type(imageType);
+      else { res.attachment(path.basename(webPath)); res.type("application/octet-stream"); }
       return res.send(found.data);
     } catch (e) {
-      return next();
+      return next(e);
     }
   });
   // Uploads are files, never pages. Without this terminator a missing file
@@ -309,7 +368,7 @@ function createApp() {
       verdict: row.school_status === "active" ? "valid" : "inactive",
       reference: `CERT-${String(row.issued_date || "").slice(0, 4)}-${String(row.id).padStart(6, "0")}`,
       holderName: [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" "),
-      photoPath: row.photo_path || "",
+      photoPath: require("./services/media-access").signedUrl(row.photo_path),
       title: (config && config.title) || row.template_name || "Certificate",
       award: (config && config.award) || "",
       className: row.class_name || "",
@@ -353,22 +412,8 @@ function createApp() {
   api.use("/auth/login", loginLimiter);
   api.use("/auth/forgot-password", resetRequestLimiter);
 
-  // Sessions
-  const sessionSecret = config.SESSION_SECRET || "dev-only-insecure-secret-000000000000000000000000";
-  api.use(session({
-    name: "mm_session",
-    secret: sessionSecret,
-    store: new DBSessionStore(),
-    resave: false,
-    saveUninitialized: false,
-    rolling: true,
-    cookie: {
-      maxAge: config.SESSION_MAX_AGE_MS,
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.IS_PRODUCTION,
-    },
-  }));
+  // Sessions (shared with the protected receipt route).
+  api.use(sessionMiddleware);
 
   // Resolve authentication (Bearer device token OR session cookie) BEFORE
   // csrfGuard so valid Bearer-authenticated native app calls pass cleanly while

@@ -223,9 +223,10 @@ function asset(value) {
  * existence here means the browser is only ever handed a URL we can serve;
  * anything else degrades to a clean placeholder instead.
  */
-function assetServed(value) {
+function assetServed(value, availableAssets) {
   const url = asset(value);
   if (!url || url.includes("..")) return "";
+  if (availableAssets && availableAssets[url]) return url;
   try {
     return fs.statSync(path.join(config.UPLOAD_DIR, url.replace(/^\/uploads\//, ""))).isFile() ? url : "";
   } catch (e) {
@@ -622,6 +623,17 @@ async function preloadClassTerm(madrasaId, classId, termId) {
   };
 }
 
+// The disk cache may be gone after a deploy; consult the durable store too.
+async function markAvailableAssets(data) {
+  data.availableAssets = {};
+  for (const value of [data.madrasa && data.madrasa.logoPath, data.student && data.student.photoPath]) {
+    const url = asset(value);
+    if (!url || url.includes("..")) continue;
+    const row = await db.get("SELECT web_path FROM media_files WHERE web_path = ?", [url]);
+    if (row) data.availableAssets[url] = true;
+  }
+}
+
 /** Full printable dataset for ONE student + term. */
 async function buildReportSheet(madrasaId, studentId, termId) {
   const student = await db.get("SELECT * FROM students WHERE id = ? AND madrasa_id = ?", [studentId, madrasaId]);
@@ -646,6 +658,7 @@ async function buildReportSheet(madrasaId, studentId, termId) {
     data.attendance = await attendanceBreakdown(madrasaId, studentId, termId);
   }
   await backfillReference(madrasaId, studentId, termId, data.reference);
+  await markAvailableAssets(data);
   return data;
 }
 
@@ -700,6 +713,7 @@ async function buildClassReportSheets(madrasaId, classId, termId) {
     if (!rows.length) continue;
     const data = assembleReport(preload, student, summary, rows);
     await backfillReference(madrasaId, summary.student_id, termId, data.reference);
+    await markAvailableAssets(data);
     out.push(data);
   }
   return out;
@@ -1364,7 +1378,7 @@ function renderReportSheetHTML(data, opts = {}) {
   const nameSize = m.nameSizeFor(tier.nameMax);
 
   /* ---------------- masthead ---------------------------------------------- */
-  const logoUrl = assetServed(d.madrasa.logoPath);
+  const logoUrl = assetServed(d.madrasa.logoPath, d.availableAssets);
   const logoInitial = String((d.madrasa.nameEn || "?").trim().charAt(0) || "?").toUpperCase();
   const logo = logoUrl
     ? `<img class="logo" src="${esc(logoUrl)}" alt="${esc(d.madrasa.nameEn)}" data-fallback="logo" data-initial="${esc(logoInitial)}">`
@@ -1399,7 +1413,8 @@ function renderReportSheetHTML(data, opts = {}) {
     </div>`;
 
   /* ---------------- student information ------------------------------------ */
-  const photoUrl = t.showPhoto ? assetServed(d.student.photoPath) : "";
+  const originalPhoto = t.showPhoto ? assetServed(d.student.photoPath, d.availableAssets) : "";
+  const photoUrl = opts.publicCopy && originalPhoto ? require("./media-access").signedUrl(originalPhoto) : originalPhoto;
   const photoSlot = !t.showPhoto ? "" : (photoUrl
     ? `<div class="photo-slot"><img class="photo" src="${esc(photoUrl)}" alt="${esc(d.student.name)}" data-fallback="photo"></div>`
     : `<div class="photo-slot photo-empty" aria-hidden="true">${PHOTO_PLACEHOLDER_SVG}</div>`);

@@ -289,3 +289,60 @@ test("portraits are stored in the database and survive losing the uploads direct
   const gone = await ctx.db.get("SELECT web_path FROM media_files WHERE web_path = ?", [webPath]);
   assert.ok(!gone, "the media row is deleted with the picture");
 });
+
+test("private portraits and signatures reject other schools, including after disk loss", async () => {
+  const other = new Client(ctx.base);
+  assert.equal((await other.login("admin-b", PASSWORD)).status, 200);
+  const portrait = await teacher.api("POST", "/api/auth/account/photo", { photoDataUrl: pngDataUrl(50, 50) });
+  const signature = await teacher.api("PUT", "/api/auth/account/signature", { signatureDataUrl: pngDataUrl(50, 50) });
+  assert.equal(portrait.status, 200);
+  assert.equal(signature.status, 200);
+  for (const webPath of [portrait.data.photoPath, signature.data.signaturePath]) {
+    const row = await ctx.db.get("SELECT madrasa_id FROM media_files WHERE web_path = ?", [webPath]);
+    assert.equal(Number(row.madrasa_id), Number(ctx.madrasaA));
+    assert.equal((await teacher.req("GET", webPath)).status, 200);
+    assert.equal((await other.req("GET", webPath)).status, 404);
+    assert.equal((await fetch(ctx.base + webPath)).status, 404);
+    const disk = require("path").join(process.env.UPLOAD_DIR, webPath.replace(/^\/uploads\//, ""));
+    require("fs").rmSync(disk, { force: true });
+    assert.equal((await teacher.req("GET", webPath)).status, 200);
+    assert.equal((await other.req("GET", webPath)).status, 404);
+  }
+  // A public verification grant is scoped to the one image it names.
+  const grant = require("../server/services/media-access").signedUrl(portrait.data.photoPath);
+  assert.equal((await fetch(ctx.base + grant)).status, 200);
+  const token = grant.split("?media=")[1];
+  assert.equal((await fetch(ctx.base + signature.data.signaturePath + "?media=" + token)).status, 404);
+});
+
+test("multipart signature is durable and isolated from another school", async () => {
+  const bytes = Buffer.from(pngDataUrl(30, 30).split(",")[1], "base64");
+  const form = new FormData();
+  form.append("signature", new Blob([bytes], { type: "image/png" }), "signature.png");
+  const res = await fetch(ctx.base + "/api/auth/account/signature", {
+    method: "POST", headers: { Cookie: teacher.cookieHeader(), "X-CSRF-Token": await teacher.csrf() }, body: form,
+  });
+  const data = await res.json();
+  assert.equal(res.status, 200, JSON.stringify(data));
+  const disk = require("path").join(process.env.UPLOAD_DIR, data.signaturePath.replace(/^\/uploads\//, ""));
+  require("fs").rmSync(disk, { force: true });
+  const recovered = await teacher.req("GET", data.signaturePath);
+  assert.equal(recovered.status, 200);
+  assert.deepEqual(Buffer.from(await recovered.res.arrayBuffer()), bytes);
+  const other = new Client(ctx.base); await other.login("admin-b", PASSWORD);
+  assert.equal((await other.req("GET", data.signaturePath)).status, 404);
+});
+
+test("public card verification displays its portrait with a scoped short-lived link", async () => {
+  const updated = await teacher.api("POST", "/api/auth/account/photo", { photoDataUrl: pngDataUrl(50, 50) });
+  assert.equal(updated.status, 200);
+  const credential = await require("../server/services/card-credentials").ensureCardCredential(ctx.madrasaA, "teacher", ctx.users.teacherA);
+  const response = await fetch(ctx.base + `/api/public/card/${credential.code}`);
+  assert.equal(response.status, 200);
+  const view = (await response.json()).card;
+  assert.ok(view.photoPath.includes("?media="));
+  assert.equal((await fetch(ctx.base + view.photoPath)).status, 200);
+  assert.equal((await fetch(ctx.base + updated.data.photoPath)).status, 404);
+  const page = await fetch(ctx.base + `/verify/card/${credential.code}`);
+  assert.match(await page.text(), /\?media=/);
+});

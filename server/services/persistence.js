@@ -257,12 +257,13 @@ async function report(db) {
       if (level === "ok") level = "warn";
       warnings.push({ code: "UNKNOWN_MOUNT", message: "Could not inspect the filesystem — confirm " + config.DATA_DIR + " survives a restart." });
     }
-    // MySQL protects database rows, but it does not protect uploaded logos,
-    // photos or the snapshots used for disaster recovery. Report those two
-    // separately even with DATABASE_URL configured.
+    // Current uploads are stored in the database. The local directory is a
+    // cache/staging area; old files that were never migrated remain at risk.
     if (uploads.onPersistentVolume === false) {
       if (level === "ok") level = "warn";
-      warnings.push({ code: "EPHEMERAL_UPLOADS", message: "Uploads (" + config.UPLOAD_DIR + ") are on an ephemeral filesystem — logos and student photos vanish on redeploy. Keep UPLOAD_DIR inside the persistent volume." + renderDiskHint() });
+      warnings.push({ code: "EPHEMERAL_UPLOADS", message: externalDb
+        ? "Upload staging (" + config.UPLOAD_DIR + ") is ephemeral. New uploads are stored in MySQL; legacy disk-only files must be migrated before the disk is lost."
+        : "Uploads (" + config.UPLOAD_DIR + ") and the SQLite database must both survive redeploys; the local staging directory is ephemeral." });
     }
     if (backups.onPersistentVolume === false) {
       if (level === "ok") level = "warn";

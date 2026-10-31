@@ -9,10 +9,12 @@
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const multer = require("multer");
 const config = require("../config");
 const mediaStore = require("../services/media-store");
+const { effectiveTenantId } = require("./tenant");
 
 /* The extension written to disk is chosen from this map, NOT from the name the
    client supplied. A browser-uploaded name is attacker-controlled, and multer's
@@ -28,11 +30,30 @@ const ALLOWED_IMAGE_EXT = new Map([
 ]);
 const ALLOWED_MIME = new Set(ALLOWED_IMAGE_EXT.keys());
 
-function makeStorage(context, baseDir, extFor) {
+function makeStorage(context, baseDir, extFor, temporaryFallback = false) {
   const dir = path.join(baseDir || config.UPLOAD_DIR, context);
-  fs.mkdirSync(dir, { recursive: true });
   return multer.diskStorage({
-    destination: (req, file, cb) => cb(null, dir),
+    destination: (req, file, cb) => {
+      // Images have a required database copy; if the configured directory is
+      // unavailable, use a request-private temporary directory only as staging.
+      fs.mkdir(dir, { recursive: true }, async (err) => {
+        if (!err) return cb(null, dir);
+        if (!temporaryFallback || !["EACCES", "EPERM", "EROFS", "ENOTDIR"].includes(err.code)) return cb(err);
+        let root;
+        try {
+          root = await fsp.mkdtemp(path.join(os.tmpdir(), "edusphere-upload-"));
+          const staging = path.join(root, context);
+          await fsp.mkdir(staging);
+          const cleanup = () => { fsp.rm(root, { recursive: true, force: true }).catch(() => {}); };
+          req.res.once("finish", cleanup);
+          req.res.once("close", cleanup);
+          return cb(null, staging);
+        } catch (stageError) {
+          if (root) await fsp.rm(root, { recursive: true, force: true }).catch(() => {});
+          return cb(stageError);
+        }
+      });
+    },
     filename: (req, file, cb) => {
       // Name and extension are both generated here; nothing the client sent is
       // used to build the path on disk.
@@ -52,29 +73,39 @@ function rejectUpload(message) {
   return Object.assign(new Error(message), { status: 400, expose: true });
 }
 
-/* Dual-write: every stored file is also persisted in the media_files table so
-   it survives deploys that replace the container filesystem. Very large files
-   (the backup importer) stay disk-only — they are restored from backups and
-   would bloat the database. */
-const PERSIST_MAX_BYTES = 10 * 1024 * 1024;
-
-function persistToMediaStore(file) {
-  if (!file || !file.path || !file.filename) return Promise.resolve();
-  if (Number(file.size || 0) > PERSIST_MAX_BYTES) return Promise.resolve();
-  return fsp.readFile(file.path).then((buffer) => {
+/* Web-facing media must be persisted before the route can report success.
+   CSV and backup imports are transient scratch files and are not published. */
+async function persistToMediaStore(file, required, req) {
+  if (!file || !file.path || !file.filename) return;
+  try {
+    const buffer = await fsp.readFile(file.path);
     const context = path.basename(path.dirname(file.path));
     const webPath = `/uploads/${context}/${file.filename}`;
-    return mediaStore.put(webPath, buffer, file.mimetype).catch(() => false);
-  }).catch(() => false);
+    const saved = await mediaStore.put(webPath, buffer, file.mimetype, req.user ? effectiveTenantId(req) : null);
+    if (!saved && required) throw new Error("The uploaded image could not be saved to the media store.");
+  } catch (err) {
+    if (required) {
+      // Do not leave a disk-only image behind when the durable write failed.
+      await fsp.unlink(file.path).catch(() => {});
+      throw err;
+    }
+  }
 }
 
 /** Wraps a multer single-file middleware with the media-store copy. */
-function withMediaPersistence(up) {
+function withMediaPersistence(up, required = false) {
   return (req, res, next) => {
     up(req, res, (err) => {
       if (err) return next(err);
       const file = (req.files && (Array.isArray(req.files) ? req.files[0] : req.files)) || req.file;
-      Promise.resolve(persistToMediaStore(file)).then(() => next()).catch(next);
+      persistToMediaStore(file, required, req).then(() => {
+        if (file && required && config.IS_RENDER && config.DATABASE_DRIVER === "mysql") {
+          const cleanup = () => { fsp.unlink(file.path).catch(() => {}); };
+          res.once("finish", cleanup);
+          res.once("close", cleanup);
+        }
+        next();
+      }).catch(next);
     });
   };
 }
@@ -85,13 +116,24 @@ const imageFilter = (req, file, cb) => {
 };
 
 /** multer instance for a named context dir, e.g. "logos", "photos" */
-function imageUploader(context, field) {
+function imageUploader(context, field, options = {}) {
   const up = multer({
-    storage: makeStorage(context, null, imageExt),
+    storage: makeStorage(context, null, imageExt, true),
     limits: { fileSize: config.MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
     fileFilter: imageFilter,
   });
-  return withMediaPersistence(up.single(field || "file"));
+  if (options.stagingOnly) {
+    return (req, res, next) => up.single(field || "file")(req, res, (err) => {
+      if (err) return next(err);
+      if (req.file) {
+        const cleanup = () => { fsp.unlink(req.file.path).catch(() => {}); };
+        res.once("finish", cleanup);
+        res.once("close", cleanup);
+      }
+      next();
+    });
+  }
+  return withMediaPersistence(up.single(field || "file"), true);
 }
 
 /**
@@ -110,8 +152,17 @@ function fileUploader(context, field, options = {}) {
     if (options.extensions && options.extensions.length) return options.extensions[0];
     return /^\.[a-z0-9]{1,8}$/.test(ext) ? ext : ".bin";
   };
+  const privateStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      fsp.mkdtemp(path.join(os.tmpdir(), "edusphere-private-")).then((dir) => {
+        req.privateUploadRoot = dir;
+        cb(null, dir);
+      }, cb);
+    },
+    filename: (req, file, cb) => cb(null, Date.now() + "-" + crypto.randomBytes(8).toString("hex") + extFor(file)),
+  });
   const up = multer({
-    storage: makeStorage(context, options.dir, extFor),
+    storage: options.privateStorage ? privateStorage : makeStorage(context, options.dir, extFor, !options.dir),
     limits: { fileSize: (options.maxMb || 50) * 1024 * 1024, files: 1 },
     fileFilter: (req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
@@ -121,10 +172,41 @@ function fileUploader(context, field, options = {}) {
       if (allowed && !allowed.includes(file.mimetype)) {
         return cb(rejectUpload("Unsupported file type (" + file.mimetype + ")."));
       }
+      if (options.validate && !options.validate(file)) return cb(rejectUpload("Unsupported file type."));
       cb(null, true);
     },
   });
-  return withMediaPersistence(up.single(field || "file"));
+  // Custom directories include scratch imports read directly by their routes;
+  // web-facing attachments must be durably persisted before reporting success.
+  if (!options.privateStorage) {
+    if (options.dir) return up.single(field || "file"); // private scratch import
+    return withMediaPersistence(up.single(field || "file"), true);
+  }
+  return (req, res, next) => {
+    up.single(field || "file")(req, res, async (err) => {
+      if (err || !req.file) {
+        if (req.privateUploadRoot) await fsp.rm(req.privateUploadRoot, { recursive: true, force: true }).catch(() => {});
+        return next(err);
+      }
+      const file = req.file;
+      const webPath = `/uploads/private-${context}/${file.filename}`;
+      try {
+        const bytes = await fsp.readFile(file.path);
+        if (!await mediaStore.put(webPath, bytes, file.mimetype, req.user ? effectiveTenantId(req) : null)) throw new Error("Could not persist the uploaded document.");
+        file.path = `dbmedia:${webPath}`;
+        res.once("finish", () => {
+          // A later database update may have succeeded before an error was
+          // returned. Never delete bytes that are already referenced.
+          if (res.statusCode >= 400) require("../services/private-media").removeIfUnused(`dbmedia:${webPath}`).catch((e) => console.error("Private upload cleanup failed:", e.message));
+        });
+        next();
+      } catch (e) {
+        next(e);
+      } finally {
+        if (req.privateUploadRoot) await fsp.rm(req.privateUploadRoot, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+  };
 }
 
 module.exports = { imageUploader, fileUploader };

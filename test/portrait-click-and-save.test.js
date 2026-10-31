@@ -120,9 +120,11 @@ test("an administrator saves a teacher portrait from the cropped image the brows
   assert.equal(profile.photo_path, photoPath, "the staff record (directory, ID card) holds it");
   assert.equal(account.photo_path, photoPath, "and so does the account (portal header)");
 
-  const served = await fetch(ctx.base + photoPath);
-  assert.equal(served.status, 200, "the stored file is served back");
+  const served = await fetch(ctx.base + photoPath, { headers: { Cookie: admin.cookieHeader() } });
+  assert.equal(served.status, 200, "the stored file is served back to its school");
   assert.match(served.headers.get("content-type") || "", /^image\/png/, "as an image");
+  assert.equal((await fetch(ctx.base + photoPath)).status, 404, "anonymous access is denied");
+  assert.equal((await adminB.req("GET", photoPath)).status, 404, "another school cannot read the portrait");
 });
 
 test("a teacher replaces their own portrait without an administrator", async () => {

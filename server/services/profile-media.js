@@ -15,13 +15,12 @@
    the actual magic bytes, the decoded size is capped, and the stored name is
    generated. Nothing on this path is ever taken from the client's file name.
 
-   Files are written under uploads/<context>/ and served by the existing
-   /uploads static mount, whose terminator guarantees a missing file answers
-   404 instead of falling through to the SPA shell.
+   Images are persisted in media_files. A local copy is only an optional cache;
+   /uploads authorizes the school before serving either copy.
    ========================================================================== */
-const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const config = require("../config");
 const mediaStore = require("./media-store");
@@ -73,15 +72,36 @@ async function writeImage(buffer, context, options = {}) {
   if (!kind) {
     throw Object.assign(new Error("Only PNG, JPG or WEBP images are accepted."), { status: 400, expose: true });
   }
-  const dir = contextDir(context);
-  await fsp.mkdir(dir, { recursive: true });
+  if (config.IS_RENDER && config.DATABASE_DRIVER === "mysql") {
+    const webPath = `/uploads/${context}/${newName(kind.ext)}`;
+    if (!await mediaStore.put(webPath, buffer, kind.mime, options.madrasaId)) {
+      throw new Error("The image could not be saved to the media store.");
+    }
+    return webPath;
+  }
+  let dir = contextDir(context);
+  let temporaryRoot = null;
+  try {
+    await fsp.mkdir(dir, { recursive: true });
+  } catch (err) {
+    if (!["EACCES", "EPERM", "EROFS", "ENOTDIR"].includes(err.code)) throw err;
+    temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "edusphere-profile-"));
+    dir = temporaryRoot;
+  }
   const name = newName(kind.ext);
-  await fsp.writeFile(path.join(dir, name), buffer);
   const webPath = `/uploads/${context}/${name}`;
-  // Also persist to the database: the disk copy is the fast path, the row is
-  // what survives a deploy that replaces the container filesystem.
-  await mediaStore.put(webPath, buffer, kind.mime);
-  return webPath;
+  try {
+    await fsp.writeFile(path.join(dir, name), buffer);
+    if (!await mediaStore.put(webPath, buffer, kind.mime, options.madrasaId)) {
+      throw new Error("The image could not be saved to the media store.");
+    }
+    return webPath;
+  } catch (err) {
+    await fsp.unlink(path.join(dir, name)).catch(() => {});
+    throw err;
+  } finally {
+    if (temporaryRoot) await fsp.rm(temporaryRoot, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /**
@@ -120,20 +140,15 @@ async function saveDataUrl(value, context, options = {}) {
  * our own generated media are touched, so a value from another tenant's row or
  * an attacker-supplied string can never delete something arbitrary.
  */
-function deleteStored(webPath) {
+async function deleteStored(webPath) {
   const value = String(webPath || "");
   if (!isStoredMediaPath(value)) return false;
   const rel = value.replace(/^\/uploads\//, "");
   const abs = path.resolve(config.UPLOAD_DIR, rel);
   if (!abs.startsWith(path.resolve(config.UPLOAD_DIR) + path.sep)) return false;
-  try {
-    if (fs.existsSync(abs)) fs.unlinkSync(abs);
-  } catch (e) {
-    /* fall through — the database copy still gets removed */
-  }
-  // Fire-and-forget: deleting the durable copy must not block the request,
-  // but a leftover row is harmless (the path is already unlinked everywhere).
-  Promise.resolve(mediaStore.remove(value)).catch(() => {});
+  // Delete the durable copy first; an error must reach the caller.
+  await mediaStore.remove(value);
+  try { await fsp.unlink(abs); } catch (e) { if (e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e; }
   return true;
 }
 

@@ -192,7 +192,7 @@ function cardVerificationView(result) {
     valid: verdict === "valid",
     holderType: isTeacher ? "teacher" : "student",
     name,
-    photoPath: holder.photo_path || "",
+    photoPath: holder.photo_path ? require("./media-access").signedUrl(holder.photo_path) : "",
     identifier: isTeacher
       ? holder.staff_id || holder.username || `STAFF-${holder.id}`
       : holder.admission_no || holder.student_code || "",

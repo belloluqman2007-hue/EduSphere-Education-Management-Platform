@@ -434,7 +434,7 @@ router.put("/account", asyncHandler(async (req, res) => {
    written to both, so the change shows up on the ID card, in the register and
    in the portal at the same time — one action, one truth.
 -------------------------------------------------------------------------- */
-const avatarUploader = imageUploader("avatars", "photo");
+const avatarUploader = imageUploader("avatars", "photo", { stagingOnly: true });
 const avatarSignature = imageUploader("signatures", "signature");
 
 function readImageField(req, names) {
@@ -466,10 +466,10 @@ async function mirrorSignature(req, path) {
 
 async function storePortrait(req, res, buffer) {
   const previous = await db.get("SELECT photo_path FROM users WHERE id = ?", [req.user.id]);
-  const path = await profileMedia.writeImage(buffer, "avatars", { maxBytes: profileMedia.MAX_PHOTO_BYTES });
+  const path = await profileMedia.writeImage(buffer, "avatars", { maxBytes: profileMedia.MAX_PHOTO_BYTES, madrasaId: req.user.madrasaId });
   await db.run("UPDATE users SET photo_path = ? WHERE id = ?", [path, req.user.id]);
   await mirrorPortrait(req, path);
-  if (previous && previous.photo_path) profileMedia.deleteStored(previous.photo_path);
+  if (previous && previous.photo_path) await profileMedia.deleteStored(previous.photo_path);
   logActivity(db, { madrasaId: req.user.madrasaId, userId: req.user.id, action: "account.photo.update", entity: "user", entityId: String(req.user.id), ip: req.ip });
   res.json({ ok: true, photoPath: path });
 }
@@ -493,7 +493,7 @@ router.delete("/account/photo", asyncHandler(async (req, res) => {
   const previous = await db.get("SELECT photo_path FROM users WHERE id = ?", [req.user.id]);
   await db.run("UPDATE users SET photo_path = '' WHERE id = ?", [req.user.id]);
   await mirrorPortrait(req, "");
-  if (previous && previous.photo_path) profileMedia.deleteStored(previous.photo_path);
+  if (previous && previous.photo_path) await profileMedia.deleteStored(previous.photo_path);
   res.json({ ok: true, photoPath: "" });
 }));
 
@@ -503,10 +503,10 @@ router.put("/account/signature", asyncHandler(async (req, res) => {
   const dataUrl = readImageField(req, ["signatureDataUrl", "dataUrl", "signature"]);
   if (!dataUrl) return res.status(400).json({ error: "Draw your signature first." });
   const previous = await db.get("SELECT signature_path FROM users WHERE id = ?", [req.user.id]);
-  const path = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES });
+  const path = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES, madrasaId: req.user.madrasaId });
   await db.run("UPDATE users SET signature_path = ? WHERE id = ?", [path, req.user.id]);
   await mirrorSignature(req, path);
-  if (previous && previous.signature_path) profileMedia.deleteStored(previous.signature_path);
+  if (previous && previous.signature_path) await profileMedia.deleteStored(previous.signature_path);
   logActivity(db, { madrasaId: req.user.madrasaId, userId: req.user.id, action: "account.signature.update", entity: "user", entityId: String(req.user.id), ip: req.ip });
   res.json({ ok: true, signaturePath: path });
 }));
@@ -522,7 +522,7 @@ router.post("/account/signature", (req, res, next) => {
   const path = `/uploads/signatures/${req.file.filename}`;
   await db.run("UPDATE users SET signature_path = ? WHERE id = ?", [path, req.user.id]);
   await mirrorSignature(req, path);
-  if (previous && previous.signature_path) profileMedia.deleteStored(previous.signature_path);
+  if (previous && previous.signature_path) await profileMedia.deleteStored(previous.signature_path);
   res.json({ ok: true, signaturePath: path });
 }));
 
@@ -531,7 +531,7 @@ router.delete("/account/signature", asyncHandler(async (req, res) => {
   const previous = await db.get("SELECT signature_path FROM users WHERE id = ?", [req.user.id]);
   await db.run("UPDATE users SET signature_path = '' WHERE id = ?", [req.user.id]);
   await mirrorSignature(req, "");
-  if (previous && previous.signature_path) profileMedia.deleteStored(previous.signature_path);
+  if (previous && previous.signature_path) await profileMedia.deleteStored(previous.signature_path);
   res.json({ ok: true, signaturePath: "" });
 }));
 

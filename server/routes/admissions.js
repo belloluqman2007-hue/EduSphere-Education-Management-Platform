@@ -22,6 +22,7 @@ const bcrypt = require("bcryptjs");
 const fs = require("fs");
 const path = require("path");
 const db = require("../db");
+const privateMedia = require("../services/private-media");
 const config = require("../config");
 const { asyncHandler, err, ok, cleanStr, toNum, logActivity, checkPlanLimits } = require("../util");
 const { requireAuth, requireRole } = require("../middleware/auth");
@@ -34,6 +35,7 @@ const communication = require("../services/communication");
 
 const applicationDocumentUploader = fileUploader("files", "document", {
   dir: path.join(config.DATA_DIR, "private-student-documents"),
+  privateStorage: true,
   extensions: [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx"],
   maxMb: 10,
 });
@@ -418,8 +420,7 @@ router.post("/:id/documents", ADMIN, applicationDocumentUploader, asyncHandler(a
 router.get("/:id/documents/:documentId", ADMIN, requirePermission("admissions.view"), asyncHandler(async (req, res) => {
   const row = await loadRequest(req, res, req.params.id); if (!row) return;
   const doc = await db.get("SELECT * FROM admission_documents WHERE id = ? AND application_id = ? AND madrasa_id = ?", [toNum(req.params.documentId, 0), row.id, row.madrasa_id]);
-  if (!doc || !fs.existsSync(doc.storage_path)) return err(res, 404, "Document not found.");
-  res.download(doc.storage_path, doc.original_name || doc.document_name);
+  if (!doc || !await privateMedia.download(res, doc.storage_path, doc.original_name || doc.document_name)) return err(res, 404, "Document not found.");
 }));
 
 router.delete("/:id", requirePermission("admissions.approve"), asyncHandler(async (req, res) => {

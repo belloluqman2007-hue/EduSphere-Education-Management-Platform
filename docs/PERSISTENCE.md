@@ -1,5 +1,7 @@
 # Storage & persistence
 
+> **Render Free + external MySQL:** current database-backed upload setup and free-tier limitations are documented in [RENDER-FREE-UPLOADS.md](RENDER-FREE-UPLOADS.md). Disk-based advice below does not describe that setup.
+
 > **"I added a madrasa and some time later it was just gone."**
 > That report is almost never the application forgetting — it is the **host**
 > forgetting. This document explains why it happens, how this platform now

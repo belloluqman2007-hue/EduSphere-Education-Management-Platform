@@ -32,7 +32,7 @@ function escapeHtml(value) {
 /** Uploaded images only — never a remote URL and never a javascript: target. */
 function safeAssetPath(value) {
   const path = String(value === null || value === undefined ? "" : value).trim().slice(0, 500);
-  return /^\/uploads\/[A-Za-z0-9_./-]+$/.test(path) ? path : "";
+  return /^\/uploads\/[A-Za-z0-9_./-]+(?:\?media=[A-Za-z0-9_.-]+)?$/.test(path) ? path : "";
 }
 
 function today() {

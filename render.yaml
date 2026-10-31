@@ -11,11 +11,9 @@ services:
     name: multi-madrasa-platform
     runtime: node
     # The Node runtime is pinned with NODE_VERSION below and .node-version.
-    # `nodeVersion` is not a valid Render Blueprint field; keeping version
-    # selection in supported settings is what lets Render apply the disk and
-    # environment declarations in this file.
-    plan: starter
-    # A service with a persistent disk must remain a single instance.
+    # Render Free has no persistent disk; MySQL stores application data and media.
+    plan: free
+    # The free service uses one instance.
     numInstances: 1
     # EU region = lowest latency to Nigeria; change freely.
     region: frankfurt
@@ -24,22 +22,8 @@ services:
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /api/health
-    # ---------------------------------------------------------------------
-    # PERSISTENT DISK — do not remove this block.
-    # Render's container filesystem is thrown away on every deploy/restart.
-    # Without a disk, uploads and JSON backups disappear, and if this service
-    # is ever run on SQLite (no DATABASE_URL) the WHOLE database — every
-    # madrasa included — is deleted on the next deploy. That is the exact
-    # "I added a madrasa and later it was gone" report. A disk also allows
-    # only ONE instance and no zero-downtime deploys: both are fine here.
-    # Growing a disk is possible, shrinking is not. docs/PERSISTENCE.md.
-    # ---------------------------------------------------------------------
-    disk:
-      name: bello-data
-      mountPath: /var/data
-      sizeGB: 1          # grow this later; Render minimum is 1
-    # The database itself is the external MySQL (below); the disk holds
-    # uploads, backups and the storage state marker.
+    # Do not add a disk here: Render Free does not support persistent disks.
+    # /tmp is scratch space only; DATABASE_URL must point at persistent MySQL.
     envVars:
       # Render's supported way to select Node. Keep this aligned with
       # .node-version and package.json; Node 22 provides node:sqlite for the
@@ -54,6 +38,9 @@ services:
       # Never paste the old production connection string here.
       - key: DATABASE_URL
         sync: false
+      # Aiven requires TLS. The existing MySQL driver encrypts this connection.
+      - key: DB_SSL
+        value: "true"
       # Auto-generated long secret for session signing + CSRF.
       - key: SESSION_SECRET
         generateValue: true
@@ -71,27 +58,20 @@ services:
         value: "10"
       - key: API_RATE_LIMIT
         value: "300"
-      # Everything the app writes to disk lives on the volume above.
+      # Scratch paths are writable but are erased by Render; they are not backups.
       - key: DATA_DIR
-        value: /var/data
+        value: /tmp/edusphere
       - key: UPLOAD_DIR
-        value: /var/data/uploads
+        value: /tmp/edusphere/uploads
       - key: BACKUP_DIR
-        value: /var/data/backups
+        value: /tmp/edusphere/backups
       - key: PERSISTENT_VOLUME_DIR
         value: /var/data
-      # JSON snapshot of the whole database, every 6 hours, keeping 10.
-      # 0 disables the timer; `npm run backup` writes one on demand.
+      # Local snapshots are ephemeral. Use Aiven backups and export copies.
       - key: BACKUP_INTERVAL_MINUTES
-        value: "360"
-      - key: BACKUP_KEEP
-        value: "10"
-      # A boot that finds a completely EMPTY database (the host threw the
-      # container filesystem away, or the app was pointed at another file)
-      # restores the newest snapshot before seeding, so tenants created days
-      # ago come back by themselves. Keep it on; 0 disables it.
+        value: "0"
       - key: AUTO_RESTORE_ON_EMPTY_DB
-        value: "1"
+        value: "0"
       - key: MAX_UPLOAD_MB
         value: "5"
       # Logged-out (public site) traffic gets its own buckets.
