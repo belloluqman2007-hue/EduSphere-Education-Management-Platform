@@ -47,6 +47,16 @@ test("the bridge exposes exactly the desktop contract, and it is frozen", async 
   ctx.close();
 });
 
+test("native uploaded photos resolve against the paired server, not the WebView localhost", async () => {
+  const ctx = await bootNativeBridge({ storage: { "edusphere.mobile.server": "https://school.example" } });
+  const image = ctx.document.createElement("img");
+  image.setAttribute("src", "/uploads/students/photo.jpg");
+  ctx.document.querySelector("#app").appendChild(image);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(image.src, "https://school.example/uploads/students/photo.jpg");
+  ctx.close();
+});
+
 test("iOS reports platform ios so the server records the right device", async () => {
   const ctx = await bootNativeBridge({ platform: "ios" });
   assert.equal(ctx.window.__EDUSPHERE_NATIVE__.platform, "ios");
