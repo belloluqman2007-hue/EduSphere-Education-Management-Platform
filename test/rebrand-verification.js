@@ -99,7 +99,7 @@ async function login(page, user, pass) {
     const body = p.doc.body.textContent;
     check("homepage communicates Finance/Payroll/Library/Parent Portal capabilities",
       ["Finance", "Payroll", "Library", "Parent Portal", "Attendance", "Admissions"].every((c) => body.includes(c)));
-    check("favicon is the EduSphere logo", (p.doc.querySelector('link[rel="icon"]') || {}).href?.endsWith("/assets/edusphere-logo.png"));
+    check("favicon is the official EduSphere app icon", (p.doc.querySelector('link[rel="icon"]') || {}).href?.includes("/assets/edusphere-app-icon.png"));
     check("manifest link present", Boolean(p.doc.querySelector('link[rel="manifest"]')));
     check("no client errors", p.pageErrors.length === 0, p.pageErrors.join(" | "));
     p.close();
