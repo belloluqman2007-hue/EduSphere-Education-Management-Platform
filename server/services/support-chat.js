@@ -372,12 +372,15 @@ async function getAttachment(conversationId, attachmentId) {
 }
 
 async function recordAttachment(conversation, messageId, file, uploadedBy) {
+  if (String(file.path || "").startsWith("dbmedia:")) {
+    await db.run("UPDATE media_files SET madrasa_id = ? WHERE web_path = ? AND madrasa_id IS NULL", [conversation.madrasa_id, file.path.slice("dbmedia:".length)]);
+  }
   await db.run(
     `INSERT INTO support_chat_attachments
        (conversation_id, message_id, madrasa_id, uploaded_by, file_name, storage_name, mime_type, file_size)
      VALUES (?,?,?,?,?,?,?,?)`,
     [conversation.id, messageId, conversation.madrasa_id, uploadedBy,
-      safeDisplayName(file.originalname), path.basename(file.filename), cleanStr(file.mimetype, 120), Number(file.size) || 0]
+      safeDisplayName(file.originalname), String(file.path || "").startsWith("dbmedia:") ? file.path : path.basename(file.filename), cleanStr(file.mimetype, 120), Number(file.size) || 0]
   );
 }
 

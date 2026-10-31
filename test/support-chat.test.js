@@ -170,7 +170,9 @@ test("attachments are validated, stored privately and served only to participant
   const row = await ctx.db.get("SELECT * FROM support_chat_attachments WHERE conversation_id = ? ORDER BY id DESC", [islamicConversation]);
   assert.ok(row, "the attachment was recorded");
   assert.notEqual(row.storage_name, "screen.png", "the client's file name is never used on disk");
-  assert.match(row.storage_name, /^\d+-[0-9a-f]{24}\.png$/);
+  assert.match(row.storage_name, /^dbmedia:\/uploads\/private-support-chat\/\d+-[0-9a-f]{16}\.png$/);
+  const publicPath = row.storage_name.slice("dbmedia:".length);
+  assert.equal((await fetch(ctx.base + publicPath)).status, 404, "private database media is never public");
 
   const download = await islamicAdmin.api("GET", `/api/support/chat/conversations/${islamicConversation}/attachments/${row.id}`);
   assert.equal(download.status, 200, "a participant may download it");

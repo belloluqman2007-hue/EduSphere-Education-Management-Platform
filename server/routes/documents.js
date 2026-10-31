@@ -1111,7 +1111,7 @@ router.put("/my-signature", STAFF, requireStaffPermission("documents.view"), asy
   if (req.user.role === "teacher") {
     await db.run("UPDATE teacher_profiles SET signature_path = ? WHERE user_id = ? AND madrasa_id = ?", [signaturePath, req.user.id, tid]);
   }
-  if (previous && previous.signature_path) media.deleteStored(previous.signature_path);
+  if (previous && previous.signature_path) await media.deleteStored(previous.signature_path);
   ok(res, { ok: true, signaturePath });
 }));
 

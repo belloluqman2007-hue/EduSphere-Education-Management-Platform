@@ -9,6 +9,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const db = require("../db");
+const privateMedia = require("../services/private-media");
 const config = require("../config");
 const { asyncHandler, err, ok, cleanStr, toNum, validDate, validPhone, validEmail, logActivity, checkPlanLimits } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
@@ -544,6 +545,7 @@ router.delete("/:id/life-records/:recordId", requireRole("madrasa_admin"), async
 
 const privateDocumentUploader = fileUploader("files", "document", {
   dir: path.join(config.DATA_DIR, "private-student-documents"),
+  privateStorage: true,
   extensions: [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx"],
   maxMb: 10,
 });
@@ -563,16 +565,15 @@ router.get("/:id/documents/:documentId", requireRole("madrasa_admin", "teacher",
   if (!student) return err(res, 404, "Document not found.");
   if (req.user.role === "teacher") { const scope = await getTeacherAssignments(tid, req.user.id); if (!scope.anyClassAnySubject && (!student.class_id || !scope.assignedClassIds.has(Number(student.class_id)))) return err(res, 404, "Document not found."); }
   const doc = await db.get("SELECT * FROM student_documents WHERE id = ? AND student_id = ? AND madrasa_id = ?", [toNum(req.params.documentId, 0), student.id, tid]);
-  if (!doc || !fs.existsSync(doc.storage_path)) return err(res, 404, "Document not found.");
-  res.download(doc.storage_path, doc.original_name || doc.document_name);
+  if (!doc || !await privateMedia.download(res, doc.storage_path, doc.original_name || doc.document_name)) return err(res, 404, "Document not found.");
 }));
 
 router.delete("/:id/documents/:documentId", requireRole("madrasa_admin"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const doc = await db.get("SELECT * FROM student_documents WHERE id = ? AND student_id = ? AND madrasa_id = ?", [toNum(req.params.documentId, 0), toNum(req.params.id, 0), tid]);
   if (!doc) return err(res, 404, "Document not found.");
-  if (doc.storage_path && fs.existsSync(doc.storage_path)) fs.unlinkSync(doc.storage_path);
   await db.run("DELETE FROM student_documents WHERE id = ? AND madrasa_id = ?", [doc.id, tid]);
+  await privateMedia.removeIfUnused(doc.storage_path);
   ok(res, { ok: true });
 }));
 
@@ -588,20 +589,20 @@ router.delete("/:id/documents/:documentId", requireRole("madrasa_admin"), asyncH
      • JSON { photoDataUrl } (an image cropped in the browser)
      • DELETE (back to initials)
 -------------------------------------------------------------------------- */
-const studentPhotoUploader = imageUploader("photos", "photo");
+const studentPhotoUploader = imageUploader("photos", "photo", { stagingOnly: true });
 
 async function storeStudentPhoto(req, res, tid, student, buffer) {
   const previous = student.photo_path || "";
-  const photoPath = await profileMedia.writeImage(buffer, "photos", { maxBytes: profileMedia.MAX_PHOTO_BYTES });
+  const photoPath = await profileMedia.writeImage(buffer, "photos", { maxBytes: profileMedia.MAX_PHOTO_BYTES, madrasaId: tid });
   await db.run("UPDATE students SET photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND madrasa_id = ?", [photoPath, student.id, tid]);
   // Keep the linked login account's avatar in step, or the portal top bar
   // would go on showing the old face after a successful change.
   const account = await db.get("SELECT id, photo_path FROM users WHERE student_id = ? AND madrasa_id = ? AND role = 'student'", [student.id, tid]);
   if (account) {
     await db.run("UPDATE users SET photo_path = ? WHERE id = ?", [photoPath, account.id]);
-    if (account.photo_path) profileMedia.deleteStored(account.photo_path);
+    if (account.photo_path) await profileMedia.deleteStored(account.photo_path);
   }
-  if (previous) profileMedia.deleteStored(previous);
+  if (previous) await profileMedia.deleteStored(previous);
   logActivity(db, { madrasaId: tid, userId: req.user.id, action: "student.photo.update", entity: "student", entityId: String(student.id), ip: req.ip });
   ok(res, { ok: true, photoPath });
 }
@@ -627,7 +628,7 @@ router.delete("/:id/photo", requireRole("madrasa_admin"), asyncHandler(async (re
   if (!s) return res.status(404).json({ error: "Student not found." });
   await db.run("UPDATE students SET photo_path = '', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND madrasa_id = ?", [s.id, tid]);
   await db.run("UPDATE users SET photo_path = '' WHERE student_id = ? AND madrasa_id = ? AND role = 'student'", [s.id, tid]);
-  if (s.photo_path) profileMedia.deleteStored(s.photo_path);
+  if (s.photo_path) await profileMedia.deleteStored(s.photo_path);
   ok(res, { ok: true, photoPath: "" });
 }));
 
@@ -639,9 +640,9 @@ router.put("/:id/signature", requireRole("madrasa_admin"), asyncHandler(async (r
   if (!s) return res.status(404).json({ error: "Student not found." });
   const dataUrl = (req.body && (req.body.signatureDataUrl || req.body.dataUrl)) || "";
   if (!dataUrl) return err(res, 400, "Draw a signature first.");
-  const signaturePath = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES });
+  const signaturePath = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES, madrasaId: tid });
   await db.run("UPDATE students SET signature_path = ? WHERE id = ? AND madrasa_id = ?", [signaturePath, s.id, tid]);
-  if (s.signature_path) profileMedia.deleteStored(s.signature_path);
+  if (s.signature_path) await profileMedia.deleteStored(s.signature_path);
   ok(res, { ok: true, signaturePath });
 }));
 

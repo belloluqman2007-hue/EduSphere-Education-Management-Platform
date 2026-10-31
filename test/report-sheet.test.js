@@ -687,3 +687,54 @@ test("the report theme follows the institution's own category, per tenant", asyn
   await db.run("UPDATE madaris SET category = 'islamic' WHERE id = ?", [ctx.madrasaA]);
   assert.equal(await themeOf(adminA, ctx.studentA1, ctx.termA1), "islamic");
 });
+
+test("report photos are emitted from database storage even after the disk cache is lost", async () => {
+  const imagePath = "/uploads/photos/1234567890-abcdef0123456789.png";
+  const bytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+  const store = require("../server/services/media-store");
+  await store.put(imagePath, bytes, "image/png", ctx.madrasaA);
+  const before = await db.get("SELECT photo_path FROM students WHERE id = ?", [ctx.studentA1]);
+  try {
+    await db.run("UPDATE students SET photo_path = ? WHERE id = ?", [imagePath, ctx.studentA1]);
+    const result = await adminA.req("GET", `/api/results/report-card/${ctx.studentA1}/${ctx.termA1}`);
+    assert.equal(result.status, 200);
+    assert.ok((await result.res.text()).includes(imagePath));
+    const image = await adminA.req("GET", imagePath);
+    assert.equal(image.status, 200);
+    assert.deepEqual(Buffer.from(await image.res.arrayBuffer()), bytes);
+    assert.equal((await adminB.req("GET", imagePath)).status, 404);
+  } finally {
+    await db.run("UPDATE students SET photo_path = ? WHERE id = ?", [before.photo_path, ctx.studentA1]);
+    await store.remove(imagePath);
+  }
+});
+
+test("public report portraits use a scoped signed image link after local files disappear", async () => {
+  const web = "/uploads/photos/1234567890-0123456789abcdef.png";
+  const bytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+  const store = require("../server/services/media-store");
+  await store.put(web, bytes, "image/png", ctx.madrasaA);
+  const student = await db.get("SELECT photo_path FROM students WHERE id = ?", [ctx.studentA1]);
+  const school = await db.get("SELECT public_results FROM madaris WHERE id = ?", [ctx.madrasaA]);
+  const summary = await db.get("SELECT published_at FROM term_summaries WHERE madrasa_id = ? AND student_id = ? AND term_id = ?", [ctx.madrasaA, ctx.studentA1, ctx.termA1]);
+  try {
+    await db.run("UPDATE students SET photo_path = ? WHERE id = ?", [web, ctx.studentA1]);
+    await db.run("UPDATE madaris SET public_results = 1 WHERE id = ?", [ctx.madrasaA]);
+    await db.run("UPDATE term_summaries SET published_at = CURRENT_TIMESTAMP WHERE madrasa_id = ? AND student_id = ? AND term_id = ?", [ctx.madrasaA, ctx.studentA1, ctx.termA1]);
+    const token = require("../server/services/tokens").sign({ purpose: "public-report", m: ctx.madrasaA, s: ctx.studentA1, t: ctx.termA1 });
+    const page = await fetch(ctx.base + `/api/public/results/report/${token}`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    const signed = html.match(/src="(\/uploads\/photos\/1234567890-0123456789abcdef\.png\?media=[A-Za-z0-9_.-]+)"/);
+    assert.ok(signed, "the public report contains a scoped media link");
+    assert.equal((await fetch(ctx.base + web)).status, 404);
+    const image = await fetch(ctx.base + signed[1]);
+    assert.equal(image.status, 200);
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), bytes);
+  } finally {
+    await db.run("UPDATE students SET photo_path = ? WHERE id = ?", [student.photo_path, ctx.studentA1]);
+    await db.run("UPDATE madaris SET public_results = ? WHERE id = ?", [school.public_results, ctx.madrasaA]);
+    await db.run("UPDATE term_summaries SET published_at = ? WHERE madrasa_id = ? AND student_id = ? AND term_id = ?", [summary.published_at, ctx.madrasaA, ctx.studentA1, ctx.termA1]);
+    await store.remove(web);
+  }
+});

@@ -10,6 +10,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const db = require("../db");
+const privateMedia = require("../services/private-media");
 const config = require("../config");
 const { asyncHandler, err, ok, cleanStr, toNum, validDate, logActivity } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
@@ -38,11 +39,13 @@ const ADMIN = requireRole("madrasa_admin", "super_admin");
 const STAFF = requireRole("madrasa_admin", "teacher", "super_admin");
 const attachmentUpload = fileUploader("files", "attachment", {
   dir: path.join(config.DATA_DIR, "private-academic-attachments"),
+  privateStorage: true,
   extensions: [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv"],
   maxMb: 15,
 });
 const submissionUpload = fileUploader("submissions", "attachment", {
   dir: path.join(config.DATA_DIR, "private-assignment-submissions"),
+  privateStorage: true,
   extensions: [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv"],
   maxMb: 15,
 });
@@ -272,8 +275,7 @@ router.post("/assignments/:id/attachments", attachmentUpload, asyncHandler((req,
 async function downloadItemAttachment(req, res, kind) {
   const loaded = await loadItem(req, res, kind, req.params.id); if (!loaded) return;
   const file = await db.get("SELECT * FROM academic_attachments WHERE id=? AND madrasa_id=? AND entity_type=? AND entity_id=?", [toNum(req.params.attachmentId, 0), loaded.tid, kind, loaded.row.id]);
-  if (!file || !fs.existsSync(file.storage_path)) return err(res, 404, "Attachment not found.");
-  res.download(file.storage_path, file.original_name || file.display_name);
+  if (!file || !await privateMedia.download(res, file.storage_path, file.original_name || file.display_name)) return err(res, 404, "Attachment not found.");
 }
 router.get("/lessons/:id/attachments/:attachmentId", asyncHandler((req, res) => downloadItemAttachment(req, res, "lesson")));
 router.get("/assignments/:id/attachments/:attachmentId", asyncHandler((req, res) => downloadItemAttachment(req, res, "assignment")));
@@ -320,15 +322,16 @@ router.post("/assignments/:id/submissions/me", submissionUpload, asyncHandler(as
   if (!text && !req.file) return err(res, 400, "Enter a response or attach a file.");
   const existing = await db.get("SELECT id,attachment_path FROM assignment_submissions WHERE madrasa_id=? AND assignment_id=? AND student_id=?", [tid, assignment.id, student.id]);
   const values = [text, req.file ? req.file.path : (existing ? existing.attachment_path : ""), req.file ? cleanStr(req.file.originalname, 255) : "", req.file ? cleanStr(req.file.mimetype, 120) : "", req.file ? Number(req.file.size || 0) : 0];
-  if (existing) await db.run("UPDATE assignment_submissions SET submission_text=?,attachment_path=?,original_name=?,mime_type=?,file_size=?,submitted_at=CURRENT_TIMESTAMP,status='submitted',score=NULL,feedback=NULL,graded_by=NULL,graded_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", values.concat([existing.id]));
-  else await db.run("INSERT INTO assignment_submissions (madrasa_id,assignment_id,student_id,submission_text,attachment_path,original_name,mime_type,file_size,submitted_at,status,updated_at) VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,'submitted',CURRENT_TIMESTAMP)", [tid, assignment.id, student.id].concat(values));
+  if (existing) {
+    await db.run("UPDATE assignment_submissions SET submission_text=?,attachment_path=?,original_name=?,mime_type=?,file_size=?,submitted_at=CURRENT_TIMESTAMP,status='submitted',score=NULL,feedback=NULL,graded_by=NULL,graded_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", values.concat([existing.id]));
+    if (req.file && existing.attachment_path && existing.attachment_path !== req.file.path) await privateMedia.removeIfUnused(existing.attachment_path);
+  } else await db.run("INSERT INTO assignment_submissions (madrasa_id,assignment_id,student_id,submission_text,attachment_path,original_name,mime_type,file_size,submitted_at,status,updated_at) VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,'submitted',CURRENT_TIMESTAMP)", [tid, assignment.id, student.id].concat(values));
   ok(res, { ok: true, status: "submitted" });
 }));
 router.get("/assignments/:id/submissions/:studentId/attachment", STAFF, requireStaffPermission("assignments.view"), asyncHandler(async (req, res) => {
   const loaded = await loadItem(req, res, "assignment", req.params.id); if (!loaded) return;
   const sub = await db.get("SELECT * FROM assignment_submissions WHERE madrasa_id=? AND assignment_id=? AND student_id=?", [loaded.tid, loaded.row.id, toNum(req.params.studentId, 0)]);
-  if (!sub || !sub.attachment_path || !fs.existsSync(sub.attachment_path)) return err(res, 404, "Submission attachment not found.");
-  res.download(sub.attachment_path, sub.original_name || "submission");
+  if (!sub || !await privateMedia.download(res, sub.attachment_path, sub.original_name || "submission")) return err(res, 404, "Submission attachment not found.");
 }));
 
 /* ------------------------------ question bank --------------------------- */

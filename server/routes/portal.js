@@ -12,7 +12,7 @@
    never see another student's data (backend-enforced on every endpoint).
    ========================================================================== */
 const express = require("express");
-const fs = require("fs");
+const privateMedia = require("../services/private-media");
 const db = require("../db");
 const { asyncHandler, err, ok, toNum, cleanStr, validDate } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
@@ -502,10 +502,9 @@ router.get("/assignments/:id/attachments/:attachmentId", asyncHandler(async (req
     "SELECT * FROM academic_attachments WHERE id = ? AND madrasa_id = ? AND entity_type = 'assignment' AND entity_id = ?",
     [toNum(req.params.attachmentId, 0), tid, assignment.id]
   );
-  if (!attachment || !attachment.storage_path || !fs.existsSync(attachment.storage_path)) {
+  if (!attachment || !await privateMedia.download(res, attachment.storage_path, attachment.original_name || attachment.display_name || "attachment")) {
     return err(res, 404, { error: "Attachment not found." });
   }
-  res.download(attachment.storage_path, attachment.original_name || attachment.display_name || "attachment");
 }));
 
 /** Student's own submission file (never another student's). */
@@ -520,10 +519,9 @@ router.get("/assignments/:id/submission/attachment", asyncHandler(async (req, re
     "SELECT * FROM assignment_submissions WHERE madrasa_id = ? AND assignment_id = ? AND student_id = ?",
     [tid, toNum(req.params.id, 0), target.id]
   );
-  if (!sub || !sub.attachment_path || !fs.existsSync(sub.attachment_path)) {
+  if (!sub || !await privateMedia.download(res, sub.attachment_path, sub.original_name || "submission")) {
     return err(res, 404, { error: "Submission not found." });
   }
-  res.download(sub.attachment_path, sub.original_name || "submission");
 }));
 
 function studentBrief(s) {

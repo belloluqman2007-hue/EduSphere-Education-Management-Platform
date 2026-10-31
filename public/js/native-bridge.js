@@ -271,6 +271,17 @@
      uploaded media belongs to the paired school server. Without this rewrite,
      an <img src="/uploads/..."> is requested from the app bundle's localhost
      and fails even though the same photo works in a browser. */
+  const mediaObjectUrls = new WeakMap();
+  const activeMediaUrls = new Set();
+  function releaseMediaUrl(image) {
+    const old = mediaObjectUrls.get(image);
+    if (old && window.URL && typeof window.URL.revokeObjectURL === "function") {
+      window.URL.revokeObjectURL(old);
+      activeMediaUrls.delete(old);
+      mediaObjectUrls.delete(image);
+    }
+  }
+
   function normalizeUploadedImageUrls(root) {
     if (!serverUrl || typeof document === "undefined") return;
     const scope = root && root.querySelectorAll ? root : document;
@@ -279,7 +290,27 @@
     if (scope.querySelectorAll) images.push.apply(images, scope.querySelectorAll("img[src]"));
     images.forEach((image) => {
       const src = image.getAttribute("src") || "";
-      if (/^\/uploads\//i.test(src)) image.src = serverUrl + src;
+      if (/^\/uploads\//i.test(src)) {
+        const remote = serverUrl + src;
+        releaseMediaUrl(image);
+        image.src = remote;
+        // Native sessions use a bearer token rather than a browser cookie.
+        // An <img> cannot send that header, so fetch authenticated media and
+        // display a blob URL without ever putting the token in a URL.
+        ready.then(() => {
+          if (!token || typeof window.fetch !== "function" || !window.URL || typeof window.URL.createObjectURL !== "function") return;
+          return window.fetch(remote, { headers: { Authorization: "Bearer " + token } }).then((response) => {
+            if (!response.ok) return null;
+            return response.blob();
+          }).then((blob) => {
+            if (!blob || image.src !== remote) return;
+            const objectUrl = window.URL.createObjectURL(blob);
+            mediaObjectUrls.set(image, objectUrl);
+            activeMediaUrls.add(objectUrl);
+            image.src = objectUrl;
+          }).catch(() => {});
+        });
+      }
     });
   }
 
@@ -289,12 +320,26 @@
     const observer = new MutationObserver((records) => {
       records.forEach((record) => {
         if (record.type === "attributes") normalizeUploadedImageUrls(record.target.parentNode || document);
-        else record.addedNodes.forEach((node) => {
-          if (node.nodeType === 1) normalizeUploadedImageUrls(node);
-        });
+        else {
+          record.addedNodes.forEach((node) => {
+            if (node.nodeType === 1) normalizeUploadedImageUrls(node);
+          });
+          record.removedNodes.forEach((node) => {
+            if (node.nodeType !== 1 || node.isConnected) return;
+            if (node.matches && node.matches("img")) releaseMediaUrl(node);
+            if (node.querySelectorAll) node.querySelectorAll("img").forEach(releaseMediaUrl);
+          });
+        }
       });
     });
     observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+    window.addEventListener("pagehide", (event) => {
+      if (event.persisted) return;
+      if (window.URL && typeof window.URL.revokeObjectURL === "function") {
+        activeMediaUrls.forEach((url) => window.URL.revokeObjectURL(url));
+        activeMediaUrls.clear();
+      }
+    });
   }
 
   /* ------------------------------ boot state ------------------------------ */

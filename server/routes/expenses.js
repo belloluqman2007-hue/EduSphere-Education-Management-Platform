@@ -13,12 +13,11 @@
      • tenant isolation enforced by madrasa_id on every statement
    ========================================================================== */
 const express = require("express");
-const fs = require("fs");
-const path = require("path");
 const crypto = require("crypto");
 const multer = require("multer");
 
 const db = require("../db");
+const mediaStore = require("../services/media-store");
 const config = require("../config");
 const { asyncHandler, ok, err, cleanStr, toNum, validDate, logActivity } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
@@ -77,55 +76,43 @@ function monthLabel(ym) {
   return `${mName} ${parts[0]}`;
 }
 
-/** Multer uploader for receipt files (images + PDF). */
-function makeReceiptStorage() {
-  const dir = path.join(config.UPLOAD_DIR, "receipts");
-  fs.mkdirSync(dir, { recursive: true });
-  return multer.diskStorage({
-    destination: (req, file, cb) => cb(null, dir),
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
-      cb(null, Date.now() + "-" + crypto.randomBytes(8).toString("hex") + ext);
-    },
-  });
-}
-
-const ALLOWED_RECEIPT_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"]);
-const ALLOWED_RECEIPT_MIMES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-  "application/pdf",
+// Use a bounded in-memory staging buffer; Render's disk is not durable.
+// The extension is derived from the allowed MIME, never the client filename.
+const RECEIPT_EXT = new Map([
+  ["image/jpeg", ".jpg"], ["image/png", ".png"], ["image/webp", ".webp"],
+  ["image/gif", ".gif"], ["application/pdf", ".pdf"],
 ]);
-
 const receiptMulter = multer({
-  storage: makeReceiptStorage(),
+  storage: multer.memoryStorage(),
   limits: { fileSize: (config.MAX_UPLOAD_MB || 10) * 1024 * 1024, files: 1 },
   fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (ALLOWED_RECEIPT_MIMES.has(file.mimetype) || ALLOWED_RECEIPT_EXTS.has(ext)) {
-      return cb(null, true);
-    }
-    cb(new Error("Only JPG, PNG, WEBP, GIF images or PDF files are allowed for receipts."));
+    if (RECEIPT_EXT.has(file.mimetype)) return cb(null, true);
+    cb(Object.assign(new Error("Only JPG, PNG, WEBP, GIF images or PDF files are allowed for receipts."), { status: 400, expose: true }));
   },
-}).fields([
-  { name: "receipt", maxCount: 1 },
-  { name: "file", maxCount: 1 },
-]);
+}).fields([{ name: "receipt", maxCount: 1 }, { name: "file", maxCount: 1 }]);
 
 function uploadReceiptMiddleware(req, res, next) {
-  receiptMulter(req, res, (uploadErr) => {
+  receiptMulter(req, res, async (uploadErr) => {
     if (uploadErr) {
-      if (uploadErr.code === "LIMIT_FILE_SIZE") {
-        return res.status(400).json({ error: "Receipt file too large." });
-      }
-      return res.status(400).json({ error: uploadErr.message || "Invalid receipt file upload." });
+      if (uploadErr.code === "LIMIT_FILE_SIZE") return res.status(400).json({ error: "Receipt file too large." });
+      return res.status(400).json({ error: uploadErr.expose ? uploadErr.message : "Invalid receipt file upload." });
     }
-    if (req.files) {
-      req.file = (req.files.receipt && req.files.receipt[0]) || (req.files.file && req.files.file[0]) || null;
-    }
-    next();
+    req.file = req.files && ((req.files.receipt && req.files.receipt[0]) || (req.files.file && req.files.file[0]));
+    if (!req.file) return next();
+    const file = req.file;
+    file.filename = Date.now() + "-" + crypto.randomBytes(8).toString("hex") + RECEIPT_EXT.get(file.mimetype);
+    const webPath = `/uploads/receipts/${file.filename}`;
+    try {
+      if (!await mediaStore.put(webPath, file.buffer, file.mimetype, req.user ? effectiveTenantId(req) : null)) throw new Error("Could not persist the receipt.");
+      delete file.buffer;
+      res.once("finish", () => {
+        if (res.statusCode >= 400) {
+          db.run("DELETE FROM media_files WHERE web_path = ? AND NOT EXISTS (SELECT 1 FROM expense_receipts WHERE file_path = ?)", [webPath, webPath])
+            .catch((e) => console.error("Receipt upload cleanup failed:", e.message));
+        }
+      });
+      next();
+    } catch (e) { next(e); }
   });
 }
 

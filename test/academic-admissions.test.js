@@ -189,3 +189,35 @@ test("Western-track records use the same academic, admissions, and student archi
   assert.equal(student.education_track, "western");
   assert.equal(student.source_request_id, application.id);
 });
+
+test("private student documents survive an app restart and remain tenant-scoped", async () => {
+  const bytes = Buffer.from("private school document");
+  const form = new FormData();
+  form.append("document", new Blob([bytes], { type: "application/pdf" }), "record.pdf");
+  const response = await fetch(ctx.base + `/api/students/${ctx.studentA1}/documents`, {
+    method: "POST", headers: { Cookie: admin.cookieHeader(), "X-CSRF-Token": await admin.csrf() }, body: form,
+  });
+  assert.equal(response.status, 200, await response.text());
+  const doc = await ctx.db.get("SELECT * FROM student_documents WHERE student_id=? ORDER BY id DESC", [ctx.studentA1]);
+  assert.match(doc.storage_path, /^dbmedia:\/uploads\/private-files\//);
+  const webPath = doc.storage_path.slice("dbmedia:".length);
+  assert.equal((await fetch(ctx.base + webPath)).status, 404);
+
+  await new Promise(resolve => ctx.server.close(resolve));
+  await ctx.db.close();
+  const app = require("../server/app").createApp();
+  const server = await new Promise(resolve => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const schoolA = new Client(base); await schoolA.login("admin-a", "Passw0rd!123");
+    const schoolB = new Client(base); await schoolB.login("admin-b", "Passw0rd!123");
+    const download = await schoolA.req("GET", `/api/students/${ctx.studentA1}/documents/${doc.id}`);
+    assert.equal(download.status, 200);
+    assert.deepEqual(Buffer.from(await download.res.arrayBuffer()), bytes);
+    const denied = await schoolB.req("GET", `/api/students/${ctx.studentA1}/documents/${doc.id}`);
+    assert.equal(denied.status, 404);
+    assert.equal((await fetch(base + webPath)).status, 404);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});

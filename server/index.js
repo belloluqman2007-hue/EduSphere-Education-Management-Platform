@@ -111,6 +111,16 @@ const persistence = require("./services/persistence");
     } catch (e) {
       console.warn("⚠ Media hydration failed (" + (e.message || e) + "). New uploads are still stored in the database.");
     }
+    // Convert legacy private disk documents while their files still exist.
+    // Missing files cannot be recreated after an ephemeral host has erased them.
+    try {
+      const result = await require("./services/private-media-hydration").hydratePrivateDocuments();
+      if (result.copied || result.missing || result.failed) {
+        console.log(`Private media: migrated ${result.copied}, missing ${result.missing}, failed ${result.failed}.`);
+      }
+    } catch (e) {
+      console.error("Private media migration failed:", e.message);
+    }
     // Safety net: a JSON snapshot of the whole database on a timer, so a lost
     // container can always be restored from Platform -> Backups.
     backup.startAutoBackup(db);

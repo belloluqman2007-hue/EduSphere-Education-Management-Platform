@@ -270,6 +270,19 @@ test("receipt file upload stores file under uploads/receipts/ and updates expens
   assert.equal(rawRes.status, 200);
   assert.ok(uploadData.receipt_path.startsWith("/uploads/receipts/"));
   assert.equal(uploadData.receipt.original_name, "invoice-123.pdf");
+  const durable = await ctx.db.get("SELECT bytes FROM media_files WHERE web_path = ?", [uploadData.receipt_path]);
+  assert.equal(durable.bytes, Buffer.byteLength(sampleContent));
+  const own = await adminA.req("GET", uploadData.receipt_path);
+  assert.equal(own.status, 200);
+  assert.equal(await own.res.text(), sampleContent);
+  assert.equal((await adminB.req("GET", uploadData.receipt_path)).status, 404);
+  assert.equal((await anon.req("GET", uploadData.receipt_path)).status, 404);
+  // Percent-encoding the context must not bypass the authorization gate.
+  assert.equal((await adminB.req("GET", uploadData.receipt_path.replace("receipts", "%72eceipts"))).status, 404);
+  await ctx.db.close();
+  const reopened = await adminA.req("GET", uploadData.receipt_path);
+  assert.equal(reopened.status, 200);
+  assert.equal(await reopened.res.text(), sampleContent);
 
   // Check that single expense detail returns the receipt record
   const detail = await adminA.req("GET", `/api/expenses/${expId}`);

@@ -1,5 +1,7 @@
 # Deployment
 
+> **Render Free + existing Aiven MySQL:** use [RENDER-FREE-UPLOADS.md](RENDER-FREE-UPLOADS.md). The disk-based instructions below describe a different, paid hosting configuration and should not be followed for a free service.
+
 This platform is deployed as a **brand-new service**, independent of the old
 production deployment (the old service identities are inventoried and
 delisted in `ISOLATION-AUDIT.md`). Nothing in this repo points at, proxies

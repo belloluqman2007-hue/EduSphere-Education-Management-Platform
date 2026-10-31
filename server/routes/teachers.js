@@ -11,6 +11,7 @@ const bcrypt = require("bcryptjs");
 const fs = require("fs");
 const path = require("path");
 const db = require("../db");
+const privateMedia = require("../services/private-media");
 const config = require("../config");
 const {
   asyncHandler, err, ok, cleanStr, toNum, validPhone, validEmail, validDate,
@@ -40,14 +41,16 @@ const TEACHER_STATUSES = new Set(["active", "inactive", "on_leave", "suspended",
 const APPLICATION_STATUSES = new Set(["pending", "under_review", "shortlisted", "interviewed", "accepted", "rejected"]);
 const TRACKS = new Set(["islamic", "western", "both"]);
 
-const teacherPhotoUploader = imageUploader("teacher-photos", "photo");
+const teacherPhotoUploader = imageUploader("teacher-photos", "photo", { stagingOnly: true });
 const teacherDocumentUploader = fileUploader("teacher-files", "document", {
   dir: path.join(config.DATA_DIR, "private-teacher-documents"),
+  privateStorage: true,
   extensions: [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ".txt"],
   maxMb: 10,
 });
 const applicationDocumentUploader = fileUploader("teacher-application-files", "document", {
   dir: path.join(config.DATA_DIR, "private-teacher-documents"),
+  privateStorage: true,
   extensions: [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ".txt"],
   maxMb: 10,
 });
@@ -592,8 +595,7 @@ router.post("/applications/:id/documents", ADMIN, applicationDocumentUploader, a
 router.get("/applications/:id/documents/:documentId", ADMIN, asyncHandler(async (req, res) => {
   const app = await loadApplication(req, res, req.params.id); if (!app) return;
   const doc = await db.get("SELECT * FROM teacher_application_documents WHERE id = ? AND application_id = ? AND madrasa_id = ?", [toNum(req.params.documentId, 0), app.id, app.madrasa_id]);
-  if (!doc || !fs.existsSync(doc.storage_path)) return err(res, 404, "Document not found.");
-  res.download(doc.storage_path, doc.original_name || doc.document_name);
+  if (!doc || !await privateMedia.download(res, doc.storage_path, doc.original_name || doc.document_name)) return err(res, 404, "Document not found.");
 }));
 
 /* ------------------------------ create --------------------------------- */
@@ -908,10 +910,10 @@ router.post("/bulk-status", requirePermission("teachers.edit"), asyncHandler(asy
 async function storeTeacherPortrait(req, res, tid, teacher, buffer) {
   const userId = Number(teacher.id);
   const previous = teacher.photo_path || "";
-  const photoPath = await profileMedia.writeImage(buffer, "teacher-photos", { maxBytes: profileMedia.MAX_PHOTO_BYTES });
+  const photoPath = await profileMedia.writeImage(buffer, "teacher-photos", { maxBytes: profileMedia.MAX_PHOTO_BYTES, madrasaId: tid });
   await db.run("UPDATE teacher_profiles SET photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND madrasa_id = ?", [photoPath, userId, tid]);
   await db.run("UPDATE users SET photo_path = ? WHERE id = ? AND madrasa_id = ?", [photoPath, userId, tid]);
-  if (previous) profileMedia.deleteStored(previous);
+  if (previous) await profileMedia.deleteStored(previous);
   logActivity(db, { madrasaId: tid, userId: req.user.id, action: "teacher.photo.update", entity: "user", entityId: String(userId), ip: req.ip });
   ok(res, { ok: true, photoPath });
 }
@@ -937,7 +939,7 @@ router.delete("/:id/photo", (req, res, next) => {
   const t = await loadTeacher(tid, req.params.id, res); if (!t) return;
   await db.run("UPDATE teacher_profiles SET photo_path = '', updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND madrasa_id = ?", [t.id, tid]);
   await db.run("UPDATE users SET photo_path = '' WHERE id = ? AND madrasa_id = ?", [t.id, tid]);
-  if (t.photo_path) profileMedia.deleteStored(t.photo_path);
+  if (t.photo_path) await profileMedia.deleteStored(t.photo_path);
   ok(res, { ok: true, photoPath: "" });
 }));
 
@@ -950,10 +952,10 @@ router.put("/:id/signature", (req, res, next) => {
   const t = await loadTeacher(tid, req.params.id, res); if (!t) return;
   const dataUrl = (req.body && (req.body.signatureDataUrl || req.body.dataUrl)) || "";
   if (!dataUrl) return err(res, 400, "Draw a signature first.");
-  const signaturePath = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES });
+  const signaturePath = await profileMedia.saveDataUrl(dataUrl, "signatures", { maxBytes: profileMedia.MAX_SIGNATURE_BYTES, madrasaId: tid });
   await db.run("UPDATE teacher_profiles SET signature_path = ? WHERE user_id = ? AND madrasa_id = ?", [signaturePath, t.id, tid]);
   await db.run("UPDATE users SET signature_path = ? WHERE id = ? AND madrasa_id = ?", [signaturePath, t.id, tid]);
-  if (t.signature_path) profileMedia.deleteStored(t.signature_path);
+  if (t.signature_path) await profileMedia.deleteStored(t.signature_path);
   ok(res, { ok: true, signaturePath });
 }));
 
@@ -987,16 +989,15 @@ router.get("/:id/documents/:documentId", STAFF_READ, asyncHandler(async (req, re
   const t = await loadTeacher(tid, req.params.id, res); if (!t) return;
   if (req.user.role === "teacher" && Number(req.user.id) !== Number(t.id)) return err(res, 404, "Document not found.");
   const doc = await db.get("SELECT * FROM teacher_documents WHERE id = ? AND user_id = ? AND madrasa_id = ?", [toNum(req.params.documentId, 0), t.id, tid]);
-  if (!doc || !fs.existsSync(doc.storage_path)) return err(res, 404, "Document not found.");
-  res.download(doc.storage_path, doc.original_name || doc.document_name);
+  if (!doc || !await privateMedia.download(res, doc.storage_path, doc.original_name || doc.document_name)) return err(res, 404, "Document not found.");
 }));
 
 router.delete("/:id/documents/:documentId", ADMIN, asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const doc = await db.get("SELECT * FROM teacher_documents WHERE id = ? AND user_id = ? AND madrasa_id = ?", [toNum(req.params.documentId, 0), toNum(req.params.id, 0), tid]);
   if (!doc) return err(res, 404, "Document not found.");
-  if (doc.storage_path && fs.existsSync(doc.storage_path)) fs.unlinkSync(doc.storage_path);
   await db.run("DELETE FROM teacher_documents WHERE id = ? AND madrasa_id = ?", [doc.id, tid]);
+  await privateMedia.removeIfUnused(doc.storage_path);
   ok(res, { ok: true });
 }));
 

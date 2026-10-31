@@ -3108,6 +3108,13 @@ const MIGRATIONS = [
       await idx("CREATE INDEX idx_sync_mutations_user ON sync_mutations (user_id, created_at)");
     },
   },
+  {
+    // Base64 expands a 15 MB attachment beyond MEDIUMTEXT's 16 MB limit.
+    id: "046_media_files_longtext",
+    up: async (api, dialect) => {
+      if (dialect === "mysql") await api.run("ALTER TABLE media_files MODIFY COLUMN data LONGTEXT");
+    },
+  },
 ];
 
 async function migrate(options = {}) {
