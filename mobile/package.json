@@ -1,7 +1,7 @@
 {
   "name": "edusphere-mobile",
   "productName": "EduSphere",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "EduSphere mobile & tablet application for Android phones/tablets and iPhone/iPad — the same offline-first platform in a Capacitor shell.",
   "license": "UNLICENSED",

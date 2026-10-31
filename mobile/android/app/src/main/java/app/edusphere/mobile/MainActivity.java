@@ -22,7 +22,18 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // If the updated UI never confirmed startup, restore the prior bundle
+        // on the next launch instead of trapping the user in a broken shell.
+        android.content.SharedPreferences updates = getSharedPreferences("edusphere_mobile_updates", MODE_PRIVATE);
+        if (!updates.getString("pending", "").isEmpty()) {
+            String previous = updates.getString("previous", "");
+            android.content.SharedPreferences.Editor web = getSharedPreferences("CapWebViewSettings", MODE_PRIVATE).edit();
+            if (previous.isEmpty()) web.remove("serverBasePath"); else web.putString("serverBasePath", previous);
+            web.commit();
+            updates.edit().remove("pending").remove("previous").commit();
+        }
         registerPlugin(EduSphereNativePlugin.class);
+        registerPlugin(MobileUpdatesPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

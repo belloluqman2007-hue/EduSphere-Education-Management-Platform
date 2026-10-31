@@ -183,6 +183,22 @@ function createApp() {
     } catch (e) { next(e); }
   });
 
+  // Android's updater accepts only a signed manifest from its fixed update host.
+  // Fail closed until the operator provisions a signing key; do not create one
+  // automatically, since installed apps must trust the same key across deploys.
+  let mobileUpdateManifest;
+  app.get("/mobile-updates/manifest", (req, res) => {
+    const pem = String(process.env.MOBILE_UPDATE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+    if (!pem) return res.status(503).set("Cache-Control", "no-store").json({ error: "Mobile updates are not configured" });
+    try {
+      if (!mobileUpdateManifest) mobileUpdateManifest = require("./services/mobile-update-manifest").buildManifest(path.join(__dirname, "..", "public"), pem);
+      return res.set("Cache-Control", "no-store").json(mobileUpdateManifest);
+    } catch (err) {
+      console.error("Mobile update manifest unavailable:", err.message);
+      return res.status(503).set("Cache-Control", "no-store").json({ error: "Mobile updates are unavailable" });
+    }
+  });
+
   // Static frontend + uploads
   app.use(express.static(path.join(__dirname, "..", "public")));
   // Private database media can only be downloaded through authorized API routes.
