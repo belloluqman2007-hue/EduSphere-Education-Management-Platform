@@ -87,7 +87,7 @@ async function login(page, user, pass) {
   {
     const p = await openPage("/");
     check("document.title is “EduSphere — Education Management Platform”", p.doc.title === "EduSphere — Education Management Platform", p.doc.title);
-    check("header brand uses /assets/edusphere-logo.png", (p.$(".brand-logo img") || {}).src?.endsWith("/assets/edusphere-logo.png"));
+    check("header brand uses the official EduSphere logo lockup", (p.$(".brand-logo img") || {}).src?.endsWith("/assets/edusphere-logo-lockup.png"));
     check("hero shows the official EduSphere logo", (p.$(".hero-logo") || {}).src?.endsWith("/assets/edusphere-logo.png"));
     check("hero headline is “Smarter Management for Modern Education”", /Smarter Management for/.test(p.$("#hero-title")?.textContent || ""));
     const actions = p.$$(".platform-hero-intro .hero-actions a").map((a) => a.textContent.trim());

@@ -130,7 +130,7 @@ test("the homepage carries EduSphere branding, international English only, with 
   const logo = sa.$(".hero-logo");
   assert.ok(logo, "the hero shows the official EduSphere logo");
   assert.match(logo.getAttribute("src"), /\/assets\/edusphere-logo\.png$/, "the hero logo is the official uploaded EduSphere logo");
-  assert.match(sa.$(".brand-logo img").getAttribute("src"), /\/assets\/edusphere-logo\.png$/, "the header brand uses the official EduSphere logo");
+  assert.match(sa.$(".brand-logo img").getAttribute("src"), /\/assets\/edusphere-logo-lockup\.png$/, "the header brand uses the official EduSphere logo lockup");
 
   // Hero actions follow the EduSphere marketing spec.
   const actions = sa.$$(".platform-hero-intro .hero-actions a");
