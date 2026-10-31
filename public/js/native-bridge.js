@@ -234,6 +234,7 @@
     if (!clean) return "";
     try { window.localStorage.setItem(SERVER_STORAGE_KEY, clean); } catch (e) { /* storage unavailable */ }
     serverUrl = clean;
+    normalizeUploadedImageUrls();
     /* Keep the runtime config in step so a live switch (a pairing deep link)
        points `api.js` at the new server without waiting for a reload. */
     try {
@@ -264,6 +265,36 @@
   function apiBaseFor(base) {
     const clean = normalizeServerUrl(base || serverUrl);
     return clean ? clean + "/api" : "/api";
+  }
+
+  /* The native UI is hosted at capacitor://localhost / http://localhost, while
+     uploaded media belongs to the paired school server. Without this rewrite,
+     an <img src="/uploads/..."> is requested from the app bundle's localhost
+     and fails even though the same photo works in a browser. */
+  function normalizeUploadedImageUrls(root) {
+    if (!serverUrl || typeof document === "undefined") return;
+    const scope = root && root.querySelectorAll ? root : document;
+    const images = [];
+    if (scope.matches && scope.matches("img[src]")) images.push(scope);
+    if (scope.querySelectorAll) images.push.apply(images, scope.querySelectorAll("img[src]"));
+    images.forEach((image) => {
+      const src = image.getAttribute("src") || "";
+      if (/^\/uploads\//i.test(src)) image.src = serverUrl + src;
+    });
+  }
+
+  function installUploadedImageUrlFix() {
+    if (typeof document === "undefined" || typeof MutationObserver === "undefined") return;
+    normalizeUploadedImageUrls(document);
+    const observer = new MutationObserver((records) => {
+      records.forEach((record) => {
+        if (record.type === "attributes") normalizeUploadedImageUrls(record.target.parentNode || document);
+        else record.addedNodes.forEach((node) => {
+          if (node.nodeType === 1) normalizeUploadedImageUrls(node);
+        });
+      });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
   }
 
   /* ------------------------------ boot state ------------------------------ */
@@ -713,4 +744,5 @@
 
   installErrorBoundary();
   installDeepLinks();
+  installUploadedImageUrlFix();
 })();
