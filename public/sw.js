@@ -21,7 +21,7 @@
    SHELL_VERSION — the activate handler deletes the previous cache.
    ========================================================================== */
 
-const SHELL_VERSION = "edusphere-shell-v4";
+const SHELL_VERSION = "edusphere-shell-v5";
 const SHELL_CACHE = `${SHELL_VERSION}-static`;
 const RUNTIME_CACHE = `${SHELL_VERSION}-runtime`;
 
@@ -31,6 +31,7 @@ const SHELL_ASSETS = [
   "/manifest.webmanifest",
   "/app-config.js",
   "/assets/edusphere-logo.png",
+  "/assets/edusphere-logo-lockup.png",
 
   /* stylesheets (must match public/index.html) */
   "/css/app.css",

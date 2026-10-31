@@ -59,8 +59,7 @@
   function brandMarkup() {
     return `
       <a class="brand" href="/" data-route="/" aria-label="EduSphere home">
-        <span class="brand-logo"><img src="/assets/edusphere-logo.png" alt="EduSphere logo"></span>
-        <span class="brand-words"><strong>EduSphere</strong><small>Education Platform</small></span>
+        <span class="brand-logo brand-logo--lockup"><img src="/assets/edusphere-logo-lockup.png" alt="EduSphere — Education Management Platform"></span>
       </a>`;
   }
 
