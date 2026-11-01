@@ -649,7 +649,7 @@
     else if (theme === "islamic") document.body.classList.add("dash-islamic");
   }
 
-  function renderLogin(root, error, session, username) {
+  function renderLogin(root, error, session, username, allowServerRepair) {
     applyTheme(null);
     // One unified EduSphere sign-in for EVERY account type. The server decides
     // who the user is and routes them — the form never asks for a role.
@@ -672,6 +672,10 @@
           </div>` : "";
     if (path === "/forgot-password") return renderForgotPassword(root);
     if (path === "/reset-password") return renderResetPassword(root);
+    const canRepairServer = Boolean(
+      allowServerRepair && window.__EDUSPHERE_MOBILE__ &&
+      window.MobileShell && typeof window.MobileShell.showPairing === "function"
+    );
     root.innerHTML = `
       <div class="dash-login-page">
         <div class="dash-login-card">
@@ -683,6 +687,7 @@
           <p class="sub">Administrators, teachers, students and parents all sign in here — EduSphere takes you straight to the right workspace.</p>
           ${notice}
           ${error ? `<div class="dash-login-error" role="alert" aria-live="assertive">${esc(error)}</div>` : ""}
+          ${canRepairServer ? `<button type="button" id="dashRepairServerBtn" class="dash-login-forgot" style="display:block;margin:0 0 16px;padding:0;border:0;background:none;font:inherit;text-decoration:underline;cursor:pointer">Check or change school server address</button>` : ""}
           <form id="dashLoginForm" novalidate>
             <div class="dash-login-field">
               <label for="dlUser">Email or username</label>
@@ -704,6 +709,11 @@
           <div class="dash-login-foot">Registering a new institution? <a href="/register-madrasa" data-noroute style="font-weight:700;color:#38146a;">Register an Islamic School</a> or <a href="/western-schools" data-noroute style="font-weight:700;color:#38146a;">a Western Academy</a>.</div>
         </div>
       </div>`;
+
+    const repairServerBtn = root.querySelector("#dashRepairServerBtn");
+    if (repairServerBtn) repairServerBtn.addEventListener("click", () => {
+      try { window.MobileShell.showPairing(); } catch (e) { /* keep sign-in usable */ }
+    });
 
     const passToggle = root.querySelector("#dlPassToggle");
     if (passToggle) passToggle.addEventListener("click", () => {
@@ -743,11 +753,16 @@
     const submitBtn = form.querySelector("button[type=submit]") || form.querySelector("button");
     const submitLabel = submitBtn ? submitBtn.textContent : "Sign In";
 
-    function failed(message) {
+    function failed(message, loginError) {
       // Keep the typed username so a retry only needs the password again,
-      // and put the reason on screen where the form is.
+      // and offer native users a way to correct their saved server address
+      // when the request could not reach the sign-in endpoint.
       const typed = form.elements.username ? form.elements.username.value : "";
-      renderLogin(root, message, session, typed);
+      const code = String(loginError && loginError.code || "");
+      const repairable = Boolean(loginError && (
+        loginError.status === 0 || code === "NATIVE_SIGNIN_SERVER_UNREACHABLE" || /^OFFLINE_/.test(code)
+      ));
+      renderLogin(root, message, session, typed, repairable);
     }
 
     form.addEventListener("submit", async (e) => {
@@ -776,7 +791,7 @@
         failed(err && err.message
           ? err.message
           : (offline ? "You appear to be offline. Check your connection and try again."
-                     : "Could not reach the server. Please try again."));
+                     : "Could not reach the server. Please try again."), err);
         return;
       } finally {
         if (submitBtn && submitBtn.isConnected) { submitBtn.disabled = false; submitBtn.textContent = submitLabel; }

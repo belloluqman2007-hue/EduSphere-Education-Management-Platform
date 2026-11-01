@@ -348,6 +348,7 @@
     input.autocomplete = "url";
     input.autocapitalize = "off";
     input.spellcheck = false;
+    input.value = MOBILE.server && typeof MOBILE.server.get === "function" ? str(MOBILE.server.get()) : "";
     input.placeholder = "https://school.edusphere.app or http://192.168.1.5:4123";
     const submit = doc().createElement("button");
     submit.type = "submit";
