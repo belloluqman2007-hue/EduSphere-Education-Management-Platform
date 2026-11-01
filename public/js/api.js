@@ -29,6 +29,20 @@
     return bridge && typeof bridge.getDeviceToken === "function" ? bridge : null;
   }
 
+  /* The Android Keystore/iOS Keychain read is asynchronous. Wait for the
+     native bridge to finish priming before the first authenticated request;
+     otherwise a cold app launch can send /auth/me without its saved bearer
+     token and incorrectly show the sign-in form. */
+  function waitForNativeReady() {
+    try {
+      const mobile = typeof window !== "undefined" && window.__EDUSPHERE_MOBILE__;
+      if (mobile && mobile.ready && typeof mobile.ready.then === "function") {
+        return Promise.resolve(mobile.ready).catch(() => {});
+      }
+    } catch (e) { /* browser or native bootstrap failure */ }
+    return Promise.resolve();
+  }
+
   /** Remove a token left behind by an older/browser session (native only). */
   function dropLegacyWebToken() {
     try {
@@ -64,28 +78,35 @@
     memoryDeviceToken = clean;
     const bridge = nativeBridge();
     if (bridge) {
+      let pending;
       try {
         if (clean && typeof bridge.setDeviceToken === "function") {
-          const pending = bridge.setDeviceToken(clean);
-          if (pending && typeof pending.catch === "function") pending.catch(() => {});
+          pending = bridge.setDeviceToken(clean);
         } else if (!clean && typeof bridge.clearDeviceToken === "function") {
-          const pending = bridge.clearDeviceToken();
-          if (pending && typeof pending.catch === "function") pending.catch(() => {});
+          pending = bridge.clearDeviceToken();
+        } else {
+          pending = { persisted: false, reason: "secure-store-unavailable" };
         }
-      } catch (e) { /* the shell will report its own failure */ }
+      } catch (e) {
+        pending = Promise.reject(e);
+      }
       dropLegacyWebToken();
-      return;
+      return Promise.resolve(pending)
+        .then((result) => ({ persisted: !result || result.persisted !== false, reason: result && result.reason }))
+        .catch(() => ({ persisted: false, reason: "secure-store-error" }));
     }
+    let persisted = true;
     try {
       if (typeof window !== "undefined" && window.localStorage) {
         if (clean) window.localStorage.setItem(DEVICE_TOKEN_KEY, clean);
         else window.localStorage.removeItem(DEVICE_TOKEN_KEY);
       }
-    } catch (e) { /* storage unavailable */ }
+    } catch (e) { persisted = false; }
+    return Promise.resolve({ persisted });
   }
 
   function clearDeviceToken() {
-    setDeviceToken("");
+    return setDeviceToken("");
   }
 
   function isCrossOriginBase() {
@@ -130,6 +151,7 @@
   }
 
   async function onlineRequest(method, path, body, opts = {}) {
+    await waitForNativeReady();
     const headers = { Accept: "application/json" };
     const bearer = readStoredDeviceToken();
     if (body && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
@@ -171,7 +193,7 @@
       // A 401 on an authenticated call means the session or device token ended
       // server-side (logged out elsewhere, expired, deactivated).
       if (res.status === 401) {
-        if (bearer) clearDeviceToken();
+        if (bearer) await clearDeviceToken();
         if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
           try { window.dispatchEvent(new CustomEvent("bello:unauthorized", { detail: { path } })); } catch (e) { /* non-fatal */ }
         }
@@ -185,6 +207,7 @@
   }
 
   async function request(method, path, body, opts = {}) {
+    await waitForNativeReady();
     if (typeof transportInterceptor === "function" && !opts.bypassOfflineInterceptor) {
       return transportInterceptor({
         method,
@@ -245,6 +268,7 @@
     patch: (p, b, opts) => request("PATCH", p, b, opts),
     del: (p, opts) => request("DELETE", p, undefined, opts),
     async login(username, password, remember, deviceOpts) {
+      await waitForNativeReady();
       const nativeInfo = (typeof window !== "undefined" && window.__EDUSPHERE_NATIVE__) || null;
       const opts = deviceOpts || (nativeInfo ? {
         issueDeviceToken: true,
@@ -291,11 +315,17 @@
         throw e;
       }
       if (d && d.deviceToken) {
-        setDeviceToken(d.deviceToken);
+        const saved = await setDeviceToken(d.deviceToken);
+        if (nativeInfo && saved && !saved.persisted) {
+          const e = new Error("You signed in, but this phone could not securely save your session. Please try again.");
+          e.code = "DEVICE_TOKEN_SAVE_ERROR";
+          throw e;
+        }
       }
       return d;
     },
     async me() {
+      await waitForNativeReady();
       if (typeof transportInterceptor === "function") {
         return transportInterceptor({
           method: "GET",
@@ -320,7 +350,7 @@
         return await request("POST", "/auth/logout", {});
       } finally {
         csrfToken = null;
-        clearDeviceToken();
+        await clearDeviceToken();
       }
     },
     reportCardUrl: (studentId, termId) => `${BASE}/results/report-card/${studentId}/${termId}`,
