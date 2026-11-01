@@ -2287,6 +2287,17 @@
       return result;
     } catch (error) {
       if (!isNetworkError(error)) throw error;
+      // A native connectivity signal only means Wi-Fi/mobile data is attached;
+      // it does not prove that the app can reach its configured school server.
+      // Avoid telling a connected user they are offline when the actual failure
+      // is a rejected WebView request (for example a stale server URL or CORS).
+      if (window.__EDUSPHERE_MOBILE__ && onlineNow()) {
+        throw OfflineError(
+          "Your phone is connected to a network, but EduSphere could not reach the sign-in server. Check the school's server address or try again shortly.",
+          "NATIVE_SIGNIN_SERVER_UNREACHABLE",
+          { cause: error }
+        );
+      }
       const unlocked = await verifyOfflineUnlock(username, password);
       if (unlocked) return unlocked;
       const saved = readJsonStorage(OFFLINE_ACCOUNTS_KEY, []);
