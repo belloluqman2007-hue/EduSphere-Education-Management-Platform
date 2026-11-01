@@ -19,11 +19,12 @@ const LEGACY_KEY = "edusphere.deviceToken";
 
 async function bootApi(options) {
   const opts = options || {};
-  const secure = makeSecurePlugin({ initial: opts.initial || {}, camera: "granted" });
+  const secure = opts.secure || makeSecurePlugin({ initial: opts.initial || {}, camera: "granted", delayMs: opts.delayMs || 0 });
   const requests = [];
   const ctx = await bootNativeBridge({
     secure,
     platform: opts.platform || "android",
+    waitForReady: opts.waitForReady,
     storage: { "edusphere.mobile.server": SERVER },
     beforeEval: (window) => {
       if (opts.seedLocalStorage) window.localStorage.setItem(LEGACY_KEY, opts.seedLocalStorage);
@@ -56,6 +57,55 @@ test("the API reads its Bearer token from the OS store, not from localStorage", 
   });
   assert.equal(ctx.window.API.getDeviceToken(), "eds_from_keychain", "the Keychain/Keystore wins");
   assert.equal(ctx.window.localStorage.getItem(LEGACY_KEY), null, "the stale web token was removed");
+  ctx.close();
+});
+
+test("the first authenticated request waits for the cold-start secure-token read", async () => {
+  let authorization = null;
+  const ctx = await bootApi({
+    initial: { device_token: "eds_cold_start_token" },
+    delayMs: 35,
+    waitForReady: false,
+    fetch: (_url, init) => {
+      authorization = (init && init.headers && init.headers.Authorization) || null;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ loggedIn: true }),
+      });
+    },
+  });
+
+  assert.equal(ctx.window.API.getDeviceToken(), "", "the simulated secure-store read is still pending");
+  await ctx.window.API.get("/auth/me");
+  assert.equal(authorization, "Bearer eds_cold_start_token", "the first request waits until the stored token is ready");
+  ctx.close();
+});
+
+test("sign-in does not finish until its device token is durably saved", async () => {
+  const secure = makeSecurePlugin();
+  const nativeSet = secure.plugin.setSecureValue;
+  let saved = false;
+  secure.plugin.setSecureValue = async (payload) => {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const result = await nativeSet(payload);
+    saved = true;
+    return result;
+  };
+  const ctx = await bootApi({
+    secure,
+    fetch: () => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ ok: true, deviceToken: "eds_saved_before_login_returns" }),
+    }),
+  });
+
+  await ctx.window.API.login("admin", "correct horse battery", true);
+  assert.equal(saved, true, "the secure-store write completed before login resolved");
+  assert.equal(ctx.secure.secure.get("device_token"), "eds_saved_before_login_returns");
   ctx.close();
 });
 
