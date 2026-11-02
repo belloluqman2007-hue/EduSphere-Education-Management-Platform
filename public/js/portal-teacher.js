@@ -1047,6 +1047,81 @@
     });
   }
 
+  /* ------------------------------ staff directory ------------------------- */
+
+  async function pageStaff(c, content) {
+    const data = await c.api.get("/teachers?perPage=200&sort=name");
+    const teachers = data.teachers || [];
+    const stats = data.stats || {};
+    content.innerHTML = c.pageHead("People", "Staff directory", "Teachers and staff of this institution.", "") + `
+      <div class="dash-stats-grid">
+        ${c.statCard("users", stats.total || teachers.length, "Total staff")}
+        ${c.statCard("check", stats.active || 0, "Active")}
+        ${c.statCard("leave", stats.onLeave || 0, "On leave", stats.onLeave ? "accent" : "")}
+      </div>
+      <div class="dash-card">
+        <div class="dash-table-wrap"><table class="dash-table">
+          <thead><tr><th>Staff ID</th><th>Name</th><th>Position</th><th>Department</th><th>Phone</th><th>Status</th></tr></thead>
+          <tbody>${teachers.length ? teachers.map((t) => `
+            <tr><td>${c.esc(t.staff_id || "—")}</td>
+                <td><strong>${c.esc(t.full_name || t.username)}</strong></td>
+                <td>${c.esc(t.position || "—")}</td>
+                <td>${c.esc(t.department || "—")}</td>
+                <td>${c.esc(t.phone || "—")}</td>
+                <td>${c.pill(t.status || (t.is_active ? "active" : "inactive"))}</td></tr>`).join("")
+            : c.emptyRow(6, "No staff records found.")}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  /* -------------------------------- payroll ------------------------------- */
+
+  async function pagePayroll(c, content) {
+    const data = await c.api.get("/payroll/periods");
+    const periods = data.periods || [];
+    content.innerHTML = c.pageHead("HR & Payroll", "Payroll periods", "Salary pay periods for this institution.", "") + `
+      <div class="dash-card">
+        <div class="dash-table-wrap"><table class="dash-table">
+          <thead><tr><th>Period</th><th>Session</th><th>Status</th><th>Payslips</th><th>Total gross</th><th>Total net</th></tr></thead>
+          <tbody>${periods.length ? periods.map((p) => `
+            <tr><td><strong>${c.esc(p.label || `${p.month}/${p.year}`)}</strong></td>
+                <td>${c.esc(p.session_label || "—")}</td>
+                <td>${c.pill(p.status)}</td>
+                <td>${c.esc(p.slip_count || 0)}</td>
+                <td>${c.fmtMoney(p.total_gross)}</td>
+                <td>${c.fmtMoney(p.total_net)}</td></tr>`).join("")
+            : c.emptyRow(6, "No payroll periods yet.")}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  /* -------------------------------- payslips ------------------------------ */
+
+  async function pagePayslips(c, content) {
+    const data = await c.api.get("/payroll/payslips");
+    const slips = data.payslips || [];
+    const sum = data.summary || {};
+    content.innerHTML = c.pageHead("HR & Payroll", "Payslips", "Generated payslips across all pay periods.", "") + `
+      <div class="dash-stats-grid">
+        ${c.statCard("file", sum.count || slips.length, "Payslips")}
+        ${c.statCard("money", sum.totalGross || 0, "Total gross")}
+        ${c.statCard("money", sum.totalNet || 0, "Total net")}
+      </div>
+      <div class="dash-card">
+        <div class="dash-table-wrap"><table class="dash-table">
+          <thead><tr><th>Staff</th><th>Period</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th></tr></thead>
+          <tbody>${slips.length ? slips.map((s) => `
+            <tr><td><strong>${c.esc(s.full_name || s.username)}</strong></td>
+                <td>${c.esc(s.period_label || `${s.month}/${s.year}`)}</td>
+                <td>${c.fmtMoney(s.gross)}</td>
+                <td>${c.fmtMoney((s.deductions && s.deductions.total) || 0)}</td>
+                <td><strong>${c.fmtMoney(s.net)}</strong></td>
+                <td>${c.pill(s.paid_at ? "paid" : "unpaid")}</td></tr>`).join("")
+            : c.emptyRow(6, "No payslips generated yet.")}</tbody>
+        </table></div>
+      </div>`;
+  }
+
   /* ------------------------------- router ---------------------------------- */
 
   async function render(content, route, c) {
