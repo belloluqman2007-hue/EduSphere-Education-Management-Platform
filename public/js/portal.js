@@ -388,8 +388,32 @@
     document.body.classList.add(state.institution && state.institution.category === "western" ? "dash-western" : "dash-islamic");
   }
 
+  /** True when the signed-in user holds a permission key (from /api/auth/me). */
+  function hasPermission(p) {
+    const perms = (state.me && state.me.permissions) || [];
+    return perms.includes(p);
+  }
+
+  /*
+   * The sidebar shows only what the administrator granted: a nav item may
+   * declare a `permission` key, and it is rendered only when the user's
+   * effective permission set (role defaults + admin overrides) contains it.
+   * Items without a `permission` (Dashboard, Notifications, My Account…)
+   * always show. This is presentation only — the server enforces the same
+   * permissions on every API route.
+   */
   function navSchema() {
-    return state.module ? state.module.schema() : [];
+    if (!state.module) return [];
+    return state.module.schema()
+      .map((item) => {
+        if (item.items) {
+          const items = item.items.filter((entry) => !entry[2] || hasPermission(entry[2]));
+          return items.length ? Object.assign({}, item, { items }) : null;
+        }
+        if (item.permission && !hasPermission(item.permission)) return null;
+        return item;
+      })
+      .filter(Boolean);
   }
 
   function renderNav() {
@@ -574,6 +598,7 @@
     go,
     renderNotifications,
     ctx,
+    hasPermission,
     ROLES,
     /** The signed-in user's institution category: 'islamic' | 'western'. */
     category() { return state.institution ? state.institution.category : "islamic"; },
