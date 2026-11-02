@@ -17,21 +17,40 @@
 (function () {
   const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
+  /*
+   * The sidebar is built from the user's effective permissions: every entry
+   * carries the permission key(s) it needs — a list means "any of these" —
+   * and the shell hides anything the admin has not granted. Entries are
+   * grouped so a librarian sees a Library group, an HR officer sees People /
+   * HR & Payroll, a teacher sees Teaching, etc. Granting a new permission
+   * makes its entry appear in the right group on next load.
+   */
   function schema() {
     return [
       { key: "dashboard", label: "Dashboard", icon: "dashboard", route: "dashboard", permission: "dashboard.view" },
-      { key: "classes", label: "My Classes", icon: "classes", route: "classes", permission: "classes.view" },
-      { key: "timetable", label: "Timetable", icon: "calendar", route: "timetable", permission: "classes.view" },
-      { key: "attendance", label: "Attendance", icon: "check", route: "attendance", permission: "classes.view" },
-      { key: "lessons", label: "Lesson Plans", icon: "book", route: "lessons", permission: "lessons.view" },
-      { key: "assignments", label: "Assignments", icon: "file", route: "assignments", permission: "assignments.view" },
-      { key: "exams", label: "Examinations", icon: "academic", route: "exams", permission: "exams.view" },
-      { key: "results", label: "Results", icon: "check", route: "results", permission: "results.enter" },
-      { key: "calendar", label: "Calendar", icon: "calendar", route: "calendar", permission: "calendar.view" },
-      { key: "messages", label: "Messages", icon: "chat", route: "messages", permission: "communication.view" },
+      { label: "Teaching", items: [
+        ["My Classes", "classes", "classes.view"],
+        ["Timetable", "timetable", "classes.view"],
+        ["Attendance", "attendance", "classes.view"],
+        ["Lesson Plans", "lessons", "lessons.view"],
+        ["Assignments", "assignments", "assignments.view"],
+        ["Examinations", "exams", "exams.view"],
+        ["Results", "results", ["results.enter", "results.edit", "results.submit", "results.approve", "results.publish", "report_cards.view", "report_cards.generate"]],
+      ] },
+      { label: "People", items: [
+        ["Staff Directory", "staff", ["teachers.view", "teachers.create", "teachers.edit"]],
+        ["Leave", "leave", "staff_leave.view"],
+      ] },
+      { label: "Institution", items: [
+        ["Calendar", "calendar", "calendar.view"],
+        ["Library", "library", ["library.view", "library.manage", "library.issue", "library.return"]],
+        ["Messages", "messages", "communication.view"],
+      ] },
+      { label: "HR & Payroll", items: [
+        ["Payroll", "payroll", ["payroll.view", "payroll.create", "payroll.process", "payroll.approve"]],
+        ["Payslips", "payslips", "payslips.view"],
+      ] },
       { key: "notifications", label: "Notifications", icon: "bell", route: "notifications" },
-      { key: "leave", label: "My Leave", icon: "leave", route: "leave", permission: "staff_leave.view" },
-      { key: "library", label: "My Library", icon: "book", route: "library", permission: "library.view" },
       { key: "account", label: "My Account", icon: "settings", route: "account" },
     ];
   }
@@ -40,7 +59,8 @@
     dashboard: "Today", classes: "My Classes", timetable: "My Timetable", attendance: "Attendance Register",
     lessons: "Lesson Plans", assignments: "Assignments", exams: "Examinations", results: "Results Workbook",
     calendar: "Calendar & Events", messages: "Messages", notifications: "Notifications",
-    leave: "My Leave", library: "My Library Loans", account: "My Account",
+    leave: "Staff Leave", library: "Library", account: "My Account",
+    staff: "Staff Directory", payroll: "Payroll", payslips: "Payslips",
   };
   function pageTitle(route) {
     const top = route.split("/")[0];
@@ -73,9 +93,12 @@
     if (can("students.view") && !can("classes.view")) stats.push(c.statCard("users", data.classes.reduce((n, x) => n + Number(x.student_count || 0), 0), "Students"));
     if (can("assignments.view")) stats.push(c.statCard("file", data.assignmentsPending.reduce((n, x) => n + Number(x.ungraded || 0), 0), "Submissions to grade", data.assignmentsPending.length ? "accent" : ""));
     const shortcuts = [];
+    if (can("classes.view")) shortcuts.push({ icon: "classes", label: "My Classes", hint: `${data.classes.length} class(es) assigned`, route: "classes" });
+    if (can("teachers.view")) shortcuts.push({ icon: "users", label: "Staff Directory", hint: "Teachers and staff", route: "staff" });
     if (can("library.view")) shortcuts.push({ icon: "book", label: "Library", hint: can("library.manage") ? "Catalogue, issue & returns" : "Browse & borrow", route: "library" });
-    if (can("staff_leave.view")) shortcuts.push({ icon: "leave", label: can("staff_leave.approve") ? "Leave requests" : "My leave", hint: can("staff_leave.approve") ? "Approve staff leave" : "Request your own leave", route: "leave" });
-    if (can("payroll.view")) shortcuts.push({ icon: "money", label: "Payroll", hint: "Pay periods and payslips", route: "leave" });
+    if (can("staff_leave.view")) shortcuts.push({ icon: "leave", label: can("staff_leave.approve") ? "Leave Requests" : "My Leave", hint: can("staff_leave.approve") ? "Approve staff leave" : "Request your own leave", route: "leave" });
+    if (can("payroll.view")) shortcuts.push({ icon: "money", label: "Payroll", hint: "Pay periods", route: "payroll" });
+    if (can("payslips.view")) shortcuts.push({ icon: "file", label: "Payslips", hint: "Generated payslips", route: "payslips" });
     content.innerHTML = `
       <div class="portal-welcome">
         <div>
@@ -1041,6 +1064,9 @@
     if (top === "notifications") return window.BelloPortal.renderNotifications(c, content);
     if (top === "leave") return pageLeave(c, content);
     if (top === "library") return pageLibrary(c, content);
+    if (top === "staff") return pageStaff(c, content);
+    if (top === "payroll") return pagePayroll(c, content);
+    if (top === "payslips") return pagePayslips(c, content);
     if (top === "account") return pageAccount(c, content);
     content.innerHTML = c.errorState("This page is not part of the teacher workspace.");
   }
