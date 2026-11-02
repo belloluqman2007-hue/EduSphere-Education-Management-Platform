@@ -19,19 +19,19 @@
 
   function schema() {
     return [
-      { key: "dashboard", label: "Dashboard", icon: "dashboard", route: "dashboard" },
-      { key: "classes", label: "My Classes", icon: "classes", route: "classes" },
-      { key: "timetable", label: "Timetable", icon: "calendar", route: "timetable" },
-      { key: "attendance", label: "Attendance", icon: "check", route: "attendance" },
-      { key: "lessons", label: "Lesson Plans", icon: "book", route: "lessons" },
-      { key: "assignments", label: "Assignments", icon: "file", route: "assignments" },
-      { key: "exams", label: "Examinations", icon: "academic", route: "exams" },
-      { key: "results", label: "Results", icon: "check", route: "results" },
-      { key: "calendar", label: "Calendar", icon: "calendar", route: "calendar" },
-      { key: "messages", label: "Messages", icon: "chat", route: "messages" },
+      { key: "dashboard", label: "Dashboard", icon: "dashboard", route: "dashboard", permission: "dashboard.view" },
+      { key: "classes", label: "My Classes", icon: "classes", route: "classes", permission: "classes.view" },
+      { key: "timetable", label: "Timetable", icon: "calendar", route: "timetable", permission: "classes.view" },
+      { key: "attendance", label: "Attendance", icon: "check", route: "attendance", permission: "classes.view" },
+      { key: "lessons", label: "Lesson Plans", icon: "book", route: "lessons", permission: "lessons.view" },
+      { key: "assignments", label: "Assignments", icon: "file", route: "assignments", permission: "assignments.view" },
+      { key: "exams", label: "Examinations", icon: "academic", route: "exams", permission: "exams.view" },
+      { key: "results", label: "Results", icon: "check", route: "results", permission: "results.enter" },
+      { key: "calendar", label: "Calendar", icon: "calendar", route: "calendar", permission: "calendar.view" },
+      { key: "messages", label: "Messages", icon: "chat", route: "messages", permission: "communication.view" },
       { key: "notifications", label: "Notifications", icon: "bell", route: "notifications" },
-      { key: "leave", label: "My Leave", icon: "leave", route: "leave" },
-      { key: "library", label: "My Library", icon: "book", route: "library" },
+      { key: "leave", label: "My Leave", icon: "leave", route: "leave", permission: "staff_leave.view" },
+      { key: "library", label: "My Library", icon: "book", route: "library", permission: "library.view" },
       { key: "account", label: "My Account", icon: "settings", route: "account" },
     ];
   }
@@ -60,6 +60,22 @@
   async function pageDashboard(c, content) {
     const data = await c.api.get("/teachers/dashboard");
     const d = c.state.me;
+    // The dashboard is shaped by what the administrator granted: stat cards
+    // and shortcuts appear only for permissions the user actually holds, so a
+    // librarian, HR officer or teacher each lands on their own dashboard.
+    const can = (p) => c.hasPermission(p);
+    const stats = [];
+    if (can("classes.view")) {
+      stats.push(c.statCard("classes", data.classes.length, "Assigned classes"));
+      stats.push(c.statCard("users", data.classes.reduce((n, x) => n + Number(x.student_count || 0), 0), "Students in my classes"));
+      stats.push(c.statCard("check", data.attendancePending.length, "Attendance pending today", data.attendancePending.length ? "accent" : ""));
+    }
+    if (can("students.view") && !can("classes.view")) stats.push(c.statCard("users", data.classes.reduce((n, x) => n + Number(x.student_count || 0), 0), "Students"));
+    if (can("assignments.view")) stats.push(c.statCard("file", data.assignmentsPending.reduce((n, x) => n + Number(x.ungraded || 0), 0), "Submissions to grade", data.assignmentsPending.length ? "accent" : ""));
+    const shortcuts = [];
+    if (can("library.view")) shortcuts.push({ icon: "book", label: "Library", hint: can("library.manage") ? "Catalogue, issue & returns" : "Browse & borrow", route: "library" });
+    if (can("staff_leave.view")) shortcuts.push({ icon: "leave", label: can("staff_leave.approve") ? "Leave requests" : "My leave", hint: can("staff_leave.approve") ? "Approve staff leave" : "Request your own leave", route: "leave" });
+    if (can("payroll.view")) shortcuts.push({ icon: "money", label: "Payroll", hint: "Pay periods and payslips", route: "leave" });
     content.innerHTML = `
       <div class="portal-welcome">
         <div>
@@ -68,14 +84,15 @@
         </div>
         <div class="portal-welcome-side">${c.esc(c.state.institution ? c.state.institution.nameEn : "")}<br>${c.esc(data.classes.length)} class(es) · ${c.esc(data.subjects.length)} subject(s)</div>
       </div>
-      <div class="dash-stats-grid">
-        ${c.statCard("classes", data.classes.length, "Assigned classes")}
-        ${c.statCard("users", data.classes.reduce((n, x) => n + Number(x.student_count || 0), 0), "Students in my classes")}
-        ${c.statCard("check", data.attendancePending.length, "Attendance pending today", data.attendancePending.length ? "accent" : "")}
-        ${c.statCard("file", data.assignmentsPending.reduce((n, x) => n + Number(x.ungraded || 0), 0), "Submissions to grade", data.assignmentsPending.length ? "accent" : "")}
-      </div>
+      ${stats.length ? `<div class="dash-stats-grid">${stats.join("")}</div>` : ""}
+      ${shortcuts.length ? `<div class="dash-stats-grid">${shortcuts.map((s) => `
+        <a class="dash-card" style="display:block;text-decoration:none;color:inherit" href="#/teacher/${c.esc(s.route)}">
+          <div class="dash-card-pad" style="display:flex;gap:10px;align-items:center">
+            <span class="dash-stat-icon">${c.I[s.icon] || ""}</span>
+            <span><strong>${c.esc(s.label)}</strong><br><span class="hint">${c.esc(s.hint)}</span></span>
+          </div></div>`).join("")}</div>` : ""}
       <div class="portal-grid-2">
-        <div class="dash-card">
+        ${can("classes.view") ? `<div class="dash-card">
           <div class="dash-card-head"><h3>Today's classes</h3><span class="hint">${c.esc(data.todayName)}</span></div>
           <div class="dash-card-pad portal-rows">
             ${data.todaySlots.length ? data.todaySlots.map((s) => `
@@ -85,16 +102,16 @@
                 ${s.class_id ? `<a class="dash-btn dash-btn-ghost dash-btn-sm" href="#/teacher/attendance?classId=${c.esc(s.class_id)}">Register</a>` : ""}
               </div>`).join("") : `<p class="hint">No classes scheduled today.</p>`}
           </div>
-        </div>
+        </div>` : ""}
         <div class="dash-card">
           <div class="dash-card-head"><h3>Work awaiting me</h3></div>
           <div class="dash-card-pad portal-rows">
-            ${data.attendancePending.length ? `<div class="portal-row"><div class="portal-row-main"><strong>Attendance not marked</strong><small>${c.esc(data.attendancePending.length)} class(es) with a lesson today</small></div></div>` : ""}
-            ${data.assignmentsPending.map((a) => `
+            ${can("classes.view") && data.attendancePending.length ? `<div class="portal-row"><div class="portal-row-main"><strong>Attendance not marked</strong><small>${c.esc(data.attendancePending.length)} class(es) with a lesson today</small></div></div>` : ""}
+            ${can("assignments.view") ? data.assignmentsPending.map((a) => `
               <div class="portal-row"><div class="portal-row-main"><strong>${c.esc(a.title)}</strong>
                 <small>${c.esc(a.ungraded)} submission(s) to grade · ${c.esc(a.class_name || "")}${a.due_date ? " · due " + c.fmtDate(a.due_date) : ""}</small></div>
-                <a class="dash-btn dash-btn-ghost dash-btn-sm" href="#/teacher/assignments">Open</a></div>`).join("")}
-            ${!data.attendancePending.length && !data.assignmentsPending.length ? `<p class="hint">Nothing pending — results entered: ${c.esc(data.resultCounts.draft)} draft · ${c.esc(data.resultCounts.submitted)} submitted · ${c.esc(data.resultCounts.returned)} returned for correction.</p>` : ""}
+                <a class="dash-btn dash-btn-ghost dash-btn-sm" href="#/teacher/assignments">Open</a></div>`).join("") : ""}
+            ${!(can("classes.view") && data.attendancePending.length) && !(can("assignments.view") && data.assignmentsPending.length) ? `<p class="hint">Nothing pending${can("results.enter") ? ` — results entered: ${c.esc(data.resultCounts.draft)} draft · ${c.esc(data.resultCounts.submitted)} submitted · ${c.esc(data.resultCounts.returned)} returned for correction` : ""}. Check the sidebar for the tools you have been given.</p>` : ""}
             ${data.resultCounts.returned ? `<div class="portal-row"><div class="portal-row-main"><strong>Results returned for correction</strong><small>${c.esc(data.resultCounts.returned)} entry(ies) need correction and resubmission</small></div><a class="dash-btn dash-btn-ghost dash-btn-sm" href="#/teacher/results">Results</a></div>` : ""}
           </div>
         </div>
@@ -107,7 +124,7 @@
               : `<p class="hint">No announcements.</p>`}
           </div>
         </div>
-        <div class="dash-card">
+        ${can("calendar.view") ? `<div class="dash-card">
           <div class="dash-card-head"><h3>Upcoming events</h3></div>
           <div class="dash-card-pad portal-rows">
             ${data.events.length ? data.events.map((e) => `
@@ -116,7 +133,7 @@
                 ${c.pill(e.event_type)}</div>`).join("")
               : `<p class="hint">No upcoming events on the calendar.</p>`}
           </div>
-        </div>
+        </div>` : ""}
       </div>`;
   }
 
