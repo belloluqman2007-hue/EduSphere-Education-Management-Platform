@@ -394,6 +394,13 @@
     return perms.includes(p);
   }
 
+  /** A nav item's `permission` may be one key or a list — any match shows it. */
+  function permGranted(p) {
+    if (!p) return true;
+    const list = Array.isArray(p) ? p : [p];
+    return list.some((x) => hasPermission(x));
+  }
+
   /*
    * The sidebar shows only what the administrator granted: a nav item may
    * declare a `permission` key, and it is rendered only when the user's
