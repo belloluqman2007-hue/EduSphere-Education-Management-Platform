@@ -41,7 +41,11 @@ const applicationDocumentUploader = fileUploader("files", "document", {
 });
 
 const router = express.Router();
-router.use(requireAuth, requireRole("madrasa_admin", "super_admin"));
+// Staff accounts shaped with the Admissions Officer / Receptionist templates
+// are teacher accounts holding the granular admissions.* permissions — the
+// per-route permission gates below decide what each caller may do, so the
+// router admits staff and refuses students/parents outright.
+router.use(requireAuth, requireRole("madrasa_admin", "super_admin", "teacher"));
 /* The online admissions PORTAL — pipeline view, entry requirements and the
    portal settings a school publishes — is Premium ("Branding & growth").
    Processing an application that already arrived is deliberately NOT gated:
@@ -52,11 +56,10 @@ router.use(requireFeature((req) => {
   return null;
 }));
 
-const ADMIN = requireRole("madrasa_admin", "super_admin");
-
-/** Resolves which tenant this call operates on. */
+/** Resolves which tenant this call operates on. Tenant users are always
+    pinned to their own institution — never a client-supplied id. */
 async function resolveTenant(req, res) {
-  if (req.user.role === "madrasa_admin") return req.user.madrasaId;
+  if (req.user.madrasaId) return req.user.madrasaId;
   const mid = toNum((req.query && req.query.madrasaId) || (req.body && req.body.madrasa_id) || 0);
   if (!mid) return null; // platform-wide list for super admin
   const m = await db.get("SELECT id FROM madaris WHERE id = ?", [mid]);
@@ -369,15 +372,15 @@ async function setStatus(req, res, status) {
 }
 
 router.post("/:id/reject", requirePermission("admissions.reject"), asyncHandler((req, res) => setStatus(req, res, "rejected")));
-router.post("/:id/hold", ADMIN, asyncHandler((req, res) => setStatus(req, res, "on_hold")));
-router.post("/:id/waitlist", ADMIN, asyncHandler((req, res) => setStatus(req, res, "waitlisted")));
-router.post("/:id/request-info", ADMIN, asyncHandler((req, res) => setStatus(req, res, "needs_info")));
-router.post("/:id/under-review", ADMIN, asyncHandler((req, res) => setStatus(req, res, "under_review")));
-router.post("/:id/shortlist", ADMIN, asyncHandler((req, res) => setStatus(req, res, "shortlisted")));
-router.post("/:id/interviewed", ADMIN, asyncHandler((req, res) => setStatus(req, res, "interviewed")));
+router.post("/:id/hold", requirePermission("admissions.create"), asyncHandler((req, res) => setStatus(req, res, "on_hold")));
+router.post("/:id/waitlist", requirePermission("admissions.create"), asyncHandler((req, res) => setStatus(req, res, "waitlisted")));
+router.post("/:id/request-info", requirePermission("admissions.create"), asyncHandler((req, res) => setStatus(req, res, "needs_info")));
+router.post("/:id/under-review", requirePermission("admissions.create"), asyncHandler((req, res) => setStatus(req, res, "under_review")));
+router.post("/:id/shortlist", requirePermission("admissions.create"), asyncHandler((req, res) => setStatus(req, res, "shortlisted")));
+router.post("/:id/interviewed", requirePermission("admissions.create"), asyncHandler((req, res) => setStatus(req, res, "interviewed")));
 router.post("/:id/accept", requirePermission("admissions.approve"), asyncHandler((req, res) => setStatus(req, res, "accepted")));
-router.post("/:id/reopen", ADMIN, asyncHandler((req, res) => setStatus(req, res, "pending")));
-router.patch("/:id/review", ADMIN, asyncHandler(async (req, res) => {
+router.post("/:id/reopen", requirePermission("admissions.create"), asyncHandler((req, res) => setStatus(req, res, "pending")));
+router.patch("/:id/review", requirePermission("admissions.create"), asyncHandler(async (req, res) => {
   const row = await loadRequest(req, res, req.params.id); if (!row) return;
   const b = req.body || {};
   const allowed = ["pending", "under_review", "shortlisted", "interviewed", "accepted", "approved", "enrolled", "rejected", "waitlisted", "needs_info", "on_hold"];
@@ -400,7 +403,7 @@ router.patch("/:id/review", ADMIN, asyncHandler(async (req, res) => {
   ok(res, { ok: true, status });
 }));
 
-router.post("/:id/photo", ADMIN, imageUploader("application-photos", "photo"), asyncHandler(async (req, res) => {
+router.post("/:id/photo", requirePermission("admissions.create"), imageUploader("application-photos", "photo"), asyncHandler(async (req, res) => {
   const row = await loadRequest(req, res, req.params.id); if (!row) return;
   if (!req.file) return err(res, 400, "Choose a JPG, PNG or WEBP photo.");
   const photoPath = `/uploads/application-photos/${req.file.filename}`;
@@ -408,7 +411,7 @@ router.post("/:id/photo", ADMIN, imageUploader("application-photos", "photo"), a
   ok(res, { ok: true, photoPath });
 }));
 
-router.post("/:id/documents", ADMIN, applicationDocumentUploader, asyncHandler(async (req, res) => {
+router.post("/:id/documents", requirePermission("admissions.create"), applicationDocumentUploader, asyncHandler(async (req, res) => {
   const row = await loadRequest(req, res, req.params.id); if (!row) return;
   if (!req.file) return err(res, 400, "No document uploaded.");
   const name = cleanStr(req.body && req.body.document_name, 200) || cleanStr(req.file.originalname, 200);
@@ -417,7 +420,7 @@ router.post("/:id/documents", ADMIN, applicationDocumentUploader, asyncHandler(a
   const r = await db.run("INSERT INTO admission_documents (madrasa_id, application_id, document_name, storage_path, original_name, mime_type, file_size, uploaded_by, requirement_id, verification_status) VALUES (?,?,?,?,?,?,?,?,?,'pending')", [row.madrasa_id, row.id, name, req.file.path, cleanStr(req.file.originalname, 255), cleanStr(req.file.mimetype, 120), Number(req.file.size || 0), req.user.id, requirementId]);
   ok(res, { ok: true, id: r.lastInsertRowid, documentName: name });
 }));
-router.get("/:id/documents/:documentId", ADMIN, requirePermission("admissions.view"), asyncHandler(async (req, res) => {
+router.get("/:id/documents/:documentId", requirePermission("admissions.view"), asyncHandler(async (req, res) => {
   const row = await loadRequest(req, res, req.params.id); if (!row) return;
   const doc = await db.get("SELECT * FROM admission_documents WHERE id = ? AND application_id = ? AND madrasa_id = ?", [toNum(req.params.documentId, 0), row.id, row.madrasa_id]);
   if (!doc || !await privateMedia.download(res, doc.storage_path, doc.original_name || doc.document_name)) return err(res, 404, "Document not found.");

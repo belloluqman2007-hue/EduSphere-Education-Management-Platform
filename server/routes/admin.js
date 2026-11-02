@@ -62,6 +62,18 @@ router.get("/permissions/catalogue", permissions.requirePermission("roles.manage
   });
 }));
 
+/** Detects which recommended staff-role template a user's effective
+    permission set matches exactly — grants and revokes together. Returns
+    null when the profile has been customised or no template applies. */
+function matchingTemplate(role, effective) {
+  if (role !== "teacher") return null;
+  const held = new Set(effective);
+  return ROLE_TEMPLATES.find((t) => {
+    if (held.size !== t.permissions.length) return false;
+    return t.permissions.every((p) => held.has(p));
+  }) || null;
+}
+
 /** Staff accounts in THIS institution with their effective permissions. */
 router.get("/permissions/users", permissions.requirePermission("roles.manage"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
@@ -86,11 +98,14 @@ router.get("/permissions/users", permissions.requirePermission("roles.manage"), 
       const own = byUser.get(u.id) || [];
       const set = new Set(permissions.roleDefaults(u.role));
       for (const o of own) { if (o.effect === "revoke") set.delete(o.permission); else set.add(o.permission); }
+      const template = matchingTemplate(u.role, set);
       return {
         id: u.id, username: u.username, role: u.role,
         fullName: u.full_name, isActive: Number(u.is_active) === 1,
         overrides: own,
         effective: Array.from(set).sort(),
+        template: template ? template.key : null,
+        templateLabel: template ? template.label : null,
       };
     }),
   });
