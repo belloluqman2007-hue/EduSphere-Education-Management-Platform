@@ -414,10 +414,10 @@
     return state.module.schema()
       .map((item) => {
         if (item.items) {
-          const items = item.items.filter((entry) => !entry[2] || hasPermission(entry[2]));
+          const items = item.items.filter((entry) => permGranted(entry[2]));
           return items.length ? Object.assign({}, item, { items }) : null;
         }
-        if (item.permission && !hasPermission(item.permission)) return null;
+        if (!permGranted(item.permission)) return null;
         return item;
       })
       .filter(Boolean);
@@ -528,7 +528,7 @@
     return {
       I, esc, fmtDate, fmtDateTime, fmtMoney, todayIso, toast, openModal, closeModal,
       statCard, pill, options, emptyRow, pageHead, loading, errorState, emptyState,
-      enhanceTables, go, state, refreshUnread,
+      enhanceTables, go, state, refreshUnread, hasPermission,
       api: window.API,
     };
   }
