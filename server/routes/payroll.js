@@ -5,7 +5,7 @@
    Additive finance module following the fees.js conventions exactly:
      • every query filtered by madrasa_id resolved from the session (never
        client-supplied) via effectiveTenantId — see middleware/tenant.js
-     • role guards: ADMIN (madrasa_admin) for the whole ledger
+     • role guards: granular payroll.* permissions for the whole ledger
      • activity logging through the shared util.logActivity
      • CSV export through services/csv.js
      • server-rendered printable payslip (like the fee receipt)
@@ -22,8 +22,8 @@
 const express = require("express");
 const db = require("../db");
 const { asyncHandler, err, ok, cleanStr, toNum, clampNum, validDate, logActivity } = require("../util");
-const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
-const { requirePermission, requireStaffPermission } = require("../services/permissions");
+const { requireAuth, requireTenant } = require("../middleware/auth");
+const { requirePermission, can } = require("../services/permissions");
 const { effectiveTenantId } = require("../middleware/tenant");
 const { requireFeature } = require("../middleware/subscription");
 const csv = require("../services/csv");
@@ -32,7 +32,14 @@ const router = express.Router();
 router.use(requireAuth, requireTenant);
 // Payroll is a Premium capability ("Finance & HR: payroll, expenses, budgets").
 router.use(requireFeature("payroll"));
-const ADMIN = requireRole("madrasa_admin");
+/*
+ * Access is decided by the granular permission set, not by a hard role gate:
+ * staff accounts shaped with the HR Officer template (a teacher account with
+ * payroll.* permissions granted under Settings -> Roles & Permissions) run the
+ * payroll ledger exactly like an administrator, while a plain teacher — who
+ * holds only `payslips.view` — can read their own payslips through
+ * /my-payslips and is refused the institution-wide ledger.
+ */
 
 const PERIOD_STATUSES = new Set(["draft", "processed", "paid"]);
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -85,7 +92,7 @@ async function sessionInTenant(tid, sessionId) {
 
 /* ------------------------- salary structures --------------------------- */
 
-router.get("/structures", ADMIN, requireStaffPermission("payroll.view"), asyncHandler(async (req, res) => {
+router.get("/structures", requirePermission("payroll.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const where = ["s.madrasa_id = ?"]; const params = [tid];
   if (req.query.userId) { where.push("s.user_id = ?"); params.push(toNum(req.query.userId, 0)); }
@@ -144,7 +151,7 @@ router.post("/structures", requirePermission("payroll.create"), asyncHandler(asy
   ok(res, { ok: true, id });
 }));
 
-router.patch("/structures/:id", ADMIN, requireStaffPermission("payroll.create"), asyncHandler(async (req, res) => {
+router.patch("/structures/:id", requirePermission("payroll.create"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const id = toNum(req.params.id, 0);
   const row = await db.get("SELECT * FROM salary_structures WHERE id = ? AND madrasa_id = ?", [id, tid]);
@@ -172,7 +179,7 @@ router.patch("/structures/:id", ADMIN, requireStaffPermission("payroll.create"),
   ok(res, { ok: true });
 }));
 
-router.delete("/structures/:id", ADMIN, requireStaffPermission("payroll.create"), asyncHandler(async (req, res) => {
+router.delete("/structures/:id", requirePermission("payroll.create"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const r = await db.run("DELETE FROM salary_structures WHERE id=? AND madrasa_id=?", [toNum(req.params.id, 0), tid]);
   if (!r.changes) return res.status(404).json({ error: "Salary structure not found." });
@@ -197,7 +204,7 @@ async function loadPeriod(tid, id) {
   });
 }
 
-router.get("/periods", ADMIN, requireStaffPermission("payroll.view"), asyncHandler(async (req, res) => {
+router.get("/periods", requirePermission("payroll.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const where = ["p.madrasa_id = ?"]; const params = [tid];
   if (req.query.sessionId) { where.push("p.session_id = ?"); params.push(toNum(req.query.sessionId, 0)); }
@@ -236,7 +243,7 @@ router.post("/periods", requirePermission("payroll.create"), asyncHandler(async 
   ok(res, { ok: true, id });
 }));
 
-router.delete("/periods/:id", ADMIN, requireStaffPermission("payroll.create"), asyncHandler(async (req, res) => {
+router.delete("/periods/:id", requirePermission("payroll.create"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const period = await loadPeriod(tid, req.params.id);
   if (!period) return res.status(404).json({ error: "Pay period not found." });
@@ -349,7 +356,7 @@ async function computePayslip(api, tid, period, teacher, monthStartIso) {
 }
 
 /** POST /periods/:id/process — bulk compute every salaried teacher's slip. */
-router.post("/periods/:id/process", ADMIN, requireStaffPermission("payroll.process"), asyncHandler(async (req, res) => {
+router.post("/periods/:id/process", requirePermission("payroll.process"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const period = await loadPeriod(tid, req.params.id);
   if (!period) return res.status(404).json({ error: "Pay period not found." });
@@ -390,7 +397,7 @@ router.post("/periods/:id/process", ADMIN, requireStaffPermission("payroll.proce
 }));
 
 /** POST /periods/:id/pay — finalise the period and stamp every slip paid. */
-router.post("/periods/:id/pay", ADMIN, requireStaffPermission("payroll.approve"), asyncHandler(async (req, res) => {
+router.post("/periods/:id/pay", requirePermission("payroll.approve"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const period = await loadPeriod(tid, req.params.id);
   if (!period) return res.status(404).json({ error: "Pay period not found." });
@@ -408,7 +415,11 @@ router.post("/periods/:id/pay", ADMIN, requireStaffPermission("payroll.approve")
 
 /* ------------------------------- payslips -------------------------------- */
 
-router.get("/payslips", ADMIN, requireStaffPermission("payslips.view"), asyncHandler(async (req, res) => {
+/** The institution-wide payslip ledger: payroll officers only. Requires BOTH
+    `payslips.view` and `payroll.view`, so a plain teacher — who holds
+    `payslips.view` for their own slip — is refused the whole ledger, while an
+    HR Officer (payroll.view + payslips.view) sees every slip. */
+router.get("/payslips", requirePermission("payslips.view", "payroll.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const where = ["ps.madrasa_id = ?"]; const params = [tid];
   if (req.query.periodId) { where.push("ps.pay_period_id = ?"); params.push(toNum(req.query.periodId, 0)); }
@@ -442,8 +453,39 @@ router.get("/payslips", ADMIN, requireStaffPermission("payslips.view"), asyncHan
   });
 }));
 
+/** GET /my-payslips — the caller's own payslips (self-scoped). Every teacher
+    holds `payslips.view` by default so they can read their own salary slips;
+    this route never reveals a colleague's slip. */
+router.get("/my-payslips", requirePermission("payslips.view"), asyncHandler(async (req, res) => {
+  const tid = await tenantId(req, res); if (tid == null) return;
+  const rows = await db.all(
+    `SELECT ps.*, u.full_name, u.full_name_ar, u.username, p.month, p.year, p.status AS period_status,
+            p.session_id, s.label AS session_label
+       FROM pay_slips ps
+       JOIN users u ON u.id = ps.user_id AND u.madrasa_id = ps.madrasa_id
+       JOIN pay_periods p ON p.id = ps.pay_period_id AND p.madrasa_id = ps.madrasa_id
+       LEFT JOIN academic_sessions s ON s.id = p.session_id AND s.madrasa_id = ps.madrasa_id
+      WHERE ps.madrasa_id = ? AND ps.user_id = ?
+      ORDER BY p.year DESC, p.month DESC
+      LIMIT 200`,
+    [tid, req.user.id]
+  );
+  ok(res, {
+    payslips: rows.map((row) => Object.assign({}, row, {
+      deductions: parseJson(row.deductions),
+      period_label: periodLabel(row.month, row.year),
+    })),
+    summary: {
+      count: rows.length,
+      totalGross: round2(rows.reduce((a, r) => a + n(r.gross), 0)),
+      totalNet: round2(rows.reduce((a, r) => a + n(r.net), 0)),
+      totalDeductions: round2(rows.reduce((a, r) => a + n(parseJson(r.deductions).total), 0)),
+    },
+  });
+}));
+
 /** POST /payslips — generate (or recompute) one teacher's slip for a period. */
-router.post("/payslips", ADMIN, requireStaffPermission("payroll.process"), asyncHandler(async (req, res) => {
+router.post("/payslips", requirePermission("payroll.process"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {};
   const period = await loadPeriod(tid, b.pay_period_id ?? b.periodId ?? b.period_id);
@@ -468,7 +510,7 @@ router.post("/payslips", ADMIN, requireStaffPermission("payroll.process"), async
   ok(res, { ok: true, id: slipId });
 }));
 
-router.get("/payslips/:id", ADMIN, requireStaffPermission("payslips.view"), asyncHandler(async (req, res) => {
+router.get("/payslips/:id", requirePermission("payslips.view", "payroll.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await db.get(
     `SELECT ps.*, u.full_name, u.full_name_ar, u.username, p.month, p.year, p.status AS period_status,
@@ -485,7 +527,7 @@ router.get("/payslips/:id", ADMIN, requireStaffPermission("payslips.view"), asyn
   ok(res, { payslip: Object.assign({}, row, { deductions: parseJson(row.deductions), period_label: periodLabel(row.month, row.year) }) });
 }));
 
-router.delete("/payslips/:id", ADMIN, requireStaffPermission("payroll.process"), asyncHandler(async (req, res) => {
+router.delete("/payslips/:id", requirePermission("payroll.process"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const slip = await db.get(
     "SELECT ps.*, p.status AS period_status FROM pay_slips ps JOIN pay_periods p ON p.id = ps.pay_period_id AND p.madrasa_id = ps.madrasa_id WHERE ps.id=? AND ps.madrasa_id=?",
@@ -504,7 +546,7 @@ router.delete("/payslips/:id", ADMIN, requireStaffPermission("payroll.process"),
 /** GET /payslips/:id/print — server-rendered printable payslip (same pattern
     as the fee receipt). Printing runs through /js/print.js so the page stays
     CSP-safe under script-src 'self' (no inline script handler). */
-router.get("/payslips/:id/print", ADMIN, requireStaffPermission("payslips.view"), asyncHandler(async (req, res) => {
+router.get("/payslips/:id/print", requirePermission("payslips.view", "payroll.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const p = await db.get(
     `SELECT ps.*, u.full_name, u.full_name_ar, u.username, p.month, p.year, p.status AS period_status,
@@ -594,7 +636,7 @@ router.get("/payslips/:id/print", ADMIN, requireStaffPermission("payslips.view")
 
 /* ------------------------- salary advances ------------------------------- */
 
-router.get("/advances", ADMIN, requireStaffPermission("payroll.view"), asyncHandler(async (req, res) => {
+router.get("/advances", requirePermission("payroll.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const where = ["a.madrasa_id = ?"]; const params = [tid];
   if (req.query.userId) { where.push("a.user_id = ?"); params.push(toNum(req.query.userId, 0)); }
@@ -621,7 +663,7 @@ router.get("/advances", ADMIN, requireStaffPermission("payroll.view"), asyncHand
   });
 }));
 
-router.post("/advances", ADMIN, requireStaffPermission("payroll.create"), asyncHandler(async (req, res) => {
+router.post("/advances", requirePermission("payroll.create"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const b = req.body || {};
   const teacher = await teacherInTenant(tid, b.user_id ?? b.userId);
@@ -640,7 +682,7 @@ router.post("/advances", ADMIN, requireStaffPermission("payroll.create"), asyncH
 }));
 
 /** POST /advances/:id/repay — record a repayment received outside payroll. */
-router.post("/advances/:id/repay", ADMIN, requireStaffPermission("payroll.process"), asyncHandler(async (req, res) => {
+router.post("/advances/:id/repay", requirePermission("payroll.process"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const advance = await db.get("SELECT * FROM salary_advances WHERE id=? AND madrasa_id=?", [toNum(req.params.id, 0), tid]);
   if (!advance) return res.status(404).json({ error: "Salary advance not found." });
@@ -653,7 +695,7 @@ router.post("/advances/:id/repay", ADMIN, requireStaffPermission("payroll.proces
   ok(res, { ok: true, applied, balance: round2(n(advance.balance) - applied) });
 }));
 
-router.delete("/advances/:id", ADMIN, requireStaffPermission("payroll.create"), asyncHandler(async (req, res) => {
+router.delete("/advances/:id", requirePermission("payroll.create"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const advance = await db.get("SELECT * FROM salary_advances WHERE id=? AND madrasa_id=?", [toNum(req.params.id, 0), tid]);
   if (!advance) return res.status(404).json({ error: "Salary advance not found." });
@@ -668,7 +710,7 @@ router.delete("/advances/:id", ADMIN, requireStaffPermission("payroll.create"), 
 /* ------------------------------ CSV export ------------------------------- */
 
 /** GET /periods/:id/export.csv — one row per payslip in the period. */
-router.get("/periods/:id/export.csv", ADMIN, requireStaffPermission("payroll.view"), asyncHandler(async (req, res) => {
+router.get("/periods/:id/export.csv", requirePermission("payroll.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const period = await loadPeriod(tid, req.params.id);
   if (!period) return res.status(404).json({ error: "Pay period not found." });

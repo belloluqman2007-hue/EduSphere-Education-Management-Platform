@@ -28,7 +28,7 @@ const express = require("express");
 const db = require("../db");
 const { asyncHandler, err, ok, cleanStr, toNum, clampNum, validDate, logActivity } = require("../util");
 const { requireAuth, requireTenant, requireRole } = require("../middleware/auth");
-const { requirePermission, requireStaffPermission } = require("../services/permissions");
+const { requirePermission, requireStaffPermission, requireAnyStaffPermission, loadPermissions } = require("../services/permissions");
 const { effectiveTenantId } = require("../middleware/tenant");
 const { requireFeature } = require("../middleware/subscription");
 const csv = require("../services/csv");
@@ -40,9 +40,9 @@ router.use(requireAuth, requireTenant);
 // Leave management ships with the Premium "Finance & HR" bundle.
 router.use(requireFeature("leave"));
 
-/* Same guard vocabulary as teachers.js: administrators own the catalogue and
-   the approvals, teachers reach their own records through the staff routes. */
-const ADMIN = requireRole("madrasa_admin", "super_admin");
+/* Same guard vocabulary as teachers.js: administrators and staff share the
+   staff routes; who may REVIEW the whole ledger is decided per request by
+   canReview() below (administrators, or staff_leave.approve holders). */
 const STAFF = requireRole("madrasa_admin", "teacher", "super_admin");
 
 const REQUEST_STATUSES = new Set(["pending", "approved", "rejected", "cancelled"]);
@@ -75,6 +75,19 @@ async function tenantId(req, res) {
 }
 
 function isAdmin(req) { return ["madrasa_admin", "super_admin"].includes(req.user.role); }
+
+/**
+ * True when the caller may act on the WHOLE leave ledger — every request,
+ * every balance, approvals and the catalogue: administrators always, plus any
+ * staff account granted `staff_leave.approve` (e.g. the HR Officer template).
+ * A plain teacher (who holds only staff_leave.view/create) stays limited to
+ * their own records.
+ */
+async function canReview(req) {
+  if (isAdmin(req)) return true;
+  try { return (await loadPermissions(req)).has("staff_leave.approve"); }
+  catch (e) { return false; }
+}
 function n(v) { return Number.isFinite(Number(v)) ? Number(v) : 0; }
 function todayIso() { return new Date().toISOString().slice(0, 10); }
 function dayStamp(iso) { return Date.parse(String(iso).slice(0, 10) + "T00:00:00Z"); }
@@ -332,7 +345,7 @@ function validateType(body, fallback = {}) {
   };
 }
 
-router.post("/types", ADMIN, requirePermission("staff_leave.approve"), asyncHandler(async (req, res) => {
+router.post("/types", requirePermission("staff_leave.approve"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   await ensureLeaveTypes(tid);
   const v = validateType(req.body);
@@ -360,7 +373,7 @@ router.post("/types", ADMIN, requirePermission("staff_leave.approve"), asyncHand
   ok(res, { ok: true, id });
 }));
 
-router.patch("/types/:id", ADMIN, requireStaffPermission("staff_leave.approve"), asyncHandler(async (req, res) => {
+router.patch("/types/:id", requirePermission("staff_leave.approve"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await typeInTenant(tid, req.params.id);
   if (!row) return err(res, 404, "Leave type not found.");
@@ -380,7 +393,7 @@ router.patch("/types/:id", ADMIN, requireStaffPermission("staff_leave.approve"),
   ok(res, { ok: true });
 }));
 
-router.delete("/types/:id", ADMIN, requireStaffPermission("staff_leave.approve"), asyncHandler(async (req, res) => {
+router.delete("/types/:id", requirePermission("staff_leave.approve"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await typeInTenant(tid, req.params.id);
   if (!row) return err(res, 404, "Leave type not found.");
@@ -411,7 +424,7 @@ router.get("/balances", STAFF, requireStaffPermission("staff_leave.view"), async
   if (!session) return ok(res, { session: null, balances: [], types: [], totals: { entitlement: 0, taken: 0, remaining: 0, pending: 0 } });
 
   const requestedUser = toNum(req.query.userId, 0);
-  const userId = isAdmin(req) ? (requestedUser || null) : req.user.id;
+  const userId = (await canReview(req)) ? (requestedUser || null) : req.user.id;
   if (userId) {
     const person = await staffInTenant(tid, userId);
     if (!person) return err(res, 404, "Staff member not found.");
@@ -475,10 +488,11 @@ router.get("/calendar", STAFF, requireStaffPermission("staff_leave.view"), async
   const where = ["lr.madrasa_id = ?", "lr.status = 'approved'", "lr.start_date <= ?", "lr.end_date >= ?"];
   const params = [tid, monthEnd, monthStart];
   if (req.query.typeId) { where.push("lr.type_id = ?"); params.push(toNum(req.query.typeId, 0)); }
-  if (req.query.userId && isAdmin(req)) { where.push("lr.user_id = ?"); params.push(toNum(req.query.userId, 0)); }
+  const reviewer = await canReview(req);
+  if (req.query.userId && reviewer) { where.push("lr.user_id = ?"); params.push(toNum(req.query.userId, 0)); }
   const rows = await db.all(`${REQUEST_SELECT} WHERE ${where.join(" AND ")} ORDER BY lr.start_date, u.full_name`, params);
 
-  const includePrivate = isAdmin(req);
+  const includePrivate = reviewer;
   const leaves = rows.map((row) => {
     const dto = requestDto(row, { includePrivate: includePrivate || Number(row.user_id) === Number(req.user.id) });
     dto.days_in_month = leaveDays(row.start_date, row.end_date).filter((d) => d >= monthStart && d <= monthEnd);
@@ -542,7 +556,8 @@ router.get("/me", STAFF, requireStaffPermission("staff_leave.view"), asyncHandle
 
 /* ------------------------------- requests -------------------------------- */
 
-function buildRequestFilters(req, tid) {
+function buildRequestFilters(req, tid, reviewer) {
+  const canSeeAll = reviewer === undefined ? isAdmin(req) : reviewer;
   const where = ["lr.madrasa_id = ?"]; const params = [tid];
   const status = cleanStr(req.query.status, 20).toLowerCase();
   if (status && REQUEST_STATUSES.has(status)) { where.push("lr.status = ?"); params.push(status); }
@@ -555,9 +570,10 @@ function buildRequestFilters(req, tid) {
     where.push("(LOWER(u.full_name) LIKE ? OR LOWER(u.username) LIKE ? OR LOWER(COALESCE(lr.reason,'')) LIKE ?)");
     params.push(like, like, like);
   }
-  // A teacher only ever sees their own applications; an administrator may
-  // filter by staff member. Never client-trusted for the tenant itself.
-  if (isAdmin(req)) {
+  // A teacher only ever sees their own applications; a reviewer
+  // (administrator or staff_leave.approve holder) may filter by staff member.
+  // Never client-trusted for the tenant itself.
+  if (canSeeAll) {
     if (req.query.userId) { where.push("lr.user_id = ?"); params.push(toNum(req.query.userId, 0)); }
   } else {
     where.push("lr.user_id = ?"); params.push(req.user.id);
@@ -568,7 +584,8 @@ function buildRequestFilters(req, tid) {
 router.get("/", STAFF, requireStaffPermission("staff_leave.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   await ensureLeaveTypes(tid);
-  const { where, params } = buildRequestFilters(req, tid);
+  const reviewer = await canReview(req);
+  const { where, params } = buildRequestFilters(req, tid, reviewer);
   const page = Math.max(1, toNum(req.query.page, 1));
   const perPage = Math.min(200, Math.max(1, toNum(req.query.perPage, 50)));
   const total = await db.get(
@@ -587,8 +604,8 @@ router.get("/", STAFF, requireStaffPermission("staff_leave.view"), asyncHandler(
             COALESCE(SUM(CASE WHEN lr.status='approved' THEN lr.days ELSE 0 END),0) AS approved_days,
             COUNT(*) AS total
        FROM leave_requests lr JOIN users u ON u.id = lr.user_id AND u.madrasa_id = lr.madrasa_id
-      WHERE lr.madrasa_id = ?${isAdmin(req) ? "" : " AND lr.user_id = ?"}`,
-    isAdmin(req) ? [tid] : [tid, req.user.id]
+      WHERE lr.madrasa_id = ?${reviewer ? "" : " AND lr.user_id = ?"}`,
+    reviewer ? [tid] : [tid, req.user.id]
   );
   ok(res, {
     requests: rows.map((row) => requestDto(row)),
@@ -604,7 +621,7 @@ router.get("/", STAFF, requireStaffPermission("staff_leave.view"), asyncHandler(
 /** CSV export of the same filtered list (Excel-safe, shared csv service). */
 router.get("/export.csv", STAFF, requireStaffPermission("staff_leave.view"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
-  const { where, params } = buildRequestFilters(req, tid);
+  const { where, params } = buildRequestFilters(req, tid, await canReview(req));
   const rows = await db.all(`${REQUEST_SELECT} WHERE ${where.join(" AND ")} ORDER BY lr.start_date DESC, lr.id DESC LIMIT 5000`, params);
   csv.sendCsv(res, `staff-leave-${todayIso()}.csv`, csv.toCsv(rows, [
     { label: "Staff Member", value: (r) => r.full_name || r.username },
@@ -640,17 +657,19 @@ async function loadRequest(tid, id) {
   return db.get(`${REQUEST_SELECT} WHERE lr.id = ? AND lr.madrasa_id = ?`, [toNum(id, 0), tid]);
 }
 
-/** POST / — a teacher submits their own application; an administrator may
-    submit on behalf of a staff member by passing user_id. */
-router.post("/", STAFF, requireStaffPermission("staff_leave.create"), asyncHandler(async (req, res) => {
+/** POST / — a teacher submits their own application; a reviewer
+    (administrator or staff_leave.approve holder) may submit on behalf of a
+    staff member by passing user_id. */
+router.post("/", STAFF, requireAnyStaffPermission("staff_leave.create", "staff_leave.approve"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   await ensureLeaveTypes(tid);
   const b = req.body || {};
-  const targetUserId = isAdmin(req) ? toNum(b.user_id ?? b.userId, 0) : req.user.id;
+  const reviewer = await canReview(req);
+  const targetUserId = reviewer ? toNum(b.user_id ?? b.userId, 0) : req.user.id;
   if (!targetUserId) return err(res, 400, "Select the staff member this leave is for.");
   const person = await staffInTenant(tid, targetUserId);
   if (!person) return err(res, 400, "Select a staff member who belongs to this institution.");
-  if (!isAdmin(req) && Number(person.id) !== Number(req.user.id)) return err(res, 403, "You can only request leave for yourself.");
+  if (!reviewer && Number(person.id) !== Number(req.user.id)) return err(res, 403, "You can only request leave for yourself.");
 
   const type = await typeInTenant(tid, b.type_id ?? b.typeId);
   if (!type) return err(res, 400, "Select a leave type from this institution's catalogue.");
@@ -699,7 +718,7 @@ router.get("/:id", STAFF, requireStaffPermission("staff_leave.view"), asyncHandl
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await loadRequest(tid, req.params.id);
   if (!row) return err(res, 404, "Leave request not found.");
-  if (!isAdmin(req) && Number(row.user_id) !== Number(req.user.id)) return err(res, 404, "Leave request not found.");
+  if (!(await canReview(req)) && Number(row.user_id) !== Number(req.user.id)) return err(res, 404, "Leave request not found.");
   ok(res, { request: requestDto(row), days: leaveDays(row.start_date, row.end_date) });
 }));
 
@@ -708,7 +727,7 @@ router.patch("/:id", STAFF, requireStaffPermission("staff_leave.create"), asyncH
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await loadRequest(tid, req.params.id);
   if (!row) return err(res, 404, "Leave request not found.");
-  if (!isAdmin(req) && Number(row.user_id) !== Number(req.user.id)) return err(res, 404, "Leave request not found.");
+  if (!(await canReview(req)) && Number(row.user_id) !== Number(req.user.id)) return err(res, 404, "Leave request not found.");
   if (row.status !== "pending") return err(res, 400, "Only a pending request can be edited.");
   const b = req.body || {};
 
@@ -765,8 +784,8 @@ function review(decision) {
   });
 }
 
-router.patch("/:id/approve", ADMIN, requireStaffPermission("staff_leave.approve"), review("approved"));
-router.patch("/:id/reject", ADMIN, requireStaffPermission("staff_leave.approve"), review("rejected"));
+router.patch("/:id/approve", requirePermission("staff_leave.approve"), review("approved"));
+router.patch("/:id/reject", requirePermission("staff_leave.approve"), review("rejected"));
 
 /** PATCH /:id/cancel — the owner withdraws, or an administrator cancels an
     approved leave (which also reverses the register rows it created). */
@@ -775,9 +794,10 @@ router.patch("/:id/cancel", STAFF, requireStaffPermission("staff_leave.create"),
   const row = await loadRequest(tid, req.params.id);
   if (!row) return err(res, 404, "Leave request not found.");
   const owner = Number(row.user_id) === Number(req.user.id);
-  if (!isAdmin(req) && !owner) return err(res, 404, "Leave request not found.");
+  const reviewer = await canReview(req);
+  if (!reviewer && !owner) return err(res, 404, "Leave request not found.");
   if (!["pending", "approved"].includes(row.status)) return err(res, 400, `This request is already ${row.status}.`);
-  if (!isAdmin(req) && row.status === "approved" && String(row.start_date).slice(0, 10) <= todayIso()) {
+  if (!reviewer && row.status === "approved" && String(row.start_date).slice(0, 10) <= todayIso()) {
     return err(res, 400, "Approved leave that has already started can only be cancelled by an administrator.");
   }
   const note = cleanStr((req.body || {}).note ?? (req.body || {}).review_note, 2000);
@@ -794,7 +814,7 @@ router.patch("/:id/cancel", STAFF, requireStaffPermission("staff_leave.create"),
 
 /** DELETE /:id — administrators remove a record entirely (register rows this
     module created are reversed first). */
-router.delete("/:id", ADMIN, requireStaffPermission("staff_leave.approve"), asyncHandler(async (req, res) => {
+router.delete("/:id", requirePermission("staff_leave.approve"), asyncHandler(async (req, res) => {
   const tid = await tenantId(req, res); if (tid == null) return;
   const row = await loadRequest(tid, req.params.id);
   if (!row) return err(res, 404, "Leave request not found.");

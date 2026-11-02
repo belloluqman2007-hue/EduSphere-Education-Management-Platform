@@ -1230,6 +1230,14 @@
      (a teacher may read the student roster but not add a student), so items
      are assessed individually instead of exposing a menu of dead ends. Any
      item not listed here inherits its section's requirement. */
+  /* Permissions that must ALL be held on top of the any-of list above. Used
+     where an endpoint is deliberately double-gated — e.g. the payslip ledger
+     needs BOTH `payslips.view` and `payroll.view`, so a plain teacher (who
+     holds only the first) is not shown a screen that would only 403. */
+  const ITEM_PERMISSIONS_ALL = {
+    "payroll/payslips": ["payroll.view"],
+  };
+
   const ITEM_PERMISSIONS = {
     // Institution / website — reading is one thing, changing the public site is
     // an administrator's job
@@ -1308,6 +1316,8 @@
     const clean = String(route || "").split("?")[0];
     const needed = ITEM_PERMISSIONS[clean];
     if (needed && !needed.some((p) => state.permissions.has(p))) return false;
+    const allNeeded = ITEM_PERMISSIONS_ALL[clean];
+    if (allNeeded && !allNeeded.every((p) => state.permissions.has(p))) return false;
     const top = clean.split("/")[0];
     const sectionNeeded = SECTION_PERMISSIONS[top];
     if (sectionNeeded && !sectionNeeded.some((p) => state.permissions.has(p))) return false;
@@ -3531,7 +3541,7 @@
           <thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Effective permissions</th><th scope="col">Action</th></tr></thead>
           <tbody>${users.map((u) => `<tr>
             <th scope="row">${esc(u.fullName || u.username)}</th>
-            <td>${esc(u.role === "madrasa_admin" ? "Administrator" : "Teacher")}</td>
+            <td>${esc(u.role === "madrasa_admin" ? "Administrator" : "Teacher")}${u.templateLabel ? `<br><span class="dash-pill ok" title="Staff role template">${esc(u.templateLabel)}</span>` : ""}</td>
             <td>${u.isActive ? `<span class="dash-pill ok">Active</span>` : `<span class="dash-pill">Inactive</span>`}</td>
             <td>${u.effective.length} of ${groups.reduce((a, g) => a + g.permissions.length, 0)}
               ${u.overrides.length ? `<small class="hint"> · ${u.overrides.length} override(s)</small>` : ""}</td>
