@@ -3279,3 +3279,141 @@ body.islamic-experience .western-clear-search { color: #5c5470; }
 }
 .wa-reg-back-top svg { width: 16px; height: 16px; }
 .wa-reg-back-top:hover { border-color: rgba(10, 35, 66, .4); box-shadow: 0 8px 18px rgba(10, 35, 66, .12); transform: translateY(-1px); }
+
+/* ============================================================================
+   EDUSPHERE LOADING SYSTEM
+   ----------------------------------------------------------------------------
+   Skeleton screens that keep every page readable while data arrives, button
+   states that say "I pressed it and it is working", and a branded page loader
+   for the moments the shell itself is preparing. Used by the public site,
+   every admin dashboard and all three portals.
+   ============================================================================ */
+
+/* ---------- branded page / shell loader ---------- */
+.es-app-loader {
+  position: fixed; inset: 0; z-index: 10000; background: var(--paper);
+  display: grid; place-items: center;
+}
+.es-app-loader.is-page {
+  position: relative; inset: auto; background: transparent; width: 100%; height: 230px;
+  place-items: center; margin: 26px 0; border: 1px solid var(--line); border-radius: var(--radius-lg);
+}
+.es-loader-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
+.es-loader-mark {
+  width: 60px; height: 60px; border-radius: 15px; background: var(--forest-800); color: #fff;
+  display: grid; place-items: center; font-weight: 900; font-size: 24px; letter-spacing: -1.5px;
+  box-shadow: 0 0 0 0 rgba(216, 173, 66, .55);
+  animation: es-loader-pulse 2s cubic-bezier(.19, 1, .22, 1) infinite, es-spin 7s linear infinite;
+}
+.es-loader-copy { color: var(--ink-soft); font-size: .95rem; font-weight: 800; letter-spacing: .02em; }
+.es-loader-copy .es-loader-dots::after { content: "…"; animation: es-dots 1.2s infinite alternate; }
+.es-loader-hint { color: var(--muted); font-size: .78rem; margin-top: 4px; }
+@keyframes es-loader-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(216, 173, 66, .55); }
+  70% { box-shadow: 0 0 0 20px rgba(216, 173, 66, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(216, 173, 66, 0); }
+}
+@keyframes es-dots { to { content: "……"; } }
+
+/* ---------- skeletons ---------- */
+@keyframes es-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.es-skel {
+  background: linear-gradient(90deg, var(--surface) 25%, var(--line) 50%, var(--surface) 75%);
+  background-size: 300% 100%; animation: es-shimmer 1.4s linear infinite;
+  border-radius: 6px; color: transparent !important;
+}
+.es-skel-text { height: 15px; border-radius: 4px; }
+.es-skel-title { height: 21px; border-radius: 5px; }
+.es-skel-avatar { width: 40px; height: 40px; border-radius: 50%; }
+.es-skel-button { height: 42px; border-radius: 10px; width: 34%; }
+.es-skel-image { height: 170px; border-radius: var(--radius-lg); background: var(--surface); }
+.es-skel-chip { height: 24px; width: 120px; border-radius: 99px; }
+.es-skel-row { height: 40px; border-radius: 10px; }
+.es-skel-card {
+  position: relative; overflow: hidden; border: 1px solid var(--line);
+  border-radius: var(--radius-lg); background: var(--surface);
+}
+.es-skel-card::before {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgba(216, 173, 66, .10), transparent);
+  background-size: 300% 100%; animation: es-shimmer 1.7s linear infinite; pointer-events: none;
+}
+.es-skel-grid { display: grid; gap: 12px; }
+.es-skel-grid--rows { grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* ---------- button "working underground" states ---------- */
+.button.is-loading,
+.es-btn-loading,
+.submit-final-btn.is-loading,
+.wa-btn.is-loading,
+.dash-btn.is-loading,
+.ss-btn.is-loading {
+  position: relative; pointer-events: none; opacity: .92;
+  box-shadow: 0 0 0 4px rgba(216, 173, 66, .22);
+}
+.button.is-loading::after,
+.es-btn-loading::after,
+.submit-final-btn.is-loading::after,
+.wa-btn.is-loading::after,
+.dash-btn.is-loading::after,
+.ss-btn.is-loading::after {
+  content: ""; position: absolute; inset: -3px; border-radius: inherit;
+  border: 2px solid var(--gold); border-top-color: transparent;
+  animation: es-spin 1.1s linear infinite;
+}
+.button.is-loading .spinner,
+.es-btn-loading .spinner,
+.submit-final-btn.is-loading .spinner,
+.wa-btn.is-loading .spinner,
+.dash-btn.is-loading .spinner,
+.ss-btn.is-loading .spinner {
+  border-color: rgba(255, 255, 255, .5); border-top-color: #fff;
+}
+.es-btn-bounce-dots { display: inline-block; animation: es-bounce-dots 1.2s ease-in-out infinite; }
+@keyframes es-bounce-dots { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes es-spin { to { transform: rotate(360deg); } }
+
+.es-working-pill {
+  display: inline-flex; align-items: center; gap: 10px; padding: 8px 14px;
+  border-radius: 10px; border: 1px solid var(--line); background: var(--paper);
+  color: var(--ink-soft); font-size: .82rem; font-weight: 800;
+  box-shadow: var(--shadow-sm); animation: es-working-pulse 2.4s ease-in-out infinite;
+}
+.es-working-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); animation: es-working-bounce 1.1s infinite alternate; }
+@keyframes es-working-bounce { to { transform: translateY(3px); opacity: .65; } }
+@keyframes es-working-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(216, 173, 66, 0); }
+  50% { box-shadow: 0 0 0 10px rgba(216, 173, 66, .12); }
+}
+
+/* ---------- login / portal card "verifying credentials" pulse ---------- */
+.dash-login-card.is-verifying,
+.portal-login-card.is-verifying {
+  position: relative;
+}
+.dash-login-card.is-verifying::after,
+.portal-login-card.is-verifying::after {
+  content: ""; position: absolute; inset: -18px; border-radius: 22px;
+  border: 3px solid rgba(216, 173, 66, .4); border-top-color: var(--forest-800);
+  animation: es-spin 1.1s linear infinite; z-index: 0;
+}
+.dash-login-card.is-verifying .dash-login-field input,
+.portal-login-card.is-verifying .dash-login-field input {
+  animation: es-input-shimmer 1.5s linear infinite;
+}
+@keyframes es-input-shimmer { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .es-skel, .es-skel-card::before, .es-loader-mark,
+  .button.is-loading::after, .es-working-pill, .es-btn-bounce-dots,
+  .dash-login-card.is-verifying::after, .portal-login-card.is-verifying::after {
+    animation: none !important;
+  }
+  .es-loader-mark { box-shadow: none; }
+  .es-working-pill { box-shadow: none; }
+  .dash-login-card.is-verifying .dash-login-field input,
+  .portal-login-card.is-verifying .dash-login-field input { animation: none !important; }
+}

@@ -56,6 +56,48 @@
 
   let scrollHandler = null;
 
+  /* ---------- branded page loader: shown while a route prepares ---------- */
+  const appLoaderEl = document.createElement("div");
+  appLoaderEl.className = "es-app-loader";
+  appLoaderEl.innerHTML = `
+    <div class="es-loader-wrap">
+      <img class="es-loader-mark" src="/assets/edusphere-logo.png" alt="" width="60" height="60">
+      <div class="es-loader-copy">Preparing this page<span class="es-loader-dots"></span></div>
+    </div>`;
+  let appLoaderTimer = null;
+  function showAppLoader() {
+    if (appLoaderTimer) return;
+    appLoaderTimer = setTimeout(() => {
+      appLoaderTimer = null;
+      app.innerHTML = "";
+      app.appendChild(appLoaderEl);
+    }, 150);
+  }
+  function hideAppLoader() {
+    if (appLoaderTimer) { clearTimeout(appLoaderTimer); appLoaderTimer = null; return; }
+    appLoaderEl.remove();
+  }
+
+  /* Directory skeletons: real cards fade in once /api/public/madaris answers. */
+  function directorySkeletons() {
+    return Array.from({ length: 6 }).map(() => `
+      <article class="academy-card reveal es-skel-card">
+        <div class="academy-card-top">
+          <span class="academy-logo academy-logo--directory es-skel-avatar" aria-hidden="true"></span>
+          <div class="academy-card-top-copy">
+            <div class="es-skel es-skel-text" style="width:44%;height:13px"></div>
+            <div class="es-skel es-skel-text" style="width:30%;height:13px;margin-top:6px"></div>
+          </div>
+        </div>
+        <div class="es-skel es-skel-title" style="width:56%"></div>
+        <div class="es-skel es-skel-text" style="width:88%;margin-top:10px"></div>
+        <div class="academy-programs">
+          <span class="es-skel es-skel-chip" style="width:70px"></span>
+          <div><b class="es-skel es-skel-text" style="width:24px;height:11px"></b></div>
+        </div>
+      </article>`).join("");
+  }
+
   function brandMarkup() {
     return `
       <a class="brand" href="/" data-route="/" aria-label="EduSphere home">
@@ -619,6 +661,7 @@
 
     const search = async () => {
       if (status) status.textContent = "Searching…";
+      grid.innerHTML = directorySkeletons();
       const data = await load("/madaris?" + params());
       const list = data.madaris || [];
       if (list.length) {
@@ -1187,7 +1230,7 @@
     document.body.dataset.aiSurface = "school";
     document.body.dataset.aiSchool = String(slug || "");
     try { window.dispatchEvent(new Event("edusphere:ai-surface")); } catch (e) { /* no event support */ }
-    app.innerHTML = `<main id="main-content" class="school-public"><div class="school-public-loading">Loading the school website…</div></main>`;
+    app.innerHTML = `<main id="main-content" class="school-public"><div class="es-app-loader is-page" style="margin: 0 auto 24px;"><div class="es-loader-wrap"><div class="es-loader-mark">E</div><div class="es-loader-copy">Loading the school website<span class="es-loader-dots"></span></div></div></div></main>`;
     try {
       const data = await window.API.public.get(`/schools/${encodeURIComponent(slug)}`);
       const m = data.madrasa || {};
@@ -2162,13 +2205,18 @@
     renderHomepage();
   }
 
-  function renderRoute() {
+  async function renderRoute() {
     const path = window.location.pathname.replace(/\/+$/, "") || "/";
     const hash = window.location.hash;
 
     // Leaving a school website must not leave its paper colour (or its
     // scroll-lock class) behind on the platform pages.
     document.body.classList.remove("school-site-active", "school-nav-open");
+
+    // Branded loader while the route prepares; only visible when rendering
+    // takes longer than 150ms (a real network round-trip, e.g. a school site).
+    showAppLoader();
+    try {
     document.body.style.backgroundColor = "";
     // Every page starts as "not a school page"; a school route sets the
     // school surface below, and the assistant swaps accordingly.
@@ -2188,7 +2236,7 @@
     // …/submitted), so the whole subtree routes into the matching module.
     } else if (/^\/(?:schools|s|school|m)\/[^/]+(?:\/[^/]+)?$/.test(path)) {
       const schoolParts = path.split("/");
-      renderSchoolPublic(decodeURIComponent(schoolParts[2]));
+      await renderSchoolPublic(decodeURIComponent(schoolParts[2]));
     // Teacher and Student portals have real addresses of their own, exactly
     // like /admin — they fall back to their own sign-in when the visitor is
     // not authenticated.
@@ -2213,9 +2261,12 @@
     } else if (path === "/" && window.__APP_CONFIG__ && window.__APP_CONFIG__.schoolSlug) {
       // A configured custom domain resolves to the same tenant projection as
       // /schools/:slug, without making the public page global.
-      renderSchoolPublic(window.__APP_CONFIG__.schoolSlug);
+      await renderSchoolPublic(window.__APP_CONFIG__.schoolSlug);
     } else {
       renderHomepage();
+    }
+    } finally {
+      hideAppLoader();
     }
 
     // The assistant follows the page: public site, one school's own website,

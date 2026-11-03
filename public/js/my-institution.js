@@ -326,9 +326,13 @@
   /** Disables a submit button while its request is in flight. */
   async function withBusy(button, task) {
     const original = button ? button.innerHTML : "";
-    if (button) { button.disabled = true; button.innerHTML = `${icon("clock")} Saving…`; }
+    if (button) {
+      button.disabled = true;
+      button.classList.add("is-loading");
+      button.innerHTML = `<span class="spinner"></span><span class="es-btn-label">Saving<span class="es-btn-bounce-dots">…</span></span>`;
+    }
     try { return await task(); }
-    finally { if (button) { button.disabled = false; button.innerHTML = original; } }
+    finally { if (button) { button.disabled = false; button.classList.remove("is-loading"); button.innerHTML = original; } }
   }
 
   /* ----------------------------------------------------------------------
