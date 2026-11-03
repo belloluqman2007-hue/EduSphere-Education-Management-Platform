@@ -227,6 +227,8 @@
   async function bootOnce() {
     const root = document.getElementById("app");
     if (!root) return;
+    // First paint while the session check resolves — never a blank page.
+    if (root.children.length === 0) renderPortalBootLoader(root);
     let me = null;
     try { me = await window.API.me(); } catch (e) { me = null; }
     if (!me || !me.loggedIn) {
@@ -283,6 +285,26 @@
   }
 
   /* ------------------------------- login ---------------------------------- */
+
+  function renderPortalBootLoader(root) {
+    root.innerHTML = `
+      <div class="dash-login-page" style="min-height: 64vh; display: grid; place-items: center;">
+        <div class="dash-login-card" style="max-width: 380px; text-align: center;">
+          <div class="brand-row">
+            <img src="/assets/edusphere-logo.png" alt="EduSphere">
+            <div><strong style="font-weight:800;font-size:1.05rem;">EduSphere</strong><div style="font-size:.72rem;color:#726d7b;font-weight:700;letter-spacing:.04em;text-transform:uppercase;">Opening your ${ROLES[state.role] ? ROLES[state.role].label : "workspace"}</div></div>
+          </div>
+          <h1 style="text-align:center">Welcome back</h1>
+          <p class="sub es-loader-copy" style="text-align:center">Signing you in<span class="es-loader-dots"></span></p>
+          <div class="es-app-loader is-page" style="margin: 28px auto 0;">
+            <div class="es-loader-wrap">
+              <div class="es-loader-mark">E</div>
+              <div class="es-loader-copy">Getting your workspace ready<span class="es-loader-dots"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
 
   function renderLogin(root, message, session, homePath, username) {
     document.body.classList.remove("dash-islamic", "dash-western", "dash-super");
@@ -356,7 +378,10 @@
       const remember = Boolean(root.querySelector("#plRemember") && root.querySelector("#plRemember").checked);
       if (!username || !password) return renderLogin(root, "Enter both your username and your password.", null, null, username);
       submitBtn.disabled = true;
-      submitBtn.textContent = "Signing in…";
+      submitBtn.classList.add("is-loading");
+      submitBtn.innerHTML = `<span class="spinner"></span><span class="es-btn-label">Signing you in<span class="es-btn-bounce-dots">…</span></span>`;
+      const loginCard = root.querySelector(".dash-login-card");
+      if (loginCard) loginCard.classList.add("portal-login-card is-verifying");
       let result;
       try {
         result = await window.API.login(username, password, remember);
@@ -364,7 +389,10 @@
         renderLogin(root, err && err.message ? err.message : "Could not sign in. Please try again.", null, null, username);
         return;
       } finally {
-        if (submitBtn && submitBtn.isConnected) { submitBtn.disabled = false; submitBtn.textContent = submitLabel; }
+        if (submitBtn && submitBtn.isConnected) {
+          submitBtn.disabled = false; submitBtn.classList.remove("is-loading"); submitBtn.innerHTML = submitLabel;
+        }
+        if (loginCard && loginCard.isConnected) loginCard.classList.remove("portal-login-card", "is-verifying");
       }
       const target = result.role === "teacher" ? "/teacher" : result.role === "student" ? "/student" : result.role === "parent" ? "/parent" : "/admin";
       if (result.role !== state.role) {

@@ -502,6 +502,10 @@
     const root = document.getElementById(ROOT_ID);
     if (!root) return;
 
+    // First paint of the dashboard shell: keep the visitor looking at
+    // something alive while /auth/me resolves instead of a blank page.
+    if (root.children.length === 0) renderBootLoader(root);
+
     let me;
     try { me = await window.API.get("/auth/me"); } catch (e) { me = { loggedIn: false }; }
 
@@ -649,6 +653,28 @@
     else if (theme === "islamic") document.body.classList.add("dash-islamic");
   }
 
+  /* The "please wait" screen shown while the sign-in shell boots. */
+  function renderBootLoader(root) {
+    root.innerHTML = `
+      <div class="dash-login-page" style="min-height: 64vh; display: grid; place-items: center;">
+        <div class="dash-login-card" style="max-width: 380px; text-align: center;">
+          <div class="brand-row">
+            <img src="/assets/edusphere-logo.png" alt="EduSphere">
+            <div><strong style="font-weight:800;font-size:1.05rem;">EduSphere</strong><div style="font-size:.72rem;color:#726d7b;font-weight:700;letter-spacing:.04em;text-transform:uppercase;">Signing in to EduSphere</div></div>
+          </div>
+          <h1 style="text-align:center">Welcome back</h1>
+          <p class="sub es-loader-copy" style="text-align:center">Preparing your workspace<span class="es-loader-dots"></span></p>
+          <div class="es-app-loader is-page" style="margin: 28px auto 0;">
+            <div class="es-loader-wrap">
+              <div class="es-loader-mark">E</div>
+              <div class="es-loader-copy">Getting everything ready<span class="es-loader-dots"></span></div>
+            </div>
+            <p class="es-loader-hint">This takes a moment on the first sign in.</p>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function renderLogin(root, error, session, username, allowServerRepair) {
     applyTheme(null);
     // One unified EduSphere sign-in for EVERY account type. The server decides
@@ -780,7 +806,13 @@
         failed("Enter both your username and your password.");
         return;
       }
-      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Signing in…"; }
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.classList.add("is-loading");
+        submitBtn.innerHTML = `<span class="spinner"></span><span class="es-btn-label">Verifying your credentials<span class="es-btn-bounce-dots">…</span></span>`;
+      }
+      const loginCard = root.querySelector(".dash-login-card");
+      if (loginCard) loginCard.classList.add("is-verifying");
       let result;
       try {
         result = await window.API.login(username, password, remember);
@@ -794,7 +826,12 @@
                      : "Could not reach the server. Please try again."), err);
         return;
       } finally {
-        if (submitBtn && submitBtn.isConnected) { submitBtn.disabled = false; submitBtn.textContent = submitLabel; }
+        if (submitBtn && submitBtn.isConnected) {
+          submitBtn.disabled = false;
+          submitBtn.classList.remove("is-loading");
+          submitBtn.innerHTML = submitLabel;
+        }
+        if (loginCard && loginCard.isConnected) loginCard.classList.remove("is-verifying");
       }
 
       // Authenticated — but this console only serves administrators. A
@@ -870,7 +907,8 @@
           `<div class="dash-login-error" role="alert">Enter your username or email address.</div>`);
         return;
       }
-      btn.disabled = true; btn.textContent = "Working…";
+      btn.disabled = true; btn.classList.add("is-loading");
+      btn.innerHTML = `<span class="spinner"></span><span class="es-btn-label">Creating your reset link<span class="es-btn-bounce-dots">…</span></span>`;
       try {
         await window.API.post("/auth/forgot-password", { identifier });
         root.querySelector("#fpArea").innerHTML = `
@@ -888,7 +926,9 @@
         const retry = root.querySelector("#fpForm");
         if (retry) retry.addEventListener("submit", () => renderForgotPassword(root));
       } finally {
-        if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "Create reset link"; }
+        if (btn && btn.isConnected) {
+          btn.disabled = false; btn.classList.remove("is-loading"); btn.innerHTML = "Create reset link";
+        }
       }
     });
     const focus = root.querySelector("#fpId");
@@ -944,7 +984,8 @@
       const area = root.querySelector("#rpArea");
       if (next.length < 8) return area.insertAdjacentHTML("afterbegin", `<div class="dash-login-error" role="alert">The new password must be at least 8 characters.</div>`);
       if (next !== confirm) return area.insertAdjacentHTML("afterbegin", `<div class="dash-login-error" role="alert">The two passwords do not match.</div>`);
-      btn.disabled = true; btn.textContent = "Updating…";
+      btn.disabled = true; btn.classList.add("is-loading");
+      btn.innerHTML = `<span class="spinner"></span><span class="es-btn-label">Updating your password<span class="es-btn-bounce-dots">…</span></span>`;
       try {
         await window.API.post("/auth/reset-password", { token, newPassword: next });
         area.innerHTML = `
@@ -959,6 +1000,10 @@
           <div class="dash-login-error" role="alert">${esc(msg)}</div>
           <p class="hint">Request a new reset link — links are single-use and expire after one hour.</p>
           <a class="dash-login-submit" style="display:block;text-align:center;text-decoration:none;" href="/forgot-password">Request a new link</a>`;
+      } finally {
+        if (btn && btn.isConnected) {
+          btn.disabled = false; btn.classList.remove("is-loading"); btn.innerHTML = "Update password";
+        }
       }
     });
     const focus = root.querySelector("#rpPass");
@@ -2051,11 +2096,29 @@
      the same recognisable way. aria-busy / aria-live let a screen reader
      announce the transition instead of the content changing silently.
      -------------------------------------------------------------------- */
+  /* A skeleton page: keeps the heading and breadcrumb visible while the
+     real content fetches, so the screen never looks like it froze. */
   function loadingBlock(crumb, title) {
     return `<div class="dash-page-head"><div><div class="dash-crumb">${esc(crumb)}</div><h2>${esc(title)}</h2></div></div>
-      <div class="dash-card" aria-busy="true"><div class="dash-card-pad">
-        <p class="hint" role="status">Loading ${esc(title)}…</p>
-      </div></div>`;
+      <div class="dash-card es-skel-card" aria-busy="true" role="status" aria-label="Loading ${esc(title)}…">
+        <div class="dash-card-pad">
+          <div class="es-skel-grid">
+            <div class="es-skel es-skel-avatar"></div>
+            <div class="es-skel-fill">
+              <div class="es-skel es-skel-title" style="width: 52%"></div>
+              <div class="es-skel es-skel-text" style="width: 92%; margin-top: 8px"></div>
+              <div class="es-skel es-skel-text" style="width: 66%; margin-top: 8px"></div>
+            </div>
+          </div>
+          <div class="es-skel-grid es-skel-grid--rows" style="margin-top: 22px">
+            <div class="es-skel es-skel-row" style="height: 46px"></div>
+            <div class="es-skel es-skel-row" style="height: 46px; width: 82%"></div>
+            <div class="es-skel es-skel-row" style="height: 44px; width: 64%"></div>
+            <div class="es-skel es-skel-row" style="height: 42px; width: 48%"></div>
+            <div class="es-skel es-skel-button" style="width: 26%"></div>
+          </div>
+        </div>
+      </div>`;
   }
   /** A user-facing failure. Server messages are already safe to show; an
       unexpected failure falls back to neutral copy so no internal detail
